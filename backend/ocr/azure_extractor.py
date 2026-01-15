@@ -46,6 +46,80 @@ def extract_currency_amount(field: Any) -> Optional[Decimal]:
         return None
 
 
+def serialize_azure_field(field: Any) -> Any:
+    """Serialize an Azure DocumentField to a JSON-compatible dict."""
+    if field is None:
+        return None
+
+    result = {}
+
+    # Get field type
+    if hasattr(field, 'value_type'):
+        result['type'] = str(field.value_type)
+
+    # Get content (the raw text from the document)
+    if hasattr(field, 'content'):
+        result['content'] = field.content
+
+    # Get confidence
+    if hasattr(field, 'confidence'):
+        result['confidence'] = field.confidence
+
+    # Get the value based on type
+    value = extract_field_value(field)
+
+    if value is None:
+        result['value'] = None
+    elif isinstance(value, (str, int, float, bool)):
+        result['value'] = value
+    elif isinstance(value, date):
+        result['value'] = value.isoformat()
+    elif isinstance(value, Decimal):
+        result['value'] = float(value)
+    elif hasattr(value, 'amount'):
+        # Currency type
+        result['value'] = {
+            'amount': float(value.amount) if value.amount else None,
+            'symbol': getattr(value, 'symbol', None),
+            'code': getattr(value, 'code', None),
+        }
+    elif isinstance(value, list):
+        # Array of items
+        result['value'] = [serialize_azure_field(item) for item in value]
+    elif isinstance(value, dict):
+        # Object with nested fields
+        result['value'] = {k: serialize_azure_field(v) for k, v in value.items()}
+    else:
+        # Unknown type - try to convert to string
+        result['value'] = str(value)
+
+    return result
+
+
+def serialize_azure_result(result: Any) -> dict:
+    """Serialize the full Azure AnalyzeResult to a JSON-compatible dict."""
+    output = {
+        'content': result.content,
+        'documents': []
+    }
+
+    if result.documents:
+        for doc in result.documents:
+            doc_dict = {
+                'doc_type': doc.doc_type if hasattr(doc, 'doc_type') else None,
+                'confidence': doc.confidence if hasattr(doc, 'confidence') else None,
+                'fields': {}
+            }
+
+            if doc.fields:
+                for field_name, field_value in doc.fields.items():
+                    doc_dict['fields'][field_name] = serialize_azure_field(field_value)
+
+            output['documents'].append(doc_dict)
+
+    return output
+
+
 async def process_invoice_with_azure(
     image_path: str,
     azure_endpoint: str,
@@ -84,6 +158,9 @@ async def process_invoice_with_azure(
         doc_count = len(result.documents) if result.documents else 0
         logger.info(f"Azure returned {doc_count} document(s)")
 
+        # Serialize the full Azure response for storage/debugging
+        raw_json = serialize_azure_result(result)
+
         if not result.documents:
             logger.warning("No invoice detected in document")
             return {
@@ -94,6 +171,7 @@ async def process_invoice_with_azure(
                 "order_number": None,
                 "line_items": [],
                 "raw_text": result.content or "",
+                "raw_json": raw_json,
                 "confidence": 0.0
             }
 
@@ -241,6 +319,7 @@ async def process_invoice_with_azure(
             "order_number": order_number,
             "line_items": line_items,
             "raw_text": result.content or "",
+            "raw_json": raw_json,
             "confidence": confidence
         }
 

@@ -124,6 +124,67 @@ async def run_migration():
         else:
             logger.warning(f"is_non_stock column: {e}")
 
+    # Add vendor_name column to invoices table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE invoices ADD COLUMN vendor_name VARCHAR(255)"
+            ))
+            logger.info("Added vendor_name column to invoices")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("vendor_name column already exists")
+        else:
+            logger.warning(f"vendor_name column: {e}")
+
+    # Add ocr_raw_json column to invoices table (for storing full Azure response)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE invoices ADD COLUMN ocr_raw_json TEXT"
+            ))
+            logger.info("Added ocr_raw_json column to invoices")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("ocr_raw_json column already exists")
+        else:
+            logger.warning(f"ocr_raw_json column: {e}")
+
+    # Create field_mappings table
+    create_field_mappings = """
+    CREATE TABLE IF NOT EXISTS field_mappings (
+        id SERIAL PRIMARY KEY,
+        kitchen_id INTEGER NOT NULL REFERENCES kitchens(id),
+        supplier_id INTEGER REFERENCES suppliers(id),
+        source_field VARCHAR(100) NOT NULL,
+        target_field VARCHAR(100) NOT NULL,
+        field_type VARCHAR(20) DEFAULT 'invoice',
+        transform VARCHAR(50) DEFAULT 'direct',
+        priority INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(create_field_mappings))
+            logger.info("Created field_mappings table")
+    except Exception as e:
+        logger.warning(f"field_mappings table: {e}")
+
+    # Create index on field_mappings
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_field_mappings_kitchen_id ON field_mappings(kitchen_id)"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_field_mappings_supplier_id ON field_mappings(supplier_id)"
+            ))
+            logger.info("Created indexes on field_mappings")
+    except Exception as e:
+        logger.warning(f"field_mappings indexes: {e}")
+
     logger.info("Migration completed successfully!")
 
 

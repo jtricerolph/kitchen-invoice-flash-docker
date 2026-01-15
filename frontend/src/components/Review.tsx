@@ -150,6 +150,7 @@ export default function Review() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDuplicateModal, setShowDuplicateModal] = useState(false)
   const [showCreateSupplierModal, setShowCreateSupplierModal] = useState(false)
+  const [showRawOcrModal, setShowRawOcrModal] = useState(false)
   const [newSupplierName, setNewSupplierName] = useState('')
   const [editingLineItem, setEditingLineItem] = useState<number | null>(null)
   const [lineItemEdits, setLineItemEdits] = useState<Partial<LineItem>>({})
@@ -202,6 +203,18 @@ export default function Review() {
       return res.json()
     },
     enabled: !!invoice?.duplicate_status,
+  })
+
+  const { data: rawOcrData } = useQuery<{ raw_json: any; raw_text: string }>({
+    queryKey: ['invoice-ocr-data', id],
+    queryFn: async () => {
+      const res = await fetch(`/api/invoices/${id}/ocr-data`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch OCR data')
+      return res.json()
+    },
+    enabled: showRawOcrModal,
   })
 
   const { data: suppliers } = useQuery<Supplier[]>({
@@ -674,6 +687,13 @@ export default function Review() {
           Delete Invoice
         </button>
 
+        <button
+          onClick={() => setShowRawOcrModal(true)}
+          style={styles.rawOcrBtn}
+        >
+          View Raw OCR Data
+        </button>
+
         <button onClick={() => navigate('/invoices')} style={styles.backBtn}>
           ← Back to Invoices
         </button>
@@ -803,6 +823,54 @@ export default function Review() {
           </div>
         </div>
       )}
+
+      {/* Raw OCR Data Modal */}
+      {showRawOcrModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowRawOcrModal(false)}>
+          <div style={styles.rawOcrModal} onClick={(e) => e.stopPropagation()}>
+            <h3>Raw Azure OCR Data</h3>
+            <p style={styles.rawOcrHint}>
+              This shows the raw data extracted by Azure. Use this to debug field extraction issues
+              or identify custom field names that need mapping.
+            </p>
+            {rawOcrData?.raw_json ? (
+              <div style={styles.rawOcrContent}>
+                <h4>Extracted Fields</h4>
+                {rawOcrData.raw_json.documents?.map((doc: any, docIdx: number) => (
+                  <div key={docIdx} style={styles.rawOcrDoc}>
+                    <h5>Document {docIdx + 1} (Confidence: {(doc.confidence * 100).toFixed(1)}%)</h5>
+                    <table style={styles.rawOcrTable}>
+                      <thead>
+                        <tr>
+                          <th style={styles.rawOcrTh}>Field</th>
+                          <th style={styles.rawOcrTh}>Value</th>
+                          <th style={styles.rawOcrTh}>Content</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(doc.fields || {}).map(([fieldName, field]: [string, any]) => (
+                          <tr key={fieldName}>
+                            <td style={styles.rawOcrTd}><strong>{fieldName}</strong></td>
+                            <td style={styles.rawOcrTd}>
+                              {typeof field?.value === 'object'
+                                ? JSON.stringify(field?.value, null, 2)
+                                : String(field?.value ?? '—')}
+                            </td>
+                            <td style={styles.rawOcrTd}>{field?.content || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ color: '#999' }}>No raw OCR data available for this invoice.</p>
+            )}
+            <button onClick={() => setShowRawOcrModal(false)} style={styles.closeBtn}>Close</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -844,6 +912,7 @@ const styles: Record<string, React.CSSProperties> = {
   saveBtn: { flex: 1, padding: '0.75rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
   confirmBtn: { flex: 1, padding: '0.75rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
   deleteBtn: { marginTop: '1rem', padding: '0.75rem', background: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%' },
+  rawOcrBtn: { marginTop: '0.5rem', padding: '0.75rem', background: '#6c757d', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%', fontSize: '0.9rem' },
   backBtn: { marginTop: '0.5rem', padding: '0.75rem', background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', width: '100%' },
   modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
   modal: { background: 'white', padding: '2rem', borderRadius: '12px', maxWidth: '400px', width: '90%' },
@@ -857,4 +926,11 @@ const styles: Record<string, React.CSSProperties> = {
   compareCard: { padding: '1rem', border: '2px solid #ddd', borderRadius: '8px' },
   viewBtn: { marginTop: '0.5rem', padding: '0.5rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', width: '100%', fontSize: '0.85rem' },
   closeBtn: { marginTop: '1.5rem', padding: '0.75rem 2rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' },
+  rawOcrModal: { background: 'white', padding: '2rem', borderRadius: '12px', maxWidth: '900px', width: '95%', maxHeight: '85vh', overflowY: 'auto' },
+  rawOcrHint: { color: '#666', fontSize: '0.9rem', marginBottom: '1rem' },
+  rawOcrContent: { marginTop: '1rem' },
+  rawOcrDoc: { marginBottom: '1.5rem', padding: '1rem', background: '#f8f9fa', borderRadius: '8px' },
+  rawOcrTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.85rem' },
+  rawOcrTh: { textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#e9ecef' },
+  rawOcrTd: { padding: '0.5rem', borderBottom: '1px solid #eee', verticalAlign: 'top', wordBreak: 'break-word', maxWidth: '300px' },
 }

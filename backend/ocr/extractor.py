@@ -33,6 +33,7 @@ async def process_invoice_image(
             - document_type: str ("invoice" or "delivery_note")
             - line_items: list
             - raw_text: str
+            - raw_json: dict (serialized Azure response)
             - confidence: float
     """
     # Check kitchen settings for Azure credentials
@@ -56,6 +57,7 @@ async def process_invoice_image(
             "document_type": "invoice",
             "line_items": [],
             "raw_text": "Error: Azure credentials not configured. Please configure in Settings.",
+            "raw_json": None,
             "confidence": 0.0
         }
 
@@ -95,6 +97,7 @@ async def process_invoice_image(
             "document_type": document_type,
             "line_items": result.get("line_items", []),
             "raw_text": result.get("raw_text", ""),
+            "raw_json": result.get("raw_json"),
             "confidence": result.get("confidence", 0.0)
         }
 
@@ -111,5 +114,6 @@ async def process_invoice_image(
             "document_type": "invoice",
             "line_items": [],
             "raw_text": f"Error: Azure OCR failed - {str(e)}",
+            "raw_json": None,
             "confidence": 0.0
         }

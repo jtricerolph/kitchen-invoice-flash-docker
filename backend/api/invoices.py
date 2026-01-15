@@ -247,6 +247,12 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
             invoice.document_type = result.get("document_type", "invoice")
             invoice.order_number = result.get("order_number")
 
+            # Store raw Azure JSON for debugging/remapping
+            raw_json = result.get("raw_json")
+            if raw_json:
+                import json
+                invoice.ocr_raw_json = json.dumps(raw_json)
+
             # Save line items
             line_items = result.get("line_items", [])
             for idx, item_data in enumerate(line_items):
@@ -598,3 +604,30 @@ async def delete_line_item(
     await db.commit()
 
     return {"message": "Line item deleted"}
+
+
+# Raw OCR data endpoint
+@router.get("/{invoice_id}/ocr-data")
+async def get_invoice_ocr_data(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get the raw OCR data (text and JSON) for an invoice"""
+    import json as json_module
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    raw_json = None
+    if invoice.ocr_raw_json:
+        try:
+            raw_json = json_module.loads(invoice.ocr_raw_json)
+        except json_module.JSONDecodeError:
+            raw_json = None
+
+    return {
+        "invoice_id": invoice.id,
+        "raw_text": invoice.ocr_raw_text,
+        "raw_json": raw_json,
+        "confidence": float(invoice.ocr_confidence) if invoice.ocr_confidence else None
+    }

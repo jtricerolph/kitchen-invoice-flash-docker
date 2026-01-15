@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings
+from api import invoices, suppliers, reports, settings, field_mappings
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 
@@ -57,6 +57,7 @@ app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
 app.include_router(suppliers.router, prefix="/api/suppliers", tags=["Suppliers"])
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])
+app.include_router(field_mappings.router, prefix="/api/field-mappings", tags=["Field Mappings"])
 
 
 @app.get("/")

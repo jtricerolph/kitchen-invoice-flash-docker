@@ -47,6 +47,7 @@ class Invoice(Base):
     # OCR metadata
     image_path: Mapped[str] = mapped_column(String(500), nullable=False)
     ocr_raw_text: Mapped[str] = mapped_column(Text, nullable=True)
+    ocr_raw_json: Mapped[str] = mapped_column(Text, nullable=True)  # Full Azure response JSON for debugging/remapping
     ocr_confidence: Mapped[float] = mapped_column(Numeric(5, 4), nullable=True)
 
     # Status tracking
