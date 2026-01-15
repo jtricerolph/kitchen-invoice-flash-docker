@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useState, useEffect, createContext, useContext } from 'react'
 import Login from './pages/Login'
+import Settings from './pages/Settings'
 import Dashboard from './components/Dashboard'
 import Upload from './components/Upload'
 import InvoiceList from './components/InvoiceList'
@@ -100,6 +101,12 @@ function App() {
                 token ? <Review /> : <Navigate to="/login" />
               }
             />
+            <Route
+              path="/settings"
+              element={
+                token ? <Settings /> : <Navigate to="/login" />
+              }
+            />
           </Routes>
         </main>
       </div>
@@ -116,6 +123,7 @@ function Header({ user, onLogout }: { user: User; onLogout: () => void }) {
           <a href="/" style={styles.navLink}>Dashboard</a>
           <a href="/upload" style={styles.navLink}>Upload</a>
           <a href="/invoices" style={styles.navLink}>Invoices</a>
+          <a href="/settings" style={styles.navLink}>Settings</a>
         </nav>
         <div style={styles.userInfo}>
           <span>{user.kitchen_name}</span>
