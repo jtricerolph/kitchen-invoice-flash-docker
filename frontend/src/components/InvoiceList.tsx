@@ -10,6 +10,8 @@ interface Invoice {
   category: string | null
   ocr_confidence: number | null
   created_at: string
+  document_type: string | null
+  duplicate_status: string | null
 }
 
 interface InvoiceListResponse {
@@ -73,8 +75,19 @@ export default function InvoiceList() {
               style={styles.card}
             >
               <div style={styles.cardMain}>
-                <div style={styles.invoiceNumber}>
-                  {invoice.invoice_number || 'Pending extraction...'}
+                <div style={styles.invoiceNumberRow}>
+                  <span style={styles.invoiceNumber}>
+                    {invoice.invoice_number || 'Pending extraction...'}
+                  </span>
+                  {invoice.document_type === 'delivery_note' && (
+                    <span style={styles.dnBadge}>DN</span>
+                  )}
+                  {invoice.duplicate_status === 'firm_duplicate' && (
+                    <span style={styles.duplicateBadge}>DUPLICATE</span>
+                  )}
+                  {invoice.duplicate_status === 'possible_duplicate' && (
+                    <span style={styles.possibleDuplicateBadge}>POSSIBLE DUPLICATE</span>
+                  )}
                 </div>
                 <div style={styles.invoiceDate}>
                   {invoice.invoice_date
@@ -176,10 +189,46 @@ const styles: Record<string, React.CSSProperties> = {
   cardMain: {
     flex: 1,
   },
+  invoiceNumberRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    flexWrap: 'wrap',
+  },
   invoiceNumber: {
     fontWeight: 'bold',
     fontSize: '1.1rem',
     color: '#1a1a2e',
+  },
+  dnBadge: {
+    display: 'inline-block',
+    padding: '0.15rem 0.5rem',
+    background: '#6c757d',
+    color: 'white',
+    fontSize: '0.65rem',
+    fontWeight: 'bold',
+    borderRadius: '4px',
+    textTransform: 'uppercase',
+  },
+  duplicateBadge: {
+    display: 'inline-block',
+    padding: '0.15rem 0.5rem',
+    background: '#dc3545',
+    color: 'white',
+    fontSize: '0.65rem',
+    fontWeight: 'bold',
+    borderRadius: '4px',
+    textTransform: 'uppercase',
+  },
+  possibleDuplicateBadge: {
+    display: 'inline-block',
+    padding: '0.15rem 0.5rem',
+    background: '#fd7e14',
+    color: 'white',
+    fontSize: '0.65rem',
+    fontWeight: 'bold',
+    borderRadius: '4px',
+    textTransform: 'uppercase',
   },
   invoiceDate: {
     color: '#666',

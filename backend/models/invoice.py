@@ -1,9 +1,13 @@
 from datetime import datetime, date
 from decimal import Decimal
-from sqlalchemy import String, DateTime, Date, ForeignKey, Numeric, Text, Enum
+from typing import Optional, TYPE_CHECKING
+from sqlalchemy import String, DateTime, Date, ForeignKey, Numeric, Text, Enum, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 import enum
+
+if TYPE_CHECKING:
+    from .line_item import LineItem
 
 
 class InvoiceStatus(str, enum.Enum):
@@ -25,10 +29,23 @@ class Invoice(Base):
     invoice_date: Mapped[date] = mapped_column(Date, nullable=True)
     total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
 
+    # Document type and order tracking
+    document_type: Mapped[str] = mapped_column(String(50), nullable=True, default="invoice")
+    order_number: Mapped[str] = mapped_column(String(100), nullable=True)
+
+    # Duplicate detection
+    duplicate_status: Mapped[str] = mapped_column(String(50), nullable=True)
+    duplicate_of_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("invoices.id"), nullable=True
+    )
+    related_document_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("invoices.id"), nullable=True
+    )
+
     # OCR metadata
     image_path: Mapped[str] = mapped_column(String(500), nullable=False)
     ocr_raw_text: Mapped[str] = mapped_column(Text, nullable=True)
-    ocr_confidence: Mapped[float] = mapped_column(Numeric(5, 4), nullable=True)  # 0.0000 to 1.0000
+    ocr_confidence: Mapped[float] = mapped_column(Numeric(5, 4), nullable=True)
 
     # Status tracking
     status: Mapped[InvoiceStatus] = mapped_column(
@@ -36,7 +53,7 @@ class Invoice(Base):
         default=InvoiceStatus.PENDING
     )
 
-    # Category for GP breakdown (e.g., "food", "supplies", "beverages")
+    # Category for GP breakdown
     category: Mapped[str] = mapped_column(String(50), nullable=True, default="food")
 
     # Timestamps
@@ -46,8 +63,29 @@ class Invoice(Base):
     # Relationships
     kitchen: Mapped["Kitchen"] = relationship("Kitchen", back_populates="invoices")
     supplier: Mapped["Supplier"] = relationship("Supplier", back_populates="invoices")
+    line_items: Mapped[list["LineItem"]] = relationship(
+        "LineItem",
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        order_by="LineItem.line_number"
+    )
+
+    # Self-referential relationships for duplicate tracking
+    duplicate_of: Mapped[Optional["Invoice"]] = relationship(
+        "Invoice",
+        remote_side=[id],
+        foreign_keys=[duplicate_of_id],
+        uselist=False
+    )
+    related_document: Mapped[Optional["Invoice"]] = relationship(
+        "Invoice",
+        remote_side=[id],
+        foreign_keys=[related_document_id],
+        uselist=False
+    )
 
 
 # Forward references
 from .user import Kitchen
 from .supplier import Supplier
+from .line_item import LineItem

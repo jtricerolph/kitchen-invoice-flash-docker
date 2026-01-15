@@ -22,6 +22,7 @@ async def process_invoice_with_azure(
             - invoice_date: date or None
             - total: Decimal or None
             - vendor_name: str or None
+            - order_number: str or None
             - line_items: list of dicts
             - raw_text: str
             - confidence: float
@@ -48,6 +49,7 @@ async def process_invoice_with_azure(
                 "invoice_date": None,
                 "total": None,
                 "vendor_name": None,
+                "order_number": None,
                 "line_items": [],
                 "raw_text": result.content or "",
                 "confidence": 0.0
@@ -81,6 +83,11 @@ async def process_invoice_with_azure(
         vendor_name = None
         if "VendorName" in fields and fields["VendorName"].value:
             vendor_name = str(fields["VendorName"].value)
+
+        # Extract purchase order / order number
+        order_number = None
+        if "PurchaseOrder" in fields and fields["PurchaseOrder"].value:
+            order_number = str(fields["PurchaseOrder"].value)
 
         # Extract line items
         line_items = []
@@ -119,13 +126,14 @@ async def process_invoice_with_azure(
         confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
 
         logger.info(f"Azure extracted: invoice_number={invoice_number}, date={invoice_date}, "
-                    f"total={total}, vendor={vendor_name}, {len(line_items)} line items")
+                    f"total={total}, vendor={vendor_name}, order={order_number}, {len(line_items)} line items")
 
         return {
             "invoice_number": invoice_number,
             "invoice_date": invoice_date,
             "total": total,
             "vendor_name": vendor_name,
+            "order_number": order_number,
             "line_items": line_items,
             "raw_text": result.content or "",
             "confidence": confidence
