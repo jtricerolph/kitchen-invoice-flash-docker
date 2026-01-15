@@ -8,7 +8,10 @@ interface Invoice {
   invoice_number: string | null
   invoice_date: string | null
   total: number | null
+  net_total: number | null
+  stock_total: number | null
   supplier_id: number | null
+  supplier_name: string | null
   status: string
   category: string | null
   ocr_confidence: number | null
@@ -19,6 +22,11 @@ interface Invoice {
   duplicate_of_id: number | null
 }
 
+interface Supplier {
+  id: number
+  name: string
+}
+
 interface LineItem {
   id: number
   description: string | null
@@ -27,6 +35,7 @@ interface LineItem {
   amount: number | null
   product_code: string | null
   line_number: number
+  is_non_stock: boolean
 }
 
 interface DuplicateCompare {
@@ -40,8 +49,15 @@ interface DuplicateCompare {
 const VAT_RATES = [0, 0.05, 0.125, 0.20]; // 0%, 5%, 12.5%, 20%
 const TOLERANCE = 0.02; // 2p tolerance for rounding
 
-function LineItemsValidation({ lineItems, invoiceTotal }: { lineItems: LineItem[]; invoiceTotal: number }) {
+function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems: LineItem[]; invoiceTotal: number; netTotal: number | null }) {
   const lineItemsTotal = lineItems.reduce((sum, item) => sum + (item.amount || 0), 0);
+  const stockItemsTotal = lineItems
+    .filter(item => !item.is_non_stock)
+    .reduce((sum, item) => sum + (item.amount || 0), 0);
+  const nonStockItemsTotal = lineItems
+    .filter(item => item.is_non_stock)
+    .reduce((sum, item) => sum + (item.amount || 0), 0);
+
   const difference = Math.abs(invoiceTotal - lineItemsTotal);
 
   // Check if difference could be explained by VAT
@@ -72,6 +88,7 @@ function LineItemsValidation({ lineItems, invoiceTotal }: { lineItems: LineItem[
   }
 
   const isValid = exactMatch || vatMatch !== null;
+  const hasNonStock = nonStockItemsTotal > 0;
 
   return (
     <div style={{
@@ -83,18 +100,30 @@ function LineItemsValidation({ lineItems, invoiceTotal }: { lineItems: LineItem[
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontWeight: '500' }}>
-          Line Items Subtotal: <strong>£{lineItemsTotal.toFixed(2)}</strong>
+          Line Items Total: <strong>£{lineItemsTotal.toFixed(2)}</strong>
         </span>
         <span style={{ fontWeight: '500' }}>
           Invoice Total: <strong>£{invoiceTotal.toFixed(2)}</strong>
+          {netTotal && <span style={{ fontSize: '0.85rem', color: '#666' }}> (Net: £{netTotal.toFixed(2)})</span>}
         </span>
       </div>
+      {hasNonStock && (
+        <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: 'rgba(255,255,255,0.5)', borderRadius: '4px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
+            <span><strong>Stock Items:</strong> £{stockItemsTotal.toFixed(2)}</span>
+            <span style={{ color: '#856404' }}><strong>Non-Stock:</strong> £{nonStockItemsTotal.toFixed(2)}</span>
+          </div>
+          <div style={{ marginTop: '0.25rem', fontSize: '0.8rem', color: '#155724' }}>
+            GP will be calculated using stock items only
+          </div>
+        </div>
+      )}
       {!exactMatch && (
         <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: isValid ? '#155724' : '#856404' }}>
           {isValid ? '✓ ' : '⚠ '}{vatExplanation || `Difference: £${difference.toFixed(2)}`}
         </div>
       )}
-      {exactMatch && (
+      {exactMatch && !hasNonStock && (
         <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#155724' }}>
           ✓ Totals match (VAT likely included in line items)
         </div>
@@ -112,11 +141,15 @@ export default function Review() {
   const [invoiceNumber, setInvoiceNumber] = useState('')
   const [invoiceDate, setInvoiceDate] = useState('')
   const [total, setTotal] = useState('')
+  const [netTotal, setNetTotal] = useState('')
   const [category, setCategory] = useState('food')
   const [orderNumber, setOrderNumber] = useState('')
   const [documentType, setDocumentType] = useState('invoice')
+  const [supplierId, setSupplierId] = useState<string>('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDuplicateModal, setShowDuplicateModal] = useState(false)
+  const [showCreateSupplierModal, setShowCreateSupplierModal] = useState(false)
+  const [newSupplierName, setNewSupplierName] = useState('')
   const [editingLineItem, setEditingLineItem] = useState<number | null>(null)
   const [lineItemEdits, setLineItemEdits] = useState<Partial<LineItem>>({})
 
@@ -170,14 +203,27 @@ export default function Review() {
     enabled: !!invoice?.duplicate_status,
   })
 
+  const { data: suppliers } = useQuery<Supplier[]>({
+    queryKey: ['suppliers'],
+    queryFn: async () => {
+      const res = await fetch('/api/suppliers/', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+  })
+
   useEffect(() => {
     if (invoice) {
       setInvoiceNumber(invoice.invoice_number || '')
       setInvoiceDate(invoice.invoice_date || '')
       setTotal(invoice.total?.toString() || '')
+      setNetTotal(invoice.net_total?.toString() || '')
       setCategory(invoice.category || 'food')
       setOrderNumber(invoice.order_number || '')
       setDocumentType(invoice.document_type || 'invoice')
+      setSupplierId(invoice.supplier_id?.toString() || '')
     }
   }, [invoice])
 
@@ -235,11 +281,45 @@ export default function Review() {
     },
   })
 
+  const createSupplierMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const res = await fetch('/api/suppliers/', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) throw new Error('Failed to create supplier')
+      return res.json()
+    },
+    onSuccess: (newSupplier: { id: number; name: string }) => {
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] })
+      setSupplierId(newSupplier.id.toString())
+      setShowCreateSupplierModal(false)
+      setNewSupplierName('')
+    },
+  })
+
+  const handleCreateSupplier = () => {
+    if (newSupplierName.trim()) {
+      createSupplierMutation.mutate(newSupplierName.trim())
+    }
+  }
+
+  const openCreateSupplierModal = () => {
+    setNewSupplierName(invoice?.supplier_name || '')
+    setShowCreateSupplierModal(true)
+  }
+
   const handleSave = async (status: string = 'reviewed') => {
     await updateMutation.mutateAsync({
       invoice_number: invoiceNumber || null,
       invoice_date: invoiceDate || null,
       total: total ? parseFloat(total) : null,
+      net_total: netTotal ? parseFloat(netTotal) : null,
+      supplier_id: supplierId ? parseInt(supplierId) : null,
       category,
       order_number: orderNumber || null,
       document_type: documentType,
@@ -264,6 +344,7 @@ export default function Review() {
       unit_price: item.unit_price,
       amount: item.amount,
       product_code: item.product_code,
+      is_non_stock: item.is_non_stock,
     })
   }
 
@@ -344,17 +425,67 @@ export default function Review() {
             />
           </label>
 
-          <label style={styles.label}>
-            Total Amount (£)
-            <input
-              type="number"
-              step="0.01"
-              value={total}
-              onChange={(e) => setTotal(e.target.value)}
-              style={styles.input}
-              placeholder="0.00"
-            />
-          </label>
+          <div style={styles.row}>
+            <label style={{ ...styles.label, flex: 1 }}>
+              Gross Total (£)
+              <input
+                type="number"
+                step="0.01"
+                value={total}
+                onChange={(e) => setTotal(e.target.value)}
+                style={styles.input}
+                placeholder="Inc. VAT"
+              />
+            </label>
+
+            <label style={{ ...styles.label, flex: 1 }}>
+              Net Total (£)
+              <input
+                type="number"
+                step="0.01"
+                value={netTotal}
+                onChange={(e) => setNetTotal(e.target.value)}
+                style={styles.input}
+                placeholder="Exc. VAT"
+              />
+            </label>
+          </div>
+
+          <div style={styles.label}>
+            <span>Supplier</span>
+            <div style={styles.supplierRow}>
+              <select
+                value={supplierId}
+                onChange={(e) => setSupplierId(e.target.value)}
+                style={{ ...styles.input, flex: 1 }}
+              >
+                <option value="">-- Select Supplier --</option>
+                {suppliers?.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={openCreateSupplierModal}
+                style={styles.createSupplierBtn}
+                title="Create new supplier"
+              >
+                + New
+              </button>
+            </div>
+            {invoice?.supplier_name && !supplierId && (
+              <div style={styles.extractedHintRow}>
+                <span style={styles.extractedHint}>Extracted: {invoice.supplier_name}</span>
+                <button
+                  type="button"
+                  onClick={openCreateSupplierModal}
+                  style={styles.createFromExtractedBtn}
+                >
+                  Create "{invoice.supplier_name}"
+                </button>
+              </div>
+            )}
+          </div>
 
           <label style={styles.label}>
             Order/PO Number
@@ -408,6 +539,7 @@ export default function Review() {
                   <th style={styles.th}>Qty</th>
                   <th style={styles.th}>Unit</th>
                   <th style={styles.th}>Amount</th>
+                  <th style={{ ...styles.th, textAlign: 'center' }}>Non-Stock</th>
                   <th style={styles.th}></th>
                 </tr>
               </thead>
@@ -451,6 +583,14 @@ export default function Review() {
                             style={{ ...styles.tableInput, width: '70px' }}
                           />
                         </td>
+                        <td style={{ ...styles.td, textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            checked={lineItemEdits.is_non_stock || false}
+                            onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
+                            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                          />
+                        </td>
                         <td style={styles.td}>
                           <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
                           <button onClick={() => setEditingLineItem(null)} style={styles.smallBtnCancel}>X</button>
@@ -458,10 +598,15 @@ export default function Review() {
                       </>
                     ) : (
                       <>
-                        <td style={styles.td}>{item.description || '—'}</td>
+                        <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
+                          {item.description || '—'}
+                        </td>
                         <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
                         <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
                         <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
+                        <td style={{ ...styles.td, textAlign: 'center' }}>
+                          {item.is_non_stock && <span style={styles.nonStockBadge}>Non-Stock</span>}
+                        </td>
                         <td style={styles.td}>
                           <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
                         </td>
@@ -477,7 +622,11 @@ export default function Review() {
 
           {/* Line Items Total Validation */}
           {lineItems && lineItems.length > 0 && (
-            <LineItemsValidation lineItems={lineItems} invoiceTotal={parseFloat(total) || 0} />
+            <LineItemsValidation
+              lineItems={lineItems}
+              invoiceTotal={parseFloat(total) || 0}
+              netTotal={netTotal ? parseFloat(netTotal) : null}
+            />
           )}
         </div>
 
@@ -609,6 +758,38 @@ export default function Review() {
           </div>
         </div>
       )}
+
+      {/* Create Supplier Modal */}
+      {showCreateSupplierModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowCreateSupplierModal(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3>Create New Supplier</h3>
+            <label style={styles.modalLabel}>
+              Supplier Name
+              <input
+                type="text"
+                value={newSupplierName}
+                onChange={(e) => setNewSupplierName(e.target.value)}
+                style={styles.input}
+                placeholder="e.g., Sysco, US Foods"
+                autoFocus
+              />
+            </label>
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowCreateSupplierModal(false)} style={styles.cancelBtn}>
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateSupplier}
+                style={styles.saveBtn}
+                disabled={!newSupplierName.trim() || createSupplierMutation.isPending}
+              >
+                {createSupplierMutation.isPending ? 'Creating...' : 'Create & Select'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -628,6 +809,12 @@ const styles: Record<string, React.CSSProperties> = {
   row: { display: 'flex', gap: '1rem' },
   label: { display: 'flex', flexDirection: 'column', gap: '0.5rem', color: '#333', fontWeight: '500' },
   input: { padding: '0.75rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '1rem' },
+  extractedHint: { fontSize: '0.8rem', color: '#666', fontWeight: 'normal', fontStyle: 'italic' },
+  extractedHintRow: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' },
+  supplierRow: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
+  createSupplierBtn: { padding: '0.75rem 1rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' },
+  createFromExtractedBtn: { padding: '0.25rem 0.5rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'normal' },
+  modalLabel: { display: 'flex', flexDirection: 'column', gap: '0.5rem', color: '#333', fontWeight: '500', marginTop: '1rem' },
   lineItemsSection: { marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid #eee' },
   lineItemsTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.9rem' },
   th: { textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600' },
@@ -636,6 +823,7 @@ const styles: Record<string, React.CSSProperties> = {
   smallBtn: { padding: '0.25rem 0.5rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginRight: '0.25rem', fontSize: '0.75rem' },
   smallBtnCancel: { padding: '0.25rem 0.5rem', background: '#999', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' },
   editBtn: { padding: '0.25rem 0.5rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' },
+  nonStockBadge: { padding: '0.125rem 0.375rem', background: '#fff3cd', color: '#856404', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '500' },
   noItems: { color: '#999', fontStyle: 'italic', marginTop: '0.5rem' },
   status: { marginTop: '1.5rem', padding: '1rem', background: '#f5f5f5', borderRadius: '6px', color: '#666' },
   docTypeBadge: { marginLeft: '1rem', padding: '0.25rem 0.5rem', background: '#17a2b8', color: 'white', borderRadius: '4px', fontSize: '0.75rem' },

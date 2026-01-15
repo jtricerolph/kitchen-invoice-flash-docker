@@ -6,6 +6,7 @@ import Dashboard from './components/Dashboard'
 import Upload from './components/Upload'
 import InvoiceList from './components/InvoiceList'
 import Review from './components/Review'
+import Suppliers from './components/Suppliers'
 
 interface User {
   id: number
@@ -107,6 +108,12 @@ function App() {
                 token ? <Settings /> : <Navigate to="/login" />
               }
             />
+            <Route
+              path="/suppliers"
+              element={
+                token ? <Suppliers /> : <Navigate to="/login" />
+              }
+            />
           </Routes>
         </main>
       </div>
@@ -123,6 +130,7 @@ function Header({ user, onLogout }: { user: User; onLogout: () => void }) {
           <a href="/" style={styles.navLink}>Dashboard</a>
           <a href="/upload" style={styles.navLink}>Upload</a>
           <a href="/invoices" style={styles.navLink}>Invoices</a>
+          <a href="/suppliers" style={styles.navLink}>Suppliers</a>
           <a href="/settings" style={styles.navLink}>Settings</a>
         </nav>
         <div style={styles.userInfo}>

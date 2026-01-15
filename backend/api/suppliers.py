@@ -15,12 +15,14 @@ router = APIRouter()
 
 class SupplierCreate(BaseModel):
     name: str
+    aliases: list[str] = []
     template_config: dict = {}
     identifier_config: dict = {}
 
 
 class SupplierUpdate(BaseModel):
     name: Optional[str] = None
+    aliases: Optional[list[str]] = None
     template_config: Optional[dict] = None
     identifier_config: Optional[dict] = None
 
@@ -28,6 +30,7 @@ class SupplierUpdate(BaseModel):
 class SupplierResponse(BaseModel):
     id: int
     name: str
+    aliases: list[str]
     template_config: dict
     identifier_config: dict
     created_at: str
@@ -46,6 +49,7 @@ async def create_supplier(
     supplier = Supplier(
         kitchen_id=current_user.kitchen_id,
         name=request.name,
+        aliases=request.aliases,
         template_config=request.template_config,
         identifier_config=request.identifier_config
     )
@@ -56,6 +60,7 @@ async def create_supplier(
     return SupplierResponse(
         id=supplier.id,
         name=supplier.name,
+        aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         created_at=supplier.created_at.isoformat()
@@ -79,6 +84,7 @@ async def list_suppliers(
         SupplierResponse(
             id=s.id,
             name=s.name,
+            aliases=s.aliases or [],
             template_config=s.template_config,
             identifier_config=s.identifier_config,
             created_at=s.created_at.isoformat()
@@ -108,6 +114,7 @@ async def get_supplier(
     return SupplierResponse(
         id=supplier.id,
         name=supplier.name,
+        aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         created_at=supplier.created_at.isoformat()
@@ -143,6 +150,7 @@ async def update_supplier(
     return SupplierResponse(
         id=supplier.id,
         name=supplier.name,
+        aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         created_at=supplier.created_at.isoformat()

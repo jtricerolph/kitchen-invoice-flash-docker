@@ -35,6 +35,7 @@ class LineItemResponse(BaseModel):
     amount: float | None
     product_code: str | None
     line_number: int
+    is_non_stock: bool
 
     class Config:
         from_attributes = True
@@ -46,6 +47,7 @@ class LineItemCreate(BaseModel):
     unit_price: Optional[float] = None
     amount: Optional[float] = None
     product_code: Optional[str] = None
+    is_non_stock: bool = False
 
 
 class LineItemUpdate(BaseModel):
@@ -54,6 +56,7 @@ class LineItemUpdate(BaseModel):
     unit_price: Optional[float] = None
     amount: Optional[float] = None
     product_code: Optional[str] = None
+    is_non_stock: Optional[bool] = None
 
 
 class DuplicateInfo(BaseModel):
@@ -71,6 +74,8 @@ class InvoiceResponse(BaseModel):
     invoice_number: str | None
     invoice_date: date | None
     total: Decimal | None
+    net_total: Decimal | None
+    stock_total: Decimal | None  # Sum of stock items only (non non-stock)
     supplier_id: int | None
     supplier_name: str | None
     status: str
@@ -92,6 +97,7 @@ class InvoiceUpdate(BaseModel):
     invoice_number: Optional[str] = None
     invoice_date: Optional[date] = None
     total: Optional[Decimal] = None
+    net_total: Optional[Decimal] = None
     supplier_id: Optional[int] = None
     category: Optional[str] = None
     status: Optional[str] = None
@@ -130,15 +136,29 @@ async def get_invoice_or_404(
     return invoice
 
 
-def invoice_to_response(invoice: Invoice, supplier_name: str | None = None) -> InvoiceResponse:
+def invoice_to_response(invoice: Invoice, supplier_name: str | None = None, line_items: list | None = None) -> InvoiceResponse:
     # Get supplier name from relationship if not provided
     if supplier_name is None and invoice.supplier:
         supplier_name = invoice.supplier.name
+
+    # Calculate stock_total from line items (sum of items where is_non_stock=False)
+    stock_total = None
+    if line_items is not None:
+        stock_items = [item for item in line_items if not (item.is_non_stock or False)]
+        if stock_items:
+            stock_total = sum(item.amount or Decimal("0") for item in stock_items)
+    elif hasattr(invoice, 'line_items') and invoice.line_items:
+        stock_items = [item for item in invoice.line_items if not (item.is_non_stock or False)]
+        if stock_items:
+            stock_total = sum(item.amount or Decimal("0") for item in stock_items)
+
     return InvoiceResponse(
         id=invoice.id,
         invoice_number=invoice.invoice_number,
         invoice_date=invoice.invoice_date,
         total=invoice.total,
+        net_total=invoice.net_total,
+        stock_total=stock_total,
         supplier_id=invoice.supplier_id,
         supplier_name=supplier_name,
         status=invoice.status.value,
@@ -214,6 +234,7 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
             invoice.invoice_number = result.get("invoice_number")
             invoice.invoice_date = result.get("invoice_date")
             invoice.total = result.get("total")
+            invoice.net_total = result.get("net_total")
             invoice.supplier_id = result.get("supplier_id")
             invoice.ocr_raw_text = result.get("raw_text")
             invoice.ocr_confidence = result.get("confidence")
@@ -282,7 +303,8 @@ async def list_invoices(
     from sqlalchemy.orm import selectinload
 
     query = select(Invoice).options(
-        selectinload(Invoice.supplier)
+        selectinload(Invoice.supplier),
+        selectinload(Invoice.line_items)
     ).where(Invoice.kitchen_id == current_user.kitchen_id)
 
     if status:
@@ -325,7 +347,20 @@ async def get_invoice(
     db: AsyncSession = Depends(get_db)
 ):
     """Get a single invoice by ID"""
-    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Invoice).options(
+            selectinload(Invoice.supplier),
+            selectinload(Invoice.line_items)
+        ).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
     return invoice_to_response(invoice)
 
 
@@ -441,7 +476,8 @@ async def get_line_items(
             unit_price=float(item.unit_price) if item.unit_price else None,
             amount=float(item.amount) if item.amount else None,
             product_code=item.product_code,
-            line_number=item.line_number
+            line_number=item.line_number,
+            is_non_stock=item.is_non_stock or False
         )
         for item in items
     ]
@@ -470,7 +506,8 @@ async def add_line_item(
         unit_price=Decimal(str(item.unit_price)) if item.unit_price else None,
         amount=Decimal(str(item.amount)) if item.amount else None,
         product_code=item.product_code,
-        line_number=max_num + 1
+        line_number=max_num + 1,
+        is_non_stock=item.is_non_stock
     )
     db.add(line_item)
     await db.commit()
@@ -483,7 +520,8 @@ async def add_line_item(
         unit_price=float(line_item.unit_price) if line_item.unit_price else None,
         amount=float(line_item.amount) if line_item.amount else None,
         product_code=line_item.product_code,
-        line_number=line_item.line_number
+        line_number=line_item.line_number,
+        is_non_stock=line_item.is_non_stock or False
     )
 
 
@@ -525,7 +563,8 @@ async def update_line_item(
         unit_price=float(line_item.unit_price) if line_item.unit_price else None,
         amount=float(line_item.amount) if line_item.amount else None,
         product_code=line_item.product_code,
-        line_number=line_item.line_number
+        line_number=line_item.line_number,
+        is_non_stock=line_item.is_non_stock or False
     )
 
 

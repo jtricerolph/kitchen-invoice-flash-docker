@@ -27,7 +27,8 @@ class Invoice(Base):
     # Extracted data
     invoice_number: Mapped[str] = mapped_column(String(100), nullable=True)
     invoice_date: Mapped[date] = mapped_column(Date, nullable=True)
-    total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)
+    total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)  # Gross total (inc. VAT)
+    net_total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)  # Net total (exc. VAT)
 
     # Document type and order tracking
     document_type: Mapped[str] = mapped_column(String(50), nullable=True, default="invoice")

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import String, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
@@ -10,6 +11,10 @@ class Supplier(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Alternative names for this supplier (for OCR matching)
+    # Example: ["US Foods Inc", "USF", "U.S. Foods"]
+    aliases: Mapped[Optional[list]] = mapped_column(JSON, default=list)
 
     # Template configuration for OCR extraction patterns
     # Example: {"invoice_number": "INV-\\d+", "date": "\\d{2}/\\d{2}/\\d{4}", "total": "Total:\\s*£?([\\d,]+\\.\\d{2})"}

@@ -85,6 +85,45 @@ async def run_migration():
     except Exception as e:
         logger.warning(f"Index: {e}")
 
+    # Add aliases column to suppliers table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE suppliers ADD COLUMN aliases JSON DEFAULT '[]'"
+            ))
+            logger.info("Added aliases column to suppliers")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("aliases column already exists")
+        else:
+            logger.warning(f"aliases column: {e}")
+
+    # Add net_total column to invoices table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE invoices ADD COLUMN net_total NUMERIC(10, 2)"
+            ))
+            logger.info("Added net_total column to invoices")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("net_total column already exists")
+        else:
+            logger.warning(f"net_total column: {e}")
+
+    # Add is_non_stock column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN is_non_stock BOOLEAN DEFAULT FALSE"
+            ))
+            logger.info("Added is_non_stock column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("is_non_stock column already exists")
+        else:
+            logger.warning(f"is_non_stock column: {e}")
+
     logger.info("Migration completed successfully!")
 
 

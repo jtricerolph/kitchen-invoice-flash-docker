@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text
+from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -24,6 +24,9 @@ class LineItem(Base):
 
     # Ordering for display
     line_number: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Non-stock flag (excluded from GP calculations)
+    is_non_stock: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

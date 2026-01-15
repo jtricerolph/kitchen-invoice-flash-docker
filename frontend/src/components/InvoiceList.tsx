@@ -7,6 +7,8 @@ interface Invoice {
   invoice_number: string | null
   invoice_date: string | null
   total: number | null
+  net_total: number | null
+  stock_total: number | null
   status: string
   category: string | null
   ocr_confidence: number | null
@@ -178,9 +180,25 @@ export default function InvoiceList() {
 
               <div style={styles.cardRight}>
                 <div style={styles.total}>
-                  {invoice.total != null
-                    ? `£${Number(invoice.total).toFixed(2)}`
-                    : '—'}
+                  {invoice.stock_total != null && invoice.total != null && invoice.stock_total !== invoice.total ? (
+                    <>
+                      £{Number(invoice.stock_total).toFixed(2)}
+                      <span style={styles.fullTotal}>
+                        (£{Number(invoice.total).toFixed(2)})
+                      </span>
+                    </>
+                  ) : invoice.net_total != null ? (
+                    <>
+                      £{Number(invoice.net_total).toFixed(2)}
+                      {invoice.total != null && invoice.total !== invoice.net_total && (
+                        <span style={styles.fullTotal}>
+                          (£{Number(invoice.total).toFixed(2)})
+                        </span>
+                      )}
+                    </>
+                  ) : invoice.total != null ? (
+                    `£${Number(invoice.total).toFixed(2)}`
+                  ) : '—'}
                 </div>
                 <div
                   style={{
@@ -375,6 +393,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     fontSize: '1.2rem',
     color: '#1a1a2e',
+  },
+  fullTotal: {
+    fontSize: '0.85rem',
+    fontWeight: 'normal',
+    color: '#666',
+    marginLeft: '0.25rem',
   },
   status: {
     display: 'inline-block',

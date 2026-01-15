@@ -195,7 +195,10 @@ async def identify_supplier(
     """
     Try to identify the supplier from OCR text.
 
-    Matches against supplier identifier_config keywords.
+    Matches against:
+    - Supplier name
+    - Supplier aliases
+    - identifier_config keywords
     """
     from models.supplier import Supplier
 
@@ -207,16 +210,22 @@ async def identify_supplier(
     text_upper = text.upper()
 
     for supplier in suppliers:
+        # Check supplier name
+        if supplier.name.upper() in text_upper:
+            return supplier.id
+
+        # Check aliases
+        aliases = supplier.aliases or []
+        for alias in aliases:
+            if alias.upper() in text_upper:
+                return supplier.id
+
+        # Check identifier_config keywords
         identifier_config = supplier.identifier_config or {}
         keywords = identifier_config.get("keywords", [])
-
         for keyword in keywords:
             if keyword.upper() in text_upper:
                 return supplier.id
-
-        # Also check if supplier name appears in text
-        if supplier.name.upper() in text_upper:
-            return supplier.id
 
     return None
 

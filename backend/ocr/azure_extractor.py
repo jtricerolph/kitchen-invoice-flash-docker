@@ -70,7 +70,7 @@ async def process_invoice_with_azure(
             if isinstance(inv_date, date):
                 invoice_date = inv_date
 
-        # Extract total
+        # Extract total (gross, inc. VAT)
         total = None
         if "InvoiceTotal" in fields and fields["InvoiceTotal"].value:
             total_val = fields["InvoiceTotal"].value
@@ -78,6 +78,15 @@ async def process_invoice_with_azure(
                 total = Decimal(str(total_val.amount))
             else:
                 total = Decimal(str(total_val))
+
+        # Extract subtotal (net, exc. VAT)
+        net_total = None
+        if "SubTotal" in fields and fields["SubTotal"].value:
+            subtotal_val = fields["SubTotal"].value
+            if hasattr(subtotal_val, 'amount'):
+                net_total = Decimal(str(subtotal_val.amount))
+            else:
+                net_total = Decimal(str(subtotal_val))
 
         # Extract vendor name
         vendor_name = None
@@ -126,12 +135,13 @@ async def process_invoice_with_azure(
         confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
 
         logger.info(f"Azure extracted: invoice_number={invoice_number}, date={invoice_date}, "
-                    f"total={total}, vendor={vendor_name}, order={order_number}, {len(line_items)} line items")
+                    f"total={total}, net_total={net_total}, vendor={vendor_name}, order={order_number}, {len(line_items)} line items")
 
         return {
             "invoice_number": invoice_number,
             "invoice_date": invoice_date,
             "total": total,
+            "net_total": net_total,
             "vendor_name": vendor_name,
             "order_number": order_number,
             "line_items": line_items,
