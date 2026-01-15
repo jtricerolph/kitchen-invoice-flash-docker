@@ -13,15 +13,21 @@ export default function Upload() {
   const [preview, setPreview] = useState<string | null>(null)
 
   const handleFile = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setError('Please upload an image file')
+    const isImage = file.type.startsWith('image/')
+    const isPDF = file.type === 'application/pdf'
+    if (!isImage && !isPDF) {
+      setError('Please upload an image or PDF file')
       return
     }
 
-    // Show preview
-    const reader = new FileReader()
-    reader.onload = (e) => setPreview(e.target?.result as string)
-    reader.readAsDataURL(file)
+    // Show preview for images, PDF icon for PDFs
+    if (isImage) {
+      const reader = new FileReader()
+      reader.onload = (e) => setPreview(e.target?.result as string)
+      reader.readAsDataURL(file)
+    } else {
+      setPreview('pdf')  // Special marker for PDF
+    }
 
     // Upload
     setUploading(true)
@@ -85,7 +91,14 @@ export default function Upload() {
         onClick={() => !uploading && fileInputRef.current?.click()}
       >
         {preview ? (
-          <img src={preview} alt="Preview" style={styles.preview} />
+          preview === 'pdf' ? (
+            <div style={styles.pdfPreview}>
+              <div style={styles.pdfIcon}>📄</div>
+              <p>PDF ready to upload</p>
+            </div>
+          ) : (
+            <img src={preview} alt="Preview" style={styles.preview} />
+          )
         ) : uploading ? (
           <div style={styles.uploadingText}>
             <div style={styles.spinner}></div>
@@ -97,14 +110,14 @@ export default function Upload() {
             <div style={styles.uploadIcon}>📄</div>
             <p>Drag and drop an invoice image</p>
             <p style={styles.subtext}>or click to select a file</p>
-            <p style={styles.formats}>Supports: JPG, PNG, WebP, HEIC</p>
+            <p style={styles.formats}>Supports: JPG, PNG, WebP, HEIC, PDF</p>
           </div>
         )}
 
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,application/pdf"
           onChange={handleFileSelect}
           style={{ display: 'none' }}
         />
@@ -200,5 +213,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   cameraInput: {
     marginTop: '1rem',
+  },
+  pdfPreview: {
+    textAlign: 'center',
+    color: '#1a1a2e',
+  },
+  pdfIcon: {
+    fontSize: '4rem',
+    marginBottom: '0.5rem',
   },
 }

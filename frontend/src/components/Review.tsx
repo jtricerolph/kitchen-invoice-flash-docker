@@ -12,6 +12,7 @@ interface Invoice {
   stock_total: number | null
   supplier_id: number | null
   supplier_name: string | null
+  vendor_name: string | null  // OCR-extracted vendor name
   status: string
   category: string | null
   ocr_confidence: number | null
@@ -276,6 +277,7 @@ export default function Review() {
     },
     onSuccess: () => {
       refetchLineItems()
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })  // Refresh stock_total
       setEditingLineItem(null)
       setLineItemEdits({})
     },
@@ -309,7 +311,7 @@ export default function Review() {
   }
 
   const openCreateSupplierModal = () => {
-    setNewSupplierName(invoice?.supplier_name || '')
+    setNewSupplierName(invoice?.vendor_name || '')
     setShowCreateSupplierModal(true)
   }
 
@@ -473,15 +475,15 @@ export default function Review() {
                 + New
               </button>
             </div>
-            {invoice?.supplier_name && !supplierId && (
+            {invoice?.vendor_name && !supplierId && (
               <div style={styles.extractedHintRow}>
-                <span style={styles.extractedHint}>Extracted: {invoice.supplier_name}</span>
+                <span style={styles.extractedHint}>Extracted: {invoice.vendor_name}</span>
                 <button
                   type="button"
                   onClick={openCreateSupplierModal}
                   style={styles.createFromExtractedBtn}
                 >
-                  Create "{invoice.supplier_name}"
+                  Create "{invoice.vendor_name}"
                 </button>
               </div>
             )}
@@ -605,7 +607,18 @@ export default function Review() {
                         <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
                         <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
                         <td style={{ ...styles.td, textAlign: 'center' }}>
-                          {item.is_non_stock && <span style={styles.nonStockBadge}>Non-Stock</span>}
+                          <input
+                            type="checkbox"
+                            checked={item.is_non_stock}
+                            onChange={(e) => {
+                              updateLineItemMutation.mutate({
+                                itemId: item.id,
+                                data: { is_non_stock: e.target.checked }
+                              })
+                            }}
+                            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                            title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
+                          />
                         </td>
                         <td style={styles.td}>
                           <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>

@@ -78,6 +78,7 @@ class InvoiceResponse(BaseModel):
     stock_total: Decimal | None  # Sum of stock items only (non non-stock)
     supplier_id: int | None
     supplier_name: str | None
+    vendor_name: str | None  # OCR-extracted vendor name (before supplier matching)
     status: str
     category: str | None
     ocr_confidence: float | None
@@ -164,6 +165,7 @@ def invoice_to_response(invoice: Invoice, supplier_name: str | None = None, line
         stock_total=stock_total,
         supplier_id=invoice.supplier_id,
         supplier_name=supplier_name,
+        vendor_name=invoice.vendor_name,
         status=invoice.status.value,
         category=invoice.category,
         ocr_confidence=float(invoice.ocr_confidence) if invoice.ocr_confidence else None,
@@ -239,6 +241,7 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
             invoice.total = result.get("total")
             invoice.net_total = result.get("net_total")
             invoice.supplier_id = result.get("supplier_id")
+            invoice.vendor_name = result.get("vendor_name")
             invoice.ocr_raw_text = result.get("raw_text")
             invoice.ocr_confidence = result.get("confidence")
             invoice.document_type = result.get("document_type", "invoice")
