@@ -34,17 +34,13 @@ class DuplicateDetector:
             "related_documents": []
         }
 
-        # Only check if we have supplier_id
-        if not invoice.supplier_id:
-            return result
-
-        # 1. FIRM DUPLICATE: Same supplier + same invoice_number
+        # 1. FIRM DUPLICATE: Same invoice_number (with same supplier if available)
         if invoice.invoice_number:
             firm = await self._find_firm_duplicate(invoice)
             if firm:
                 result["firm_duplicate"] = firm
 
-        # 2. FUZZY/POSSIBLE DUPLICATE: Same supplier + similar date + similar total
+        # 2. FUZZY/POSSIBLE DUPLICATE: Similar date + similar total (same supplier if available)
         if invoice.invoice_date and invoice.total:
             possible = await self._find_fuzzy_duplicates(invoice)
             result["possible_duplicates"] = possible
@@ -57,20 +53,25 @@ class DuplicateDetector:
         return result
 
     async def _find_firm_duplicate(self, invoice: Invoice) -> Optional[Invoice]:
-        """Find exact match: same supplier + invoice_number"""
-        query = select(Invoice).where(
-            and_(
-                Invoice.kitchen_id == self.kitchen_id,
-                Invoice.supplier_id == invoice.supplier_id,
-                Invoice.invoice_number == invoice.invoice_number,
-                Invoice.id != invoice.id
-            )
-        )
+        """Find exact match by invoice_number (same supplier if available)"""
+        # Build conditions
+        conditions = [
+            Invoice.kitchen_id == self.kitchen_id,
+            Invoice.invoice_number == invoice.invoice_number,
+            Invoice.id != invoice.id
+        ]
+
+        # If we have supplier_id, require same supplier for firm match
+        # If no supplier_id, just match by invoice_number alone
+        if invoice.supplier_id:
+            conditions.append(Invoice.supplier_id == invoice.supplier_id)
+
+        query = select(Invoice).where(and_(*conditions))
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
     async def _find_fuzzy_duplicates(self, invoice: Invoice) -> list[Invoice]:
-        """Find similar invoices: same supplier + close date + close total"""
+        """Find similar invoices: close date + close total (same supplier if available)"""
         date_min = invoice.invoice_date - timedelta(days=self.DATE_TOLERANCE_DAYS)
         date_max = invoice.invoice_date + timedelta(days=self.DATE_TOLERANCE_DAYS)
 
@@ -79,20 +80,24 @@ class DuplicateDetector:
         amount_min = invoice.total - amount_tolerance
         amount_max = invoice.total + amount_tolerance
 
-        query = select(Invoice).where(
-            and_(
-                Invoice.kitchen_id == self.kitchen_id,
-                Invoice.supplier_id == invoice.supplier_id,
-                Invoice.id != invoice.id,
-                Invoice.invoice_date.between(date_min, date_max),
-                Invoice.total.between(amount_min, amount_max),
-                # Exclude if it's the same invoice_number (already caught by firm)
-                or_(
-                    Invoice.invoice_number == None,
-                    Invoice.invoice_number != invoice.invoice_number
-                )
+        # Build conditions
+        conditions = [
+            Invoice.kitchen_id == self.kitchen_id,
+            Invoice.id != invoice.id,
+            Invoice.invoice_date.between(date_min, date_max),
+            Invoice.total.between(amount_min, amount_max),
+            # Exclude if it's the same invoice_number (already caught by firm)
+            or_(
+                Invoice.invoice_number == None,
+                Invoice.invoice_number != invoice.invoice_number
             )
-        )
+        ]
+
+        # If we have supplier_id, require same supplier for fuzzy match
+        if invoice.supplier_id:
+            conditions.append(Invoice.supplier_id == invoice.supplier_id)
+
+        query = select(Invoice).where(and_(*conditions))
         result = await self.db.execute(query)
         return list(result.scalars().all())
 
