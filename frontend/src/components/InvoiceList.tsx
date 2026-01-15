@@ -27,7 +27,7 @@ const statusColors: Record<string, string> = {
 export default function InvoiceList() {
   const { token } = useAuth()
 
-  const { data, isLoading } = useQuery<InvoiceListResponse>({
+  const { data, isLoading, error } = useQuery<InvoiceListResponse>({
     queryKey: ['invoices'],
     queryFn: async () => {
       const res = await fetch('/api/invoices/', {
@@ -40,6 +40,10 @@ export default function InvoiceList() {
 
   if (isLoading) {
     return <div style={styles.loading}>Loading invoices...</div>
+  }
+
+  if (error) {
+    return <div style={styles.error}>Error loading invoices: {error.message}</div>
   }
 
   const invoices = data?.invoices || []
@@ -113,6 +117,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2rem',
     textAlign: 'center',
     color: '#666',
+  },
+  error: {
+    padding: '2rem',
+    textAlign: 'center',
+    color: '#c00',
+    background: '#fee',
+    borderRadius: '8px',
   },
   header: {
     display: 'flex',
