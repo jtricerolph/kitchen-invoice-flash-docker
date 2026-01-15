@@ -184,8 +184,8 @@ async def upload_invoice(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Upload an invoice image for OCR processing"""
-    allowed_types = ["image/jpeg", "image/png", "image/webp", "image/heic"]
+    """Upload an invoice image or PDF for OCR processing"""
+    allowed_types = ["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"]
     if file.content_type not in allowed_types:
         raise HTTPException(
             status_code=400,
