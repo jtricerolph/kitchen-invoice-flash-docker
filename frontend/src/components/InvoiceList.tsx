@@ -86,7 +86,7 @@ export default function InvoiceList() {
               <div style={styles.cardRight}>
                 <div style={styles.total}>
                   {invoice.total != null
-                    ? `£${invoice.total.toFixed(2)}`
+                    ? `£${Number(invoice.total).toFixed(2)}`
                     : '—'}
                 </div>
                 <div
@@ -101,7 +101,7 @@ export default function InvoiceList() {
 
               {invoice.ocr_confidence != null && (
                 <div style={styles.confidence}>
-                  {(invoice.ocr_confidence * 100).toFixed(0)}% confidence
+                  {(Number(invoice.ocr_confidence) * 100).toFixed(0)}% confidence
                 </div>
               )}
             </a>
