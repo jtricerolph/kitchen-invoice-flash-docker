@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
@@ -36,6 +36,21 @@ export default function Review() {
       return res.json()
     },
     staleTime: 30000,
+    refetchOnWindowFocus: false,
+  })
+
+  // Fetch image separately with auth header
+  const { data: imageUrl } = useQuery<string>({
+    queryKey: ['invoice-image', id],
+    queryFn: async () => {
+      const res = await fetch(`/api/invoices/${id}/image`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch image')
+      const blob = await res.blob()
+      return URL.createObjectURL(blob)
+    },
+    staleTime: Infinity,
     refetchOnWindowFocus: false,
   })
 
@@ -98,14 +113,15 @@ export default function Review() {
     <div style={styles.container}>
       <div style={styles.imageSection}>
         <h3>Invoice Image</h3>
-        <img
-          src={`/api/invoices/${id}/image`}
-          alt="Invoice"
-          style={styles.image}
-          onError={(e) => {
-            (e.target as HTMLImageElement).src = '/placeholder.png'
-          }}
-        />
+        {imageUrl ? (
+          <img
+            src={imageUrl}
+            alt="Invoice"
+            style={styles.image}
+          />
+        ) : (
+          <div style={styles.imagePlaceholder}>Loading image...</div>
+        )}
         {confidence && (
           <div style={styles.confidenceBadge}>
             OCR Confidence: {confidence}%
@@ -227,6 +243,17 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     borderRadius: '8px',
     marginTop: '1rem',
+  },
+  imagePlaceholder: {
+    width: '100%',
+    height: '300px',
+    background: '#f5f5f5',
+    borderRadius: '8px',
+    marginTop: '1rem',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#999',
   },
   confidenceBadge: {
     marginTop: '1rem',

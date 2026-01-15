@@ -17,6 +17,7 @@ class Kitchen(Base):
     invoices: Mapped[list["Invoice"]] = relationship("Invoice", back_populates="kitchen")
     revenue_entries: Mapped[list["RevenueEntry"]] = relationship("RevenueEntry", back_populates="kitchen")
     gp_periods: Mapped[list["GPPeriod"]] = relationship("GPPeriod", back_populates="kitchen")
+    settings: Mapped["KitchenSettings"] = relationship("KitchenSettings", back_populates="kitchen", uselist=False)
 
 
 class User(Base):
@@ -39,3 +40,4 @@ class User(Base):
 from .supplier import Supplier
 from .invoice import Invoice
 from .gp import RevenueEntry, GPPeriod
+from .settings import KitchenSettings

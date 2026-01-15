@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -222,6 +223,41 @@ async def get_invoice(
         image_path=invoice.image_path,
         created_at=invoice.created_at.isoformat()
     )
+
+
+@router.get("/{invoice_id}/image")
+async def get_invoice_image(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get the invoice image file"""
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if not os.path.exists(invoice.image_path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+
+    # Determine media type from extension
+    ext = invoice.image_path.split(".")[-1].lower()
+    media_types = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "heic": "image/heic",
+    }
+    media_type = media_types.get(ext, "image/jpeg")
+
+    return FileResponse(invoice.image_path, media_type=media_type)
 
 
 @router.patch("/{invoice_id}", response_model=InvoiceResponse)

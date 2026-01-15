@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Optional
 from paddleocr import PaddleOCR
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +7,9 @@ from sqlalchemy import select
 
 from .preprocessor import preprocess_image, resize_for_ocr
 from .parser import extract_invoice_fields, identify_supplier
+from .azure_extractor import process_invoice_with_azure
+
+logger = logging.getLogger(__name__)
 
 
 # Initialize PaddleOCR with GPU support
@@ -53,9 +57,59 @@ async def process_invoice_image(
             - invoice_date: date or None
             - total: Decimal or None
             - supplier_id: int or None
+            - vendor_name: str or None (Azure only)
+            - line_items: list (Azure only)
             - raw_text: str
             - confidence: float
     """
+    # Check kitchen settings for OCR provider
+    from models.settings import KitchenSettings
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+
+    # Use Azure if configured
+    if settings and settings.ocr_provider == "azure" and settings.azure_endpoint and settings.azure_key:
+        logger.info("Using Azure Document Intelligence for OCR")
+        try:
+            result = await process_invoice_with_azure(
+                image_path,
+                settings.azure_endpoint,
+                settings.azure_key
+            )
+
+            # Try to identify/match supplier from vendor name
+            supplier_id = None
+            if result.get("vendor_name"):
+                supplier_id = await identify_supplier(result["vendor_name"], kitchen_id, db)
+            if not supplier_id and result.get("raw_text"):
+                supplier_id = await identify_supplier(result["raw_text"], kitchen_id, db)
+
+            return {
+                "invoice_number": result.get("invoice_number"),
+                "invoice_date": result.get("invoice_date"),
+                "total": result.get("total"),
+                "supplier_id": supplier_id,
+                "vendor_name": result.get("vendor_name"),
+                "line_items": result.get("line_items", []),
+                "raw_text": result.get("raw_text", ""),
+                "confidence": result.get("confidence", 0.0)
+            }
+        except Exception as e:
+            logger.error(f"Azure OCR failed, falling back to PaddleOCR: {e}")
+
+    # Fall back to PaddleOCR
+    logger.info("Using PaddleOCR for OCR")
+    return await process_invoice_with_paddle(image_path, kitchen_id, db)
+
+
+async def process_invoice_with_paddle(
+    image_path: str,
+    kitchen_id: int,
+    db: AsyncSession
+) -> dict:
+    """Process invoice using PaddleOCR (local GPU)"""
     # Preprocess image
     preprocessed = preprocess_image(image_path)
     preprocessed = resize_for_ocr(preprocessed)
@@ -70,6 +124,8 @@ async def process_invoice_image(
             "invoice_date": None,
             "total": None,
             "supplier_id": None,
+            "vendor_name": None,
+            "line_items": [],
             "raw_text": "",
             "confidence": 0.0
         }
@@ -88,6 +144,9 @@ async def process_invoice_image(
     raw_text = "\n".join(lines)
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
+    # Log raw OCR text for debugging
+    logger.info(f"PaddleOCR raw text ({avg_confidence:.2%} confidence):\n{raw_text}")
+
     # Try to identify supplier
     supplier_id = await identify_supplier(raw_text, kitchen_id, db)
 
@@ -105,11 +164,16 @@ async def process_invoice_image(
     # Extract fields using template or generic patterns
     extracted = extract_invoice_fields(raw_text, template_config)
 
+    logger.info(f"Extracted fields: invoice_number={extracted.get('invoice_number')}, "
+                f"date={extracted.get('invoice_date')}, total={extracted.get('total')}")
+
     return {
         "invoice_number": extracted.get("invoice_number"),
         "invoice_date": extracted.get("invoice_date"),
         "total": extracted.get("total"),
         "supplier_id": supplier_id,
+        "vendor_name": None,
+        "line_items": [],
         "raw_text": raw_text,
         "confidence": avg_confidence
     }

@@ -1,9 +1,16 @@
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from database import engine, Base
-from api import invoices, suppliers, reports
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+from api import invoices, suppliers, reports, settings
 from auth.routes import router as auth_router
 
 
@@ -38,6 +45,7 @@ app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
 app.include_router(suppliers.router, prefix="/api/suppliers", tags=["Suppliers"])
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
+app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])
 
 
 @app.get("/")

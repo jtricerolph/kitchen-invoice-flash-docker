@@ -10,15 +10,38 @@ from sqlalchemy import select
 # Default patterns for common invoice formats
 DEFAULT_PATTERNS = {
     "invoice_number": [
-        r"(?:Invoice|Inv|Invoice\s*(?:No|#|Number)?)[:\s#]*([A-Z0-9]+-?[A-Z0-9]+)",
-        r"(?:Invoice|Inv)\s*#?\s*:?\s*(\d+)",
-        r"(?:Order|Ref|Reference)\s*(?:No|#)?[:\s]*([A-Z0-9-]+)",
-        r"(?:NUMBER|NUMB)[:\s]*([0-9-]+)",
+        # "Invoice No: 12345" or "Invoice Number: ABC-123" or "Invoice #12345"
+        r"(?:Invoice|Inv)[\s.]*(?:No|Number|#)?[\s.:]*([A-Z0-9][A-Z0-9\-/]+)",
+        # "Invoice: 12345" - simple format
+        r"Invoice[:\s]+([A-Z0-9][A-Z0-9\-/]*\d+)",
+        # Just digits after Invoice keyword
+        r"(?:Invoice|Inv)[\s#.:]*(\d{3,})",
+        # Order/Reference numbers
+        r"(?:Order|Ref|Reference)[\s.]*(?:No|Number|#)?[\s.:]*([A-Z0-9\-/]+)",
+        # NUMBER: 12345
+        r"(?:NUMBER|NUMB)[:\s]*([0-9\-]+)",
+        # Standalone number patterns like "No. 12345" or "No: ABC-123"
+        r"(?:^|\s)No[.:\s]+([A-Z0-9][A-Z0-9\-/]+)",
+    ],
+    # Patterns for invoice number on NEXT LINE after label
+    "invoice_number_multiline": [
+        # "Invoice\n12345" or "Invoice Number\n12345"
+        r"(?:Invoice|Inv)(?:\s*(?:No|Number|#))?[\s.:]*\n\s*([A-Z0-9][A-Z0-9\-/]+)",
+        # "Invoice No.\n12345"
+        r"Invoice\s*No\.?\s*\n\s*([A-Z0-9][A-Z0-9\-/]+)",
     ],
     "date": [
-        r"(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})",  # DD/MM/YYYY or MM/DD/YYYY
-        r"(\d{4}[/.-]\d{1,2}[/.-]\d{1,2})",    # YYYY-MM-DD
-        r"(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4})",
+        # DD Mon YYYY (e.g., "15 Jan 2026", "15 January 2026")
+        r"(\d{1,2}\s*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*\d{2,4})",
+        # DD/MM/YYYY or MM/DD/YYYY
+        r"(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})",
+        # YYYY-MM-DD
+        r"(\d{4}[/.-]\d{1,2}[/.-]\d{1,2})",
+        # Date: or Dated: prefix (same line)
+        r"(?:Date|Dated)[:\s]*(\d{1,2}[/.\-\s]+(?:\w+|\d{1,2})[/.\-\s]+\d{2,4})",
+        # Date label followed by date on next line
+        r"(?:Date|Dated|Invoice Date)[:\s]*\n\s*(\d{1,2}\s*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*\d{2,4})",
+        r"(?:Date|Dated|Invoice Date)[:\s]*\n\s*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})",
     ],
     "total": [
         r"(?:Total|Grand\s*Total|Amount\s*Due|Balance\s*Due)[:\s]*[£$€]?\s*([\d,]+\.?\d*)",
@@ -42,7 +65,11 @@ def extract_invoice_fields(raw_text: str, template_config: dict = None) -> dict:
     patterns = template_config if template_config else DEFAULT_PATTERNS
 
     result = {
-        "invoice_number": extract_invoice_number(raw_text, patterns.get("invoice_number", DEFAULT_PATTERNS["invoice_number"])),
+        "invoice_number": extract_invoice_number(
+            raw_text,
+            patterns.get("invoice_number", DEFAULT_PATTERNS["invoice_number"]),
+            patterns.get("invoice_number_multiline", DEFAULT_PATTERNS.get("invoice_number_multiline", []))
+        ),
         "invoice_date": extract_date(raw_text, patterns.get("date", DEFAULT_PATTERNS["date"])),
         "total": extract_total(raw_text, patterns.get("total", DEFAULT_PATTERNS["total"]))
     }
@@ -50,12 +77,26 @@ def extract_invoice_fields(raw_text: str, template_config: dict = None) -> dict:
     return result
 
 
-def extract_invoice_number(text: str, patterns: list) -> Optional[str]:
+def extract_invoice_number(text: str, patterns: list, multiline_patterns: list = None) -> Optional[str]:
     """Extract invoice number using provided patterns"""
+    # Try single-line patterns first
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if match:
-            return match.group(1).strip()
+            result = match.group(1).strip()
+            # Skip if we just captured the word "Invoice" or similar
+            if result.lower() not in ('invoice', 'inv', 'number', 'no'):
+                return result
+
+    # Try multiline patterns (number on next line after label)
+    if multiline_patterns:
+        for pattern in multiline_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                result = match.group(1).strip()
+                if result.lower() not in ('invoice', 'inv', 'number', 'no'):
+                    return result
+
     return None
 
 
@@ -73,6 +114,9 @@ def extract_date(text: str, patterns: list) -> Optional[date]:
 
 def parse_date_string(date_str: str) -> Optional[date]:
     """Parse various date formats"""
+    # Normalize whitespace - OCR sometimes adds extra spaces
+    date_str = ' '.join(date_str.strip().split())
+
     # Common date formats to try
     formats = [
         "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",  # DD/MM/YYYY
@@ -81,14 +125,29 @@ def parse_date_string(date_str: str) -> Optional[date]:
         "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",  # DD/MM/YY
         "%d %b %Y", "%d %B %Y",              # DD Mon YYYY
         "%d %b %y", "%d %B %y",              # DD Mon YY
+        "%d%b%Y", "%d%B%Y",                  # DDMonYYYY (no spaces)
+        "%d%b%y", "%d%B%y",                  # DDMonYY (no spaces)
     ]
 
     for fmt in formats:
         try:
-            parsed = datetime.strptime(date_str.strip(), fmt)
+            parsed = datetime.strptime(date_str, fmt)
             return parsed.date()
         except ValueError:
             continue
+
+    # Try to handle variations like "15Jan2026" or extra characters
+    # Remove common noise characters
+    cleaned = re.sub(r'[,]', ' ', date_str)
+    cleaned = ' '.join(cleaned.split())
+
+    if cleaned != date_str:
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(cleaned, fmt)
+                return parsed.date()
+            except ValueError:
+                continue
 
     return None
 
