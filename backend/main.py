@@ -12,6 +12,9 @@ logging.basicConfig(
 )
 from api import invoices, suppliers, reports, settings
 from auth.routes import router as auth_router
+from migrations.add_invoice_features import run_migration
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -19,6 +22,14 @@ async def lifespan(app: FastAPI):
     # Startup: Create database tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Run migrations for new columns on existing tables
+    try:
+        await run_migration()
+        logger.info("Database migrations completed")
+    except Exception as e:
+        logger.warning(f"Migration warning (may be expected): {e}")
+
     yield
     # Shutdown: Clean up resources
     await engine.dispose()
