@@ -137,8 +137,11 @@ async def get_invoice_or_404(
 
 
 def invoice_to_response(invoice: Invoice, supplier_name: str | None = None, line_items: list | None = None) -> InvoiceResponse:
+    from sqlalchemy import inspect
+
     # Get supplier name from relationship if not provided
-    if supplier_name is None and invoice.supplier:
+    insp = inspect(invoice)
+    if supplier_name is None and 'supplier' in insp.dict and invoice.supplier:
         supplier_name = invoice.supplier.name
 
     # Calculate stock_total from line items (sum of items where is_non_stock=False)
@@ -147,7 +150,7 @@ def invoice_to_response(invoice: Invoice, supplier_name: str | None = None, line
         stock_items = [item for item in line_items if not (item.is_non_stock or False)]
         if stock_items:
             stock_total = sum(item.amount or Decimal("0") for item in stock_items)
-    elif hasattr(invoice, 'line_items') and invoice.line_items:
+    elif 'line_items' in insp.dict and invoice.line_items:
         stock_items = [item for item in invoice.line_items if not (item.is_non_stock or False)]
         if stock_items:
             stock_total = sum(item.amount or Decimal("0") for item in stock_items)
