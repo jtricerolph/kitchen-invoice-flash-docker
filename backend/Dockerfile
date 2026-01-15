@@ -29,7 +29,9 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python dependencies
+# Install numpy first to prevent version conflicts with OpenCV/PaddleOCR
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "numpy<2.0.0" && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
