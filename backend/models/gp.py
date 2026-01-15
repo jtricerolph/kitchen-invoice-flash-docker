@@ -1,6 +1,6 @@
 from datetime import datetime, date
 from decimal import Decimal
-from sqlalchemy import String, DateTime, Date, ForeignKey, Numeric, Text
+from sqlalchemy import String, DateTime, Date, ForeignKey, Numeric, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -44,7 +44,7 @@ class GPPeriod(Base):
 
     # Breakdown by category (JSON)
     # {"food": {"revenue": 1000, "cost": 300, "gp": 70}, ...}
-    category_breakdown: Mapped[dict] = mapped_column(default=dict)
+    category_breakdown: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
