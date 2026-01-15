@@ -72,6 +72,7 @@ class InvoiceResponse(BaseModel):
     invoice_date: date | None
     total: Decimal | None
     supplier_id: int | None
+    supplier_name: str | None
     status: str
     category: str | None
     ocr_confidence: float | None
@@ -129,13 +130,17 @@ async def get_invoice_or_404(
     return invoice
 
 
-def invoice_to_response(invoice: Invoice) -> InvoiceResponse:
+def invoice_to_response(invoice: Invoice, supplier_name: str | None = None) -> InvoiceResponse:
+    # Get supplier name from relationship if not provided
+    if supplier_name is None and invoice.supplier:
+        supplier_name = invoice.supplier.name
     return InvoiceResponse(
         id=invoice.id,
         invoice_number=invoice.invoice_number,
         invoice_date=invoice.invoice_date,
         total=invoice.total,
         supplier_id=invoice.supplier_id,
+        supplier_name=supplier_name,
         status=invoice.status.value,
         category=invoice.category,
         ocr_confidence=float(invoice.ocr_confidence) if invoice.ocr_confidence else None,
@@ -265,27 +270,47 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
 @router.get("/", response_model=InvoiceListResponse)
 async def list_invoices(
     status: Optional[str] = None,
+    supplier_id: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List invoices for the current kitchen"""
-    query = select(Invoice).where(Invoice.kitchen_id == current_user.kitchen_id)
+    """List invoices for the current kitchen with optional filters"""
+    from sqlalchemy.orm import selectinload
+
+    query = select(Invoice).options(
+        selectinload(Invoice.supplier)
+    ).where(Invoice.kitchen_id == current_user.kitchen_id)
 
     if status:
         query = query.where(Invoice.status == status)
+    if supplier_id:
+        query = query.where(Invoice.supplier_id == supplier_id)
+    if date_from:
+        query = query.where(Invoice.invoice_date >= date_from)
+    if date_to:
+        query = query.where(Invoice.invoice_date <= date_to)
 
     query = query.order_by(Invoice.created_at.desc()).offset(offset).limit(limit)
 
     result = await db.execute(query)
     invoices = result.scalars().all()
 
-    count_query = select(Invoice).where(Invoice.kitchen_id == current_user.kitchen_id)
+    # Count query with same filters
+    count_query = select(func.count(Invoice.id)).where(Invoice.kitchen_id == current_user.kitchen_id)
     if status:
         count_query = count_query.where(Invoice.status == status)
+    if supplier_id:
+        count_query = count_query.where(Invoice.supplier_id == supplier_id)
+    if date_from:
+        count_query = count_query.where(Invoice.invoice_date >= date_from)
+    if date_to:
+        count_query = count_query.where(Invoice.invoice_date <= date_to)
     count_result = await db.execute(count_query)
-    total = len(count_result.scalars().all())
+    total = count_result.scalar() or 0
 
     return InvoiceListResponse(
         invoices=[invoice_to_response(inv) for inv in invoices],

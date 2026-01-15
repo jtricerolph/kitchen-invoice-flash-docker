@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../App'
 
@@ -12,6 +13,13 @@ interface Invoice {
   created_at: string
   document_type: string | null
   duplicate_status: string | null
+  supplier_id: number | null
+  supplier_name: string | null
+}
+
+interface Supplier {
+  id: number
+  name: string
 }
 
 interface InvoiceListResponse {
@@ -28,11 +36,34 @@ const statusColors: Record<string, string> = {
 
 export default function InvoiceList() {
   const { token } = useAuth()
+  const [supplierFilter, setSupplierFilter] = useState<string>('')
+  const [dateFrom, setDateFrom] = useState<string>('')
+  const [dateTo, setDateTo] = useState<string>('')
+
+  // Fetch suppliers for filter dropdown
+  const { data: suppliers } = useQuery<Supplier[]>({
+    queryKey: ['suppliers'],
+    queryFn: async () => {
+      const res = await fetch('/api/suppliers/', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+  })
+
+  // Build query params
+  const queryParams = new URLSearchParams()
+  if (supplierFilter) queryParams.append('supplier_id', supplierFilter)
+  if (dateFrom) queryParams.append('date_from', dateFrom)
+  if (dateTo) queryParams.append('date_to', dateTo)
+  const queryString = queryParams.toString()
 
   const { data, isLoading, error } = useQuery<InvoiceListResponse>({
-    queryKey: ['invoices'],
+    queryKey: ['invoices', supplierFilter, dateFrom, dateTo],
     queryFn: async () => {
-      const res = await fetch('/api/invoices/', {
+      const url = queryString ? `/api/invoices/?${queryString}` : '/api/invoices/'
+      const res = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch invoices')
@@ -57,6 +88,50 @@ export default function InvoiceList() {
         <a href="/upload" style={styles.uploadBtn}>
           + Upload New
         </a>
+      </div>
+
+      {/* Filters */}
+      <div style={styles.filters}>
+        <select
+          value={supplierFilter}
+          onChange={(e) => setSupplierFilter(e.target.value)}
+          style={styles.filterSelect}
+        >
+          <option value="">All Suppliers</option>
+          {suppliers?.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+
+        <div style={styles.dateFilters}>
+          <label style={styles.dateLabel}>
+            From:
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              style={styles.dateInput}
+            />
+          </label>
+          <label style={styles.dateLabel}>
+            To:
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              style={styles.dateInput}
+            />
+          </label>
+        </div>
+
+        {(supplierFilter || dateFrom || dateTo) && (
+          <button
+            onClick={() => { setSupplierFilter(''); setDateFrom(''); setDateTo(''); }}
+            style={styles.clearBtn}
+          >
+            Clear Filters
+          </button>
+        )}
       </div>
 
       {invoices.length === 0 ? (
@@ -89,10 +164,15 @@ export default function InvoiceList() {
                     <span style={styles.possibleDuplicateBadge}>POSSIBLE DUPLICATE</span>
                   )}
                 </div>
-                <div style={styles.invoiceDate}>
-                  {invoice.invoice_date
-                    ? new Date(invoice.invoice_date).toLocaleDateString()
-                    : 'No date'}
+                <div style={styles.invoiceMeta}>
+                  {invoice.supplier_name && (
+                    <span style={styles.supplierName}>{invoice.supplier_name}</span>
+                  )}
+                  <span style={styles.invoiceDate}>
+                    {invoice.invoice_date
+                      ? new Date(invoice.invoice_date).toLocaleDateString()
+                      : 'No date'}
+                  </span>
                 </div>
               </div>
 
@@ -155,6 +235,49 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'none',
     borderRadius: '8px',
     fontWeight: 'bold',
+  },
+  filters: {
+    display: 'flex',
+    gap: '1rem',
+    marginBottom: '1.5rem',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    background: 'white',
+    padding: '1rem',
+    borderRadius: '8px',
+  },
+  filterSelect: {
+    padding: '0.5rem 1rem',
+    borderRadius: '6px',
+    border: '1px solid #ddd',
+    fontSize: '0.9rem',
+    minWidth: '150px',
+  },
+  dateFilters: {
+    display: 'flex',
+    gap: '1rem',
+    alignItems: 'center',
+  },
+  dateLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontSize: '0.9rem',
+    color: '#666',
+  },
+  dateInput: {
+    padding: '0.5rem',
+    borderRadius: '6px',
+    border: '1px solid #ddd',
+    fontSize: '0.9rem',
+  },
+  clearBtn: {
+    padding: '0.5rem 1rem',
+    background: '#f0f0f0',
+    border: '1px solid #ddd',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
   },
   empty: {
     background: 'white',
@@ -230,10 +353,20 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     textTransform: 'uppercase',
   },
+  invoiceMeta: {
+    display: 'flex',
+    gap: '0.75rem',
+    marginTop: '0.25rem',
+    alignItems: 'center',
+  },
+  supplierName: {
+    color: '#1a1a2e',
+    fontSize: '0.9rem',
+    fontWeight: '500',
+  },
   invoiceDate: {
     color: '#666',
     fontSize: '0.9rem',
-    marginTop: '0.25rem',
   },
   cardRight: {
     textAlign: 'right',
