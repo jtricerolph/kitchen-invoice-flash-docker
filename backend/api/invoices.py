@@ -382,11 +382,11 @@ async def get_invoice_image(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get the invoice image file"""
+    """Get the invoice image or PDF file"""
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
 
     if not os.path.exists(invoice.image_path):
-        raise HTTPException(status_code=404, detail="Image file not found")
+        raise HTTPException(status_code=404, detail="File not found")
 
     ext = invoice.image_path.split(".")[-1].lower()
     media_types = {
@@ -395,8 +395,9 @@ async def get_invoice_image(
         "png": "image/png",
         "webp": "image/webp",
         "heic": "image/heic",
+        "pdf": "application/pdf",
     }
-    media_type = media_types.get(ext, "image/jpeg")
+    media_type = media_types.get(ext, "application/octet-stream")
 
     return FileResponse(invoice.image_path, media_type=media_type)
 

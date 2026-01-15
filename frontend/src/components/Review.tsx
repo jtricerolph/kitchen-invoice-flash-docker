@@ -379,14 +379,32 @@ export default function Review() {
     ? (Number(invoice.ocr_confidence) * 100).toFixed(0)
     : null
 
+  // Check if the file is a PDF
+  const isPDF = invoice?.image_path?.toLowerCase().endsWith('.pdf')
+
   return (
     <div style={styles.container}>
       <div style={styles.imageSection}>
-        <h3>Invoice Image</h3>
+        <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
         {imageUrl ? (
-          <img src={imageUrl} alt="Invoice" style={styles.image} />
+          isPDF ? (
+            <object
+              data={imageUrl}
+              type="application/pdf"
+              style={styles.pdfViewer}
+            >
+              <div style={styles.pdfFallback}>
+                <p>PDF preview not available in your browser.</p>
+                <a href={imageUrl} target="_blank" rel="noopener noreferrer" style={styles.pdfLink}>
+                  Open PDF in new tab
+                </a>
+              </div>
+            </object>
+          ) : (
+            <img src={imageUrl} alt="Invoice" style={styles.image} />
+          )
         ) : (
-          <div style={styles.imagePlaceholder}>Loading image...</div>
+          <div style={styles.imagePlaceholder}>Loading {isPDF ? 'document' : 'image'}...</div>
         )}
         {confidence && (
           <div style={styles.confidenceBadge}>
@@ -882,6 +900,9 @@ const styles: Record<string, React.CSSProperties> = {
   imageSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   image: { width: '100%', borderRadius: '8px', marginTop: '1rem' },
   imagePlaceholder: { width: '100%', height: '300px', background: '#f5f5f5', borderRadius: '8px', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' },
+  pdfViewer: { width: '100%', height: '600px', borderRadius: '8px', marginTop: '1rem', border: '1px solid #ddd' },
+  pdfFallback: { width: '100%', height: '300px', background: '#f5f5f5', borderRadius: '8px', marginTop: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#666' },
+  pdfLink: { marginTop: '1rem', padding: '0.75rem 1.5rem', background: '#1a1a2e', color: 'white', textDecoration: 'none', borderRadius: '6px' },
   confidenceBadge: { marginTop: '1rem', padding: '0.5rem 1rem', background: '#f0f0f0', borderRadius: '20px', textAlign: 'center', fontSize: '0.9rem', color: '#666' },
   formSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   duplicateWarning: { padding: '1rem', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer', border: '1px solid', fontWeight: '500' },
