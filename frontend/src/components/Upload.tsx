@@ -42,8 +42,8 @@ export default function Upload() {
         throw new Error(data.detail || 'Upload failed')
       }
 
-      const invoice = await res.json()
-      navigate(`/invoice/${invoice.id}`)
+      await res.json()
+      navigate('/invoices')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
       setPreview(null)
