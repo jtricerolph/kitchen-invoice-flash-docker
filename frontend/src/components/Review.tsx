@@ -35,6 +35,8 @@ export default function Review() {
       if (!res.ok) throw new Error('Failed to fetch invoice')
       return res.json()
     },
+    staleTime: 30000,
+    refetchOnWindowFocus: false,
   })
 
   useEffect(() => {
