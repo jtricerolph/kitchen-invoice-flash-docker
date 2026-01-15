@@ -17,21 +17,8 @@ logger = logging.getLogger(__name__)
 
 async def run_migration():
     """Add new columns and tables for invoice features."""
-
-    # Check if migration already done
-    async with engine.connect() as conn:
-        try:
-            result = await conn.execute(text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'invoices' AND column_name = 'document_type'"
-            ))
-            if result.fetchone():
-                logger.info("Columns already exist, skipping migration")
-                return
-        except Exception as e:
-            logger.info(f"Checking columns: {e}")
-
-    logger.info("Running migration to add new columns...")
+    # Always run all migrations - each has its own try/except to handle existing columns
+    logger.info("Running database migrations...")
 
     # Run each migration in its own transaction
     migrations = [
