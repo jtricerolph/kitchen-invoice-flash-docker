@@ -46,10 +46,10 @@ export default function Dashboard() {
           <h3 style={styles.cardTitle}>This Week GP</h3>
           {current ? (
             <>
-              <div style={styles.gpValue}>{current.gp_percentage.toFixed(1)}%</div>
+              <div style={styles.gpValue}>{Number(current.gp_percentage).toFixed(1)}%</div>
               <div style={styles.details}>
-                <span>Revenue: £{current.total_revenue.toFixed(2)}</span>
-                <span>Costs: £{current.total_costs.toFixed(2)}</span>
+                <span>Revenue: £{Number(current.total_revenue).toFixed(2)}</span>
+                <span>Costs: £{Number(current.total_costs).toFixed(2)}</span>
               </div>
             </>
           ) : (
@@ -61,10 +61,10 @@ export default function Dashboard() {
           <h3 style={styles.cardTitle}>Last Week GP</h3>
           {previous ? (
             <>
-              <div style={styles.gpValue}>{previous.gp_percentage.toFixed(1)}%</div>
+              <div style={styles.gpValue}>{Number(previous.gp_percentage).toFixed(1)}%</div>
               <div style={styles.details}>
-                <span>Revenue: £{previous.total_revenue.toFixed(2)}</span>
-                <span>Costs: £{previous.total_costs.toFixed(2)}</span>
+                <span>Revenue: £{Number(previous.total_revenue).toFixed(2)}</span>
+                <span>Costs: £{Number(previous.total_costs).toFixed(2)}</span>
               </div>
             </>
           ) : (
