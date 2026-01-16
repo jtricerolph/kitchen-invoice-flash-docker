@@ -183,6 +183,7 @@ async def delete_supplier(
 
 class AddAliasRequest(BaseModel):
     alias: str
+    invoice_id: Optional[int] = None  # If provided, update this invoice's match type to 'exact'
 
 
 @router.post("/{supplier_id}/aliases", response_model=SupplierResponse)
@@ -193,6 +194,8 @@ async def add_supplier_alias(
     db: AsyncSession = Depends(get_db)
 ):
     """Add an alias to a supplier for better matching"""
+    from models.invoice import Invoice
+
     result = await db.execute(
         select(Supplier).where(
             Supplier.id == supplier_id,
@@ -213,8 +216,21 @@ async def add_supplier_alias(
     if alias not in current_aliases:
         current_aliases.append(alias)
         supplier.aliases = current_aliases
-        await db.commit()
-        await db.refresh(supplier)
+
+    # If invoice_id provided, update that invoice's match type to 'exact'
+    if request.invoice_id:
+        inv_result = await db.execute(
+            select(Invoice).where(
+                Invoice.id == request.invoice_id,
+                Invoice.kitchen_id == current_user.kitchen_id
+            )
+        )
+        invoice = inv_result.scalar_one_or_none()
+        if invoice and invoice.supplier_match_type == 'fuzzy':
+            invoice.supplier_match_type = 'exact'
+
+    await db.commit()
+    await db.refresh(supplier)
 
     return SupplierResponse(
         id=supplier.id,

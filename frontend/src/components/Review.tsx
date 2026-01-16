@@ -295,14 +295,14 @@ export default function Review() {
   })
 
   const addAliasMutation = useMutation({
-    mutationFn: async ({ supplierId, alias }: { supplierId: number; alias: string }) => {
+    mutationFn: async ({ supplierId, alias, invoiceId }: { supplierId: number; alias: string; invoiceId?: number }) => {
       const res = await fetch(`/api/suppliers/${supplierId}/aliases`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ alias }),
+        body: JSON.stringify({ alias, invoice_id: invoiceId }),
       })
       if (!res.ok) throw new Error('Failed to add alias')
       return res.json()
@@ -518,7 +518,8 @@ export default function Review() {
                     type="button"
                     onClick={() => addAliasMutation.mutate({
                       supplierId: parseInt(supplierId),
-                      alias: invoice.vendor_name!
+                      alias: invoice.vendor_name!,
+                      invoiceId: invoice.id
                     })}
                     style={styles.addAliasBtn}
                     disabled={addAliasMutation.isPending}

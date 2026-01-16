@@ -386,6 +386,8 @@ async def get_invoice_image(
     db: AsyncSession = Depends(get_db)
 ):
     """Get the invoice image or PDF file"""
+    from starlette.responses import Response
+
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
 
     if not os.path.exists(invoice.image_path):
@@ -402,7 +404,19 @@ async def get_invoice_image(
     }
     media_type = media_types.get(ext, "application/octet-stream")
 
-    return FileResponse(invoice.image_path, media_type=media_type)
+    # Read file and return with headers that work through remote proxies
+    with open(invoice.image_path, "rb") as f:
+        content = f.read()
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "Cache-Control": "max-age=3600",
+        }
+    )
 
 
 @router.get("/{invoice_id}/pdf")
@@ -425,7 +439,7 @@ async def get_invoice_pdf(
     if not os.path.exists(invoice.image_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Read file and return with headers that allow iframe embedding
+    # Read file and return with headers that allow iframe/object embedding through proxies
     with open(invoice.image_path, "rb") as f:
         content = f.read()
 
@@ -434,6 +448,9 @@ async def get_invoice_pdf(
         media_type="application/pdf",
         headers={
             "Content-Disposition": "inline",
+            "Access-Control-Allow-Origin": "*",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "Cache-Control": "no-cache",
         }
     )
 
