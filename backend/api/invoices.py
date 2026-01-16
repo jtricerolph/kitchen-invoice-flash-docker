@@ -461,6 +461,8 @@ async def get_invoice_file(
             "Content-Disposition": "inline",
             "Access-Control-Allow-Origin": "*",
             "Cross-Origin-Resource-Policy": "cross-origin",
+            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "frame-ancestors 'self'",
             "Cache-Control": "no-cache",
         }
     )
