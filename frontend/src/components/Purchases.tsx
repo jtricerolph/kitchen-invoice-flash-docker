@@ -135,7 +135,7 @@ export default function Purchases() {
                                 }}
                                 title={inv.invoice_number || `Invoice #${inv.id}`}
                               >
-                                £{(inv.total ?? 0).toFixed(2)}
+                                £{Number(inv.total ?? 0).toFixed(2)}
                               </a>
                             ))}
                           </div>
@@ -146,10 +146,10 @@ export default function Purchases() {
                     )
                   })}
                   <td style={{ ...styles.td, ...styles.totalCell }}>
-                    £{row.total.toFixed(2)}
+                    £{Number(row.total).toFixed(2)}
                   </td>
                   <td style={{ ...styles.td, ...styles.percentCell }}>
-                    {row.percentage.toFixed(1)}%
+                    {Number(row.percentage).toFixed(1)}%
                   </td>
                 </tr>
               ))}
@@ -159,11 +159,11 @@ export default function Purchases() {
                 <td style={{ ...styles.td, ...styles.footerLabel }}>Daily Total</td>
                 {dates.map((d) => (
                   <td key={d} style={{ ...styles.td, ...styles.footerCell }}>
-                    £{(daily_totals[d] ?? 0).toFixed(2)}
+                    £{Number(daily_totals[d] ?? 0).toFixed(2)}
                   </td>
                 ))}
                 <td style={{ ...styles.td, ...styles.grandTotal }}>
-                  £{week_total.toFixed(2)}
+                  £{Number(week_total).toFixed(2)}
                 </td>
                 <td style={{ ...styles.td, ...styles.footerCell }}>100%</td>
               </tr>
