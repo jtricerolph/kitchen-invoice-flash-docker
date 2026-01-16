@@ -12,6 +12,7 @@ interface Invoice {
   stock_total: number | null
   supplier_id: number | null
   supplier_name: string | null
+  supplier_match_type: string | null  // "exact", "fuzzy", or null
   vendor_name: string | null  // OCR-extracted vendor name
   status: string
   category: string | null
@@ -467,7 +468,15 @@ export default function Review() {
                 <select
                   value={supplierId}
                   onChange={(e) => setSupplierId(e.target.value)}
-                  style={{ ...styles.input, flex: 1 }}
+                  style={{
+                    ...styles.input,
+                    flex: 1,
+                    ...(invoice?.supplier_match_type === 'fuzzy' && supplierId ? {
+                      borderColor: '#f0ad4e',
+                      borderWidth: '2px',
+                      background: '#fff8e6'
+                    } : {})
+                  }}
                 >
                   <option value="">-- Select Supplier --</option>
                   {suppliers?.map((s) => (
@@ -483,6 +492,11 @@ export default function Review() {
                   + New
                 </button>
               </div>
+              {invoice?.supplier_match_type === 'fuzzy' && supplierId && (
+                <div style={styles.fuzzyMatchWarning}>
+                  Fuzzy match from "{invoice.vendor_name}" - please verify
+                </div>
+              )}
               {invoice?.vendor_name && !supplierId && (
                 <div style={styles.extractedHintRow}>
                   <span style={styles.extractedHint}>Extracted: {invoice.vendor_name}</span>
@@ -890,6 +904,7 @@ const styles: Record<string, React.CSSProperties> = {
   input: { padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.95rem' },
   extractedHint: { fontSize: '0.8rem', color: '#666', fontWeight: 'normal', fontStyle: 'italic' },
   extractedHintRow: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' },
+  fuzzyMatchWarning: { fontSize: '0.8rem', color: '#856404', background: '#fff3cd', padding: '0.35rem 0.5rem', borderRadius: '4px', marginTop: '0.25rem', border: '1px solid #ffc107' },
   supplierRow: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
   createSupplierBtn: { padding: '0.5rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' },
   createFromExtractedBtn: { padding: '0.25rem 0.5rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'normal' },

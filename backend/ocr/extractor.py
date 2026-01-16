@@ -28,6 +28,7 @@ async def process_invoice_image(
             - invoice_date: date or None
             - total: Decimal or None
             - supplier_id: int or None
+            - supplier_match_type: str ("exact", "fuzzy") or None
             - vendor_name: str or None
             - order_number: str or None
             - document_type: str ("invoice" or "delivery_note")
@@ -52,6 +53,7 @@ async def process_invoice_image(
             "total": None,
             "net_total": None,
             "supplier_id": None,
+            "supplier_match_type": None,
             "vendor_name": None,
             "order_number": None,
             "document_type": "invoice",
@@ -72,10 +74,11 @@ async def process_invoice_image(
 
         # Try to identify/match supplier from vendor name
         supplier_id = None
+        supplier_match_type = None
         if result.get("vendor_name"):
-            supplier_id = await identify_supplier(result["vendor_name"], kitchen_id, db)
+            supplier_id, supplier_match_type = await identify_supplier(result["vendor_name"], kitchen_id, db)
         if not supplier_id and result.get("raw_text"):
-            supplier_id = await identify_supplier(result["raw_text"], kitchen_id, db)
+            supplier_id, supplier_match_type = await identify_supplier(result["raw_text"], kitchen_id, db)
 
         # Detect document type (invoice vs delivery note)
         document_type = detect_document_type(
@@ -84,7 +87,7 @@ async def process_invoice_image(
         )
 
         logger.info(f"Processed invoice: number={result.get('invoice_number')}, "
-                    f"type={document_type}, supplier_id={supplier_id}")
+                    f"type={document_type}, supplier_id={supplier_id}, match_type={supplier_match_type}")
 
         return {
             "invoice_number": result.get("invoice_number"),
@@ -92,6 +95,7 @@ async def process_invoice_image(
             "total": result.get("total"),
             "net_total": result.get("net_total"),
             "supplier_id": supplier_id,
+            "supplier_match_type": supplier_match_type,
             "vendor_name": result.get("vendor_name"),
             "order_number": result.get("order_number"),
             "document_type": document_type,
@@ -109,6 +113,7 @@ async def process_invoice_image(
             "total": None,
             "net_total": None,
             "supplier_id": None,
+            "supplier_match_type": None,
             "vendor_name": None,
             "order_number": None,
             "document_type": "invoice",

@@ -187,18 +187,67 @@ def parse_amount(amount_str: str) -> Optional[Decimal]:
     return None
 
 
+def normalize_text(text: str) -> str:
+    """Normalize text for fuzzy matching - lowercase, remove punctuation, extra spaces"""
+    import string
+    text = text.lower()
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    text = ' '.join(text.split())
+    return text
+
+
+def get_words(text: str) -> set:
+    """Get set of significant words (3+ chars) from text"""
+    return {w for w in normalize_text(text).split() if len(w) >= 3}
+
+
+def fuzzy_match_score(supplier_name: str, text: str) -> float:
+    """
+    Calculate fuzzy match score between supplier name and text.
+    Returns score from 0.0 to 1.0
+    """
+    supplier_norm = normalize_text(supplier_name)
+    text_norm = normalize_text(text)
+
+    # Check if supplier name is contained in text (high confidence)
+    if supplier_norm in text_norm:
+        return 0.9
+
+    # Check word overlap
+    supplier_words = get_words(supplier_name)
+    text_words = get_words(text)
+
+    if not supplier_words:
+        return 0.0
+
+    # Count how many supplier words appear in text
+    matching_words = supplier_words & text_words
+    word_score = len(matching_words) / len(supplier_words)
+
+    # Check if first word matches (often most important - company name)
+    supplier_first = supplier_norm.split()[0] if supplier_norm.split() else ""
+    if supplier_first and len(supplier_first) >= 3:
+        if supplier_first in text_norm:
+            word_score = max(word_score, 0.7)
+
+    return word_score
+
+
 async def identify_supplier(
     text: str,
     kitchen_id: int,
     db: AsyncSession
-) -> Optional[int]:
+) -> tuple[Optional[int], Optional[str]]:
     """
     Try to identify the supplier from OCR text.
 
     Matches against:
-    - Supplier name
+    - Supplier name (exact and fuzzy)
     - Supplier aliases
     - identifier_config keywords
+
+    Returns:
+        tuple of (supplier_id, match_type) where match_type is "exact", "fuzzy", or None
     """
     from models.supplier import Supplier
 
@@ -209,25 +258,49 @@ async def identify_supplier(
 
     text_upper = text.upper()
 
+    # First pass: exact matches
     for supplier in suppliers:
-        # Check supplier name
+        # Check supplier name (exact - full name in text)
         if supplier.name.upper() in text_upper:
-            return supplier.id
+            return (supplier.id, "exact")
 
-        # Check aliases
+        # Check aliases (exact)
         aliases = supplier.aliases or []
         for alias in aliases:
             if alias.upper() in text_upper:
-                return supplier.id
+                return (supplier.id, "exact")
 
-        # Check identifier_config keywords
+        # Check identifier_config keywords (exact)
         identifier_config = supplier.identifier_config or {}
         keywords = identifier_config.get("keywords", [])
         for keyword in keywords:
             if keyword.upper() in text_upper:
-                return supplier.id
+                return (supplier.id, "exact")
 
-    return None
+    # Second pass: fuzzy matches
+    best_match = None
+    best_score = 0.0
+    FUZZY_THRESHOLD = 0.5  # Minimum score to consider a fuzzy match
+
+    for supplier in suppliers:
+        # Check supplier name fuzzy match
+        score = fuzzy_match_score(supplier.name, text)
+        if score > best_score and score >= FUZZY_THRESHOLD:
+            best_score = score
+            best_match = supplier.id
+
+        # Check aliases fuzzy match
+        aliases = supplier.aliases or []
+        for alias in aliases:
+            score = fuzzy_match_score(alias, text)
+            if score > best_score and score >= FUZZY_THRESHOLD:
+                best_score = score
+                best_match = supplier.id
+
+    if best_match:
+        return (best_match, "fuzzy")
+
+    return (None, None)
 
 
 def build_supplier_template(sample_texts: list[str], extracted_values: list[dict]) -> dict:

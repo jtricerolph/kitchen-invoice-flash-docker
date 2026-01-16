@@ -30,6 +30,7 @@ class Invoice(Base):
     total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)  # Gross total (inc. VAT)
     net_total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=True)  # Net total (exc. VAT)
     vendor_name: Mapped[str] = mapped_column(String(255), nullable=True)  # OCR-extracted vendor name
+    supplier_match_type: Mapped[str] = mapped_column(String(20), nullable=True)  # "exact", "fuzzy", or null
 
     # Document type and order tracking
     document_type: Mapped[str] = mapped_column(String(50), nullable=True, default="invoice")
