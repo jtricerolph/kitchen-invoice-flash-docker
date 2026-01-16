@@ -1,12 +1,18 @@
 import logging
 import json
+import asyncio
 from datetime import date
 from decimal import Decimal
 from typing import Optional, Any
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
+from azure.core.exceptions import HttpResponseError
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration for rate limiting
+MAX_RETRIES = 3
+BASE_RETRY_DELAY = 5  # seconds
 
 
 def extract_field_value(field: Any) -> Any:
@@ -139,205 +145,235 @@ async def process_invoice_with_azure(
             - raw_text: str
             - confidence: float
     """
-    try:
-        client = DocumentAnalysisClient(
-            endpoint=azure_endpoint,
-            credential=AzureKeyCredential(azure_key)
-        )
+    client = DocumentAnalysisClient(
+        endpoint=azure_endpoint,
+        credential=AzureKeyCredential(azure_key)
+    )
 
-        # Read the image file
-        with open(image_path, "rb") as f:
-            poller = client.begin_analyze_document(
-                "prebuilt-invoice",
-                document=f
-            )
+    # Retry loop for rate limiting (429 errors)
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            # Read the image file
+            with open(image_path, "rb") as f:
+                poller = client.begin_analyze_document(
+                    "prebuilt-invoice",
+                    document=f
+                )
 
-        result = poller.result()
+            result = poller.result()
+            break  # Success - exit retry loop
 
-        # Log document count for debugging
-        doc_count = len(result.documents) if result.documents else 0
-        logger.info(f"Azure returned {doc_count} document(s)")
-
-        # Serialize the full Azure response for storage/debugging
-        raw_json = serialize_azure_result(result)
-
-        if not result.documents:
-            logger.warning("No invoice detected in document")
-            return {
-                "invoice_number": None,
-                "invoice_date": None,
-                "total": None,
-                "vendor_name": None,
-                "order_number": None,
-                "line_items": [],
-                "raw_text": result.content or "",
-                "raw_json": raw_json,
-                "confidence": 0.0
-            }
-
-        # For multi-page invoices, we may have multiple documents
-        # Use first document for header fields, but combine line items from all
-        invoice = result.documents[0]
-        fields = invoice.fields
-
-        # Log available fields for debugging
-        field_names = list(fields.keys()) if fields else []
-        logger.info(f"Available fields in first document: {field_names}")
-
-        # Extract invoice number
-        invoice_number = None
-        if "InvoiceId" in fields:
-            val = extract_field_value(fields["InvoiceId"])
-            if val:
-                invoice_number = str(val)
-                logger.debug(f"Extracted InvoiceId: {invoice_number}")
-
-        # Extract invoice date
-        invoice_date = None
-        if "InvoiceDate" in fields:
-            val = extract_field_value(fields["InvoiceDate"])
-            if val and isinstance(val, date):
-                invoice_date = val
-                logger.debug(f"Extracted InvoiceDate: {invoice_date}")
-
-        # Extract total (gross, inc. VAT)
-        total = extract_currency_amount(fields.get("InvoiceTotal"))
-        if total:
-            logger.debug(f"Extracted InvoiceTotal: {total}")
-
-        # Extract subtotal (net, exc. VAT)
-        net_total = extract_currency_amount(fields.get("SubTotal"))
-        if net_total:
-            logger.debug(f"Extracted SubTotal: {net_total}")
-
-        # Extract vendor name
-        vendor_name = None
-        if "VendorName" in fields:
-            val = extract_field_value(fields["VendorName"])
-            if val:
-                vendor_name = str(val)
-                logger.debug(f"Extracted VendorName: {vendor_name}")
-
-        # Extract purchase order / order number
-        order_number = None
-        if "PurchaseOrder" in fields:
-            val = extract_field_value(fields["PurchaseOrder"])
-            if val:
-                order_number = str(val)
-                logger.debug(f"Extracted PurchaseOrder: {order_number}")
-
-        # Extract line items from ALL documents (for multi-page invoices)
-        line_items = []
-        for doc_idx, doc in enumerate(result.documents):
-            doc_fields = doc.fields or {}
-            if "Items" in doc_fields:
-                items_field = doc_fields["Items"]
-                items_value = extract_field_value(items_field)
-                if items_value and hasattr(items_value, '__iter__'):
-                    logger.info(f"Document {doc_idx}: Found {len(items_value)} line items")
-                    for item_idx, item in enumerate(items_value):
+        except HttpResponseError as e:
+            if e.status_code == 429:
+                # Rate limited - extract retry-after or use exponential backoff
+                retry_after = BASE_RETRY_DELAY * (2 ** attempt)
+                if hasattr(e, 'response') and e.response:
+                    retry_header = e.response.headers.get('Retry-After')
+                    if retry_header:
                         try:
-                            # Get the item's fields - handle various Azure SDK structures
-                            item_fields = None
+                            retry_after = int(retry_header)
+                        except ValueError:
+                            pass
 
-                            # Try item.value first (standard DocumentField)
-                            if hasattr(item, 'value') and item.value is not None:
-                                item_fields = item.value
+                if attempt < MAX_RETRIES:
+                    logger.warning(f"Azure rate limited (429). Retry {attempt + 1}/{MAX_RETRIES} after {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    last_error = e
+                    continue
+                else:
+                    logger.error(f"Azure rate limit exceeded after {MAX_RETRIES} retries")
+                    raise Exception(f"Azure rate limit exceeded. Please wait a moment and try again.") from e
+            else:
+                # Other HTTP error - don't retry
+                raise
+        except Exception as e:
+            logger.error(f"Azure OCR error: {e}")
+            raise
+    else:
+        # Exhausted retries without success
+        raise Exception(f"Azure processing failed after {MAX_RETRIES} retries") from last_error
 
-                            # If value is still None, try to use item directly
-                            if item_fields is None:
-                                item_fields = item
+    # Log document count for debugging
+    doc_count = len(result.documents) if result.documents else 0
+    logger.info(f"Azure returned {doc_count} document(s)")
 
-                            # Skip if we still don't have usable fields
-                            if item_fields is None:
-                                logger.warning(f"Item {item_idx}: fields is None, skipping")
-                                continue
+    # Serialize the full Azure response for storage/debugging
+    raw_json = serialize_azure_result(result)
 
-                            # item_fields should be dict-like (either dict or has __getitem__)
-                            if not (isinstance(item_fields, dict) or hasattr(item_fields, '__getitem__')):
-                                logger.warning(f"Item {item_idx}: Unexpected item_fields type: {type(item_fields)}")
-                                continue
-
-                            line_item = {
-                                "description": None,
-                                "quantity": None,
-                                "unit_price": None,
-                                "amount": None,
-                                "product_code": None,
-                            }
-
-                            # Helper to safely get field value
-                            def safe_get_field(fields, key):
-                                try:
-                                    if key in fields:
-                                        return extract_field_value(fields[key])
-                                except (KeyError, TypeError):
-                                    pass
-                                return None
-
-                            # Extract description
-                            line_item["description"] = safe_get_field(item_fields, "Description")
-
-                            # Extract quantity
-                            qty = safe_get_field(item_fields, "Quantity")
-                            if qty is not None:
-                                try:
-                                    line_item["quantity"] = float(qty)
-                                except (ValueError, TypeError):
-                                    pass
-
-                            # Extract unit price
-                            up_val = safe_get_field(item_fields, "UnitPrice")
-                            if up_val is not None:
-                                try:
-                                    if hasattr(up_val, 'amount') and up_val.amount is not None:
-                                        line_item["unit_price"] = float(up_val.amount)
-                                    else:
-                                        line_item["unit_price"] = float(up_val)
-                                except (ValueError, TypeError):
-                                    pass
-
-                            # Extract amount
-                            amt_val = safe_get_field(item_fields, "Amount")
-                            if amt_val is not None:
-                                try:
-                                    if hasattr(amt_val, 'amount') and amt_val.amount is not None:
-                                        line_item["amount"] = float(amt_val.amount)
-                                    else:
-                                        line_item["amount"] = float(amt_val)
-                                except (ValueError, TypeError):
-                                    pass
-
-                            # Extract product code
-                            line_item["product_code"] = safe_get_field(item_fields, "ProductCode")
-
-                            line_items.append(line_item)
-                            desc_preview = (line_item.get('description') or 'N/A')[:30]
-                            logger.debug(f"Line item {item_idx}: {desc_preview} - "
-                                        f"qty={line_item.get('quantity')} amt={line_item.get('amount')}")
-                        except Exception as item_err:
-                            logger.warning(f"Error processing line item {item_idx}: {item_err}")
-
-        # Calculate average confidence
-        confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
-
-        logger.info(f"Azure extracted: invoice_number={invoice_number}, date={invoice_date}, "
-                    f"total={total}, net_total={net_total}, vendor={vendor_name}, order={order_number}, "
-                    f"{len(line_items)} total line items from {doc_count} documents")
-
+    if not result.documents:
+        logger.warning("No invoice detected in document")
         return {
-            "invoice_number": invoice_number,
-            "invoice_date": invoice_date,
-            "total": total,
-            "net_total": net_total,
-            "vendor_name": vendor_name,
-            "order_number": order_number,
-            "line_items": line_items,
+            "invoice_number": None,
+            "invoice_date": None,
+            "total": None,
+            "vendor_name": None,
+            "order_number": None,
+            "line_items": [],
             "raw_text": result.content or "",
             "raw_json": raw_json,
-            "confidence": confidence
+            "confidence": 0.0
         }
 
-    except Exception as e:
-        logger.error(f"Azure OCR error: {e}")
-        raise
+    # For multi-page invoices, we may have multiple documents
+    # Use first document for header fields, but combine line items from all
+    invoice = result.documents[0]
+    fields = invoice.fields
+
+    # Log available fields for debugging
+    field_names = list(fields.keys()) if fields else []
+    logger.info(f"Available fields in first document: {field_names}")
+
+    # Extract invoice number
+    invoice_number = None
+    if "InvoiceId" in fields:
+        val = extract_field_value(fields["InvoiceId"])
+        if val:
+            invoice_number = str(val)
+            logger.debug(f"Extracted InvoiceId: {invoice_number}")
+
+    # Extract invoice date
+    invoice_date = None
+    if "InvoiceDate" in fields:
+        val = extract_field_value(fields["InvoiceDate"])
+        if val and isinstance(val, date):
+            invoice_date = val
+            logger.debug(f"Extracted InvoiceDate: {invoice_date}")
+
+    # Extract total (gross, inc. VAT)
+    total = extract_currency_amount(fields.get("InvoiceTotal"))
+    if total:
+        logger.debug(f"Extracted InvoiceTotal: {total}")
+
+    # Extract subtotal (net, exc. VAT)
+    net_total = extract_currency_amount(fields.get("SubTotal"))
+    if net_total:
+        logger.debug(f"Extracted SubTotal: {net_total}")
+
+    # Extract vendor name
+    vendor_name = None
+    if "VendorName" in fields:
+        val = extract_field_value(fields["VendorName"])
+        if val:
+            vendor_name = str(val)
+            logger.debug(f"Extracted VendorName: {vendor_name}")
+
+    # Extract purchase order / order number
+    order_number = None
+    if "PurchaseOrder" in fields:
+        val = extract_field_value(fields["PurchaseOrder"])
+        if val:
+            order_number = str(val)
+            logger.debug(f"Extracted PurchaseOrder: {order_number}")
+
+    # Extract line items from ALL documents (for multi-page invoices)
+    line_items = []
+    for doc_idx, doc in enumerate(result.documents):
+        doc_fields = doc.fields or {}
+        if "Items" in doc_fields:
+            items_field = doc_fields["Items"]
+            items_value = extract_field_value(items_field)
+            if items_value and hasattr(items_value, '__iter__'):
+                logger.info(f"Document {doc_idx}: Found {len(items_value)} line items")
+                for item_idx, item in enumerate(items_value):
+                    try:
+                        # Get the item's fields - handle various Azure SDK structures
+                        item_fields = None
+
+                        # Try item.value first (standard DocumentField)
+                        if hasattr(item, 'value') and item.value is not None:
+                            item_fields = item.value
+
+                        # If value is still None, try to use item directly
+                        if item_fields is None:
+                            item_fields = item
+
+                        # Skip if we still don't have usable fields
+                        if item_fields is None:
+                            logger.warning(f"Item {item_idx}: fields is None, skipping")
+                            continue
+
+                        # item_fields should be dict-like (either dict or has __getitem__)
+                        if not (isinstance(item_fields, dict) or hasattr(item_fields, '__getitem__')):
+                            logger.warning(f"Item {item_idx}: Unexpected item_fields type: {type(item_fields)}")
+                            continue
+
+                        line_item = {
+                            "description": None,
+                            "quantity": None,
+                            "unit_price": None,
+                            "amount": None,
+                            "product_code": None,
+                        }
+
+                        # Helper to safely get field value
+                        def safe_get_field(fields, key):
+                            try:
+                                if key in fields:
+                                    return extract_field_value(fields[key])
+                            except (KeyError, TypeError):
+                                pass
+                            return None
+
+                        # Extract description
+                        line_item["description"] = safe_get_field(item_fields, "Description")
+
+                        # Extract quantity
+                        qty = safe_get_field(item_fields, "Quantity")
+                        if qty is not None:
+                            try:
+                                line_item["quantity"] = float(qty)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract unit price
+                        up_val = safe_get_field(item_fields, "UnitPrice")
+                        if up_val is not None:
+                            try:
+                                if hasattr(up_val, 'amount') and up_val.amount is not None:
+                                    line_item["unit_price"] = float(up_val.amount)
+                                else:
+                                    line_item["unit_price"] = float(up_val)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract amount
+                        amt_val = safe_get_field(item_fields, "Amount")
+                        if amt_val is not None:
+                            try:
+                                if hasattr(amt_val, 'amount') and amt_val.amount is not None:
+                                    line_item["amount"] = float(amt_val.amount)
+                                else:
+                                    line_item["amount"] = float(amt_val)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract product code
+                        line_item["product_code"] = safe_get_field(item_fields, "ProductCode")
+
+                        line_items.append(line_item)
+                        desc_preview = (line_item.get('description') or 'N/A')[:30]
+                        logger.debug(f"Line item {item_idx}: {desc_preview} - "
+                                    f"qty={line_item.get('quantity')} amt={line_item.get('amount')}")
+                    except Exception as item_err:
+                        logger.warning(f"Error processing line item {item_idx}: {item_err}")
+
+    # Calculate average confidence
+    confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
+
+    logger.info(f"Azure extracted: invoice_number={invoice_number}, date={invoice_date}, "
+                f"total={total}, net_total={net_total}, vendor={vendor_name}, order={order_number}, "
+                f"{len(line_items)} total line items from {doc_count} documents")
+
+    return {
+        "invoice_number": invoice_number,
+        "invoice_date": invoice_date,
+        "total": total,
+        "net_total": net_total,
+        "vendor_name": vendor_name,
+        "order_number": order_number,
+        "line_items": line_items,
+        "raw_text": result.content or "",
+        "raw_json": raw_json,
+        "confidence": confidence
+    }
