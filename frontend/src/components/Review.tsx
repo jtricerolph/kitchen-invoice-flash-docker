@@ -410,10 +410,10 @@ export default function Review() {
           <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
           {imageUrl ? (
             isPDF ? (
-              <iframe
+              <embed
                 src={imageUrl}
+                type="application/pdf"
                 style={styles.pdfViewer}
-                title="Invoice PDF"
               />
             ) : (
               <img src={imageUrl} alt="Invoice" style={styles.image} />
