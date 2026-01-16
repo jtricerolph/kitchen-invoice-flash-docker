@@ -1,7 +1,11 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
+import * as pdfjsLib from 'pdfjs-dist'
+
+// Use unpkg CDN for the worker (matches installed version 5.4.530)
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@5.4.530/build/pdf.worker.min.mjs'
 
 interface Invoice {
   id: number
@@ -125,6 +129,14 @@ export default function Review() {
   const [newSupplierName, setNewSupplierName] = useState('')
   const [editingLineItem, setEditingLineItem] = useState<number | null>(null)
   const [lineItemEdits, setLineItemEdits] = useState<Partial<LineItem>>({})
+  const [highlightedField, setHighlightedField] = useState<string | null>(null)
+  const [expandedLineItem, setExpandedLineItem] = useState<number | null>(null)
+  const [pdfPages, setPdfPages] = useState<{ width: number; height: number; displayWidth: number; displayHeight: number; canvas: HTMLCanvasElement }[]>([])
+  const [pdfScale, setPdfScale] = useState<number>(1)
+  const [zoomLevel, setZoomLevel] = useState<number>(1)
+  const pdfContainerRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const highlightRef = useRef<HTMLDivElement>(null)
 
   const { data: invoice, isLoading } = useQuery<Invoice>({
     queryKey: ['invoice', id],
@@ -176,8 +188,153 @@ export default function Review() {
       if (!res.ok) throw new Error('Failed to fetch OCR data')
       return res.json()
     },
-    enabled: showRawOcrModal,
   })
+
+  // Helper to get bounding box for a field from raw OCR data
+  const getFieldBoundingBox = (fieldName: string): { x: number; y: number; width: number; height: number; pageNumber: number } | null => {
+    if (!rawOcrData?.raw_json?.documents?.[0]?.fields?.[fieldName]?.bounding_regions?.[0]) {
+      return null
+    }
+    const region = rawOcrData.raw_json.documents[0].fields[fieldName].bounding_regions[0]
+    const polygon = region.polygon
+    const pageNumber = region.page_number || 1 // Azure uses 1-based page numbers
+    if (!polygon || polygon.length < 4) return null
+
+    // Get page dimensions for the correct page (Azure uses inches by default)
+    const pageInfo = rawOcrData.raw_json.pages?.[pageNumber - 1] // Convert to 0-based
+    const pageWidth = pageInfo?.width || 8.5
+    const pageHeight = pageInfo?.height || 11
+
+    // Convert polygon to bounding box (polygon is array of [x, y] pairs)
+    const xs = polygon.map((p: number[]) => p[0])
+    const ys = polygon.map((p: number[]) => p[1])
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+
+    // Return as percentages of page dimensions for easy scaling
+    return {
+      x: (minX / pageWidth) * 100,
+      y: (minY / pageHeight) * 100,
+      width: ((maxX - minX) / pageWidth) * 100,
+      height: ((maxY - minY) / pageHeight) * 100,
+      pageNumber,
+    }
+  }
+
+  // Helper to get bounding box for a line item by index
+  const getLineItemBoundingBox = (lineIndex: number): { x: number; y: number; width: number; height: number; pageNumber: number } | null => {
+    if (!rawOcrData?.raw_json?.documents?.[0]?.fields?.Items?.value?.[lineIndex]?.bounding_regions?.[0]) {
+      return null
+    }
+    const region = rawOcrData.raw_json.documents[0].fields.Items.value[lineIndex].bounding_regions[0]
+    const polygon = region.polygon
+    const pageNumber = region.page_number || 1
+    if (!polygon || polygon.length < 4) return null
+
+    const pageInfo = rawOcrData.raw_json.pages?.[pageNumber - 1]
+    const pageWidth = pageInfo?.width || 8.5
+    const pageHeight = pageInfo?.height || 11
+
+    const xs = polygon.map((p: number[]) => p[0])
+    const ys = polygon.map((p: number[]) => p[1])
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+
+    return {
+      x: (minX / pageWidth) * 100,
+      y: (minY / pageHeight) * 100,
+      width: ((maxX - minX) / pageWidth) * 100,
+      height: ((maxY - minY) / pageHeight) * 100,
+      pageNumber,
+    }
+  }
+
+  // Calculate zoom level to make bounding box fill ~80% of container
+  const calculateZoomForBbox = (bbox: { x: number; y: number; width: number; height: number; pageNumber: number } | null): number => {
+    if (!bbox || !pdfContainerRef.current || pdfPages.length === 0) return 2
+
+    const pageData = pdfPages[bbox.pageNumber - 1]
+    if (!pageData) return 2
+
+    // Get container dimensions
+    const containerWidth = pdfContainerRef.current.clientWidth - 32 // padding
+    const containerHeight = pdfContainerRef.current.clientHeight - 32
+
+    // Calculate bbox size in display pixels
+    const bboxDisplayWidth = (bbox.width / 100) * pageData.displayWidth
+    const bboxDisplayHeight = (bbox.height / 100) * pageData.displayHeight
+
+    // Calculate zoom to make bbox fill 80% of container (use the more constraining dimension)
+    const targetFill = 0.8
+    const zoomForWidth = (containerWidth * targetFill) / bboxDisplayWidth
+    const zoomForHeight = (containerHeight * targetFill) / bboxDisplayHeight
+
+    // Use the smaller zoom so it fits both dimensions, with min/max limits
+    const zoom = Math.min(zoomForWidth, zoomForHeight)
+    return Math.max(2, Math.min(zoom, 8)) // Clamp between 2x and 8x
+  }
+
+  // Scroll to page containing the bounding box and set zoom
+  const scrollToHighlight = (bbox: { x: number; y: number; width: number; height: number; pageNumber: number } | null, zoom: number) => {
+    if (!bbox || !pdfContainerRef.current || pdfPages.length === 0) return
+
+    // Set zoom level (CSS transform handles the visual zoom)
+    setZoomLevel(zoom)
+
+    // Scroll to the correct page
+    setTimeout(() => {
+      if (!pdfContainerRef.current) return
+
+      // Calculate the Y offset to the target page
+      let yOffset = 0
+      for (let i = 0; i < bbox.pageNumber - 1 && i < pdfPages.length; i++) {
+        yOffset += (pdfPages[i].displayHeight || pdfPages[i].height) + 24
+      }
+
+      // Scroll to show the page (zoom is handled by CSS transform in-place)
+      pdfContainerRef.current.scrollTo({
+        top: yOffset,
+        behavior: 'smooth'
+      })
+    }, 50)
+  }
+
+  // Reset zoom
+  const resetZoom = () => {
+    setZoomLevel(1)
+    if (pdfContainerRef.current) {
+      pdfContainerRef.current.scrollTo({ left: 0, behavior: 'smooth' })
+    }
+  }
+
+  // Handler to toggle highlight and scroll to it
+  const handleHighlightField = (fieldName: string) => {
+    if (highlightedField === fieldName) {
+      setHighlightedField(null)
+      resetZoom()
+    } else {
+      setHighlightedField(fieldName)
+      setExpandedLineItem(null) // Clear any line item highlight
+      const bbox = getFieldBoundingBox(fieldName)
+      const dynamicZoom = calculateZoomForBbox(bbox)
+      scrollToHighlight(bbox, dynamicZoom)
+    }
+  }
+
+  // Handler to toggle line item inline preview (no zoom/scroll for line items)
+  const handleHighlightLineItem = (itemId: number, lineIndex: number) => {
+    if (expandedLineItem === itemId) {
+      setExpandedLineItem(null)
+    } else {
+      setExpandedLineItem(itemId)
+      setHighlightedField(null) // Clear any field highlight
+      resetZoom() // Reset zoom when showing inline preview
+    }
+  }
 
   const { data: suppliers } = useQuery<Supplier[]>({
     queryKey: ['suppliers'],
@@ -202,6 +359,77 @@ export default function Review() {
       setSupplierId(invoice.supplier_id?.toString() || '')
     }
   }, [invoice])
+
+  // Render all PDF pages to canvases for highlighting support
+  useEffect(() => {
+    const renderPdf = async () => {
+      if (!invoice || !token) return
+      const isPdf = invoice.image_path?.toLowerCase().endsWith('.pdf')
+      if (!isPdf || !containerRef.current) return
+
+      try {
+        // Fetch the PDF
+        const pdfUrl = `/api/invoices/${id}/file?token=${encodeURIComponent(token)}`
+        const response = await fetch(pdfUrl)
+        const arrayBuffer = await response.arrayBuffer()
+
+        // Load the PDF document
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+        const numPages = pdf.numPages
+
+        // Get container width for display scaling
+        const containerWidth = containerRef.current.clientWidth - 48 // padding
+
+        // Render at high fixed resolution for quality (matches upload max of 2000px)
+        const targetRenderWidth = 1500 // High quality render width
+
+        // Render all pages
+        const pages: { width: number; height: number; displayWidth: number; displayHeight: number; canvas: HTMLCanvasElement }[] = []
+
+        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum)
+          const viewport = page.getViewport({ scale: 1 })
+
+          // Calculate display size for container fit
+          const displayScale = containerWidth / viewport.width
+          const displayWidth = viewport.width * displayScale
+          const displayHeight = viewport.height * displayScale
+
+          // Render at high resolution (independent of display size)
+          const renderScale = targetRenderWidth / viewport.width
+          const renderViewport = page.getViewport({ scale: renderScale })
+
+          // Create canvas for this page at high resolution
+          const canvas = document.createElement('canvas')
+          canvas.width = renderViewport.width
+          canvas.height = renderViewport.height
+
+          const context = canvas.getContext('2d')
+          if (context) {
+            await page.render({
+              canvasContext: context,
+              viewport: renderViewport,
+            }).promise
+          }
+
+          pages.push({
+            width: renderViewport.width,  // High-res canvas dimensions
+            height: renderViewport.height,
+            displayWidth,  // Display dimensions (half of canvas for 2x)
+            displayHeight,
+            canvas,
+          })
+        }
+
+        setPdfPages(pages)
+        setPdfScale(containerWidth / (pdf.numPages > 0 ? (await pdf.getPage(1)).getViewport({ scale: 1 }).width : 1))
+      } catch (err) {
+        console.error('Error rendering PDF:', err)
+      }
+    }
+
+    renderPdf()
+  }, [invoice, token, id])
 
   const updateMutation = useMutation({
     mutationFn: async (data: Partial<Invoice>) => {
@@ -367,20 +595,134 @@ export default function Review() {
     <div style={styles.pageContainer}>
       {/* Top row: Image and Form side by side */}
       <div style={styles.topRow}>
-        <div style={styles.imageSection}>
+        <div style={styles.imageSection} ref={containerRef}>
           <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
           {imageUrl ? (
             isPDF ? (
-              <embed
-                src={imageUrl}
-                type="application/pdf"
-                style={styles.pdfViewer}
-              />
+              <div style={styles.pdfScrollContainer} ref={pdfContainerRef}>
+                {pdfPages.length > 0 ? (
+                  pdfPages.map((page, pageIndex) => {
+                    const pageNum = pageIndex + 1
+                    const fieldBbox = highlightedField ? getFieldBoundingBox(highlightedField) : null
+                    const lineItemBbox = expandedLineItem !== null && lineItems
+                      ? (() => {
+                          const idx = lineItems.findIndex(item => item.id === expandedLineItem)
+                          return idx >= 0 ? getLineItemBoundingBox(idx) : null
+                        })()
+                      : null
+
+                    return (
+                      <div key={pageIndex} style={styles.pdfPageWrapper}>
+                        <div style={{
+                          ...styles.pdfPageContainer,
+                          width: page.displayWidth,
+                          height: page.displayHeight,
+                          overflow: 'hidden',
+                        }}>
+                          {/* Wrapper for image + highlights that transforms together */}
+                          <div style={{
+                            position: 'relative',
+                            width: page.displayWidth,
+                            height: page.displayHeight,
+                            transformOrigin: fieldBbox && fieldBbox.pageNumber === pageNum
+                              ? `${fieldBbox.x + fieldBbox.width/2}% ${fieldBbox.y + fieldBbox.height/2}%`
+                              : 'center center',
+                            transform: zoomLevel > 1 && fieldBbox && fieldBbox.pageNumber === pageNum
+                              ? `scale(${zoomLevel})`
+                              : 'scale(1)',
+                            transition: 'transform 0.3s ease',
+                          }}>
+                            <img
+                              src={page.canvas.toDataURL()}
+                              alt={`Page ${pageNum}`}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                display: 'block',
+                              }}
+                            />
+                            {/* Highlight for header fields on this page */}
+                            {fieldBbox && fieldBbox.pageNumber === pageNum && (() => {
+                              // Add padding (0.5% ≈ 5px at typical sizes) and scale border inversely to zoom
+                              const padding = 0.5
+                              const borderWidth = Math.max(1, 2 / zoomLevel)
+                              return (
+                                <div
+                                  ref={highlightRef}
+                                  style={{
+                                    ...styles.highlightOverlay,
+                                    left: `${fieldBbox.x - padding}%`,
+                                    top: `${fieldBbox.y - padding}%`,
+                                    width: `${fieldBbox.width + padding * 2}%`,
+                                    height: `${fieldBbox.height + padding * 2}%`,
+                                    border: `${borderWidth}px solid #ffc107`,
+                                  }}
+                                  onClick={() => { setHighlightedField(null); resetZoom(); }}
+                                />
+                              )
+                            })()}
+                            {/* Highlight for line items on this page */}
+                            {lineItemBbox && lineItemBbox.pageNumber === pageNum && (() => {
+                              const padding = 0.5
+                              const borderWidth = Math.max(1, 2 / zoomLevel)
+                              return (
+                                <div
+                                  style={{
+                                    ...styles.highlightOverlay,
+                                    left: `${lineItemBbox.x - padding}%`,
+                                    top: `${lineItemBbox.y - padding}%`,
+                                    width: `${lineItemBbox.width + padding * 2}%`,
+                                    height: `${lineItemBbox.height + padding * 2}%`,
+                                    border: `${borderWidth}px solid #ffc107`,
+                                  }}
+                                  onClick={() => { setExpandedLineItem(null); resetZoom(); }}
+                                />
+                              )
+                            })()}
+                          </div>
+                        </div>
+                        {pdfPages.length > 1 && (
+                          <div style={styles.pageLabel}>Page {pageNum} of {pdfPages.length}</div>
+                        )}
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div style={styles.imagePlaceholder}>Rendering PDF...</div>
+                )}
+              </div>
             ) : (
-              <img src={imageUrl} alt="Invoice" style={styles.image} />
+              <div style={styles.imageContainer}>
+                <img src={imageUrl} alt="Invoice" style={styles.image} />
+                {highlightedField && getFieldBoundingBox(highlightedField) && (() => {
+                  const bbox = getFieldBoundingBox(highlightedField)!
+                  const padding = 0.5
+                  return (
+                    <div
+                      style={{
+                        ...styles.highlightOverlay,
+                        left: `${bbox.x - padding}%`,
+                        top: `${bbox.y - padding}%`,
+                        width: `${bbox.width + padding * 2}%`,
+                        height: `${bbox.height + padding * 2}%`,
+                        border: '2px solid #ffc107',
+                      }}
+                      onClick={() => setHighlightedField(null)}
+                    />
+                  )
+                })()}
+              </div>
             )
           ) : (
             <div style={styles.imagePlaceholder}>Loading {isPDF ? 'document' : 'image'}...</div>
+          )}
+          {isPDF && zoomLevel > 1 && (
+            <button
+              onClick={resetZoom}
+              style={styles.zoomResetBtn}
+            >
+              Reset Zoom ({zoomLevel}x)
+            </button>
           )}
           {isPDF && imageUrl && (
             <a
@@ -423,49 +765,109 @@ export default function Review() {
             <div style={styles.row}>
               <label style={{ ...styles.label, flex: 1 }}>
                 Invoice Number
-                <input
-                  type="text"
-                  value={invoiceNumber}
-                  onChange={(e) => setInvoiceNumber(e.target.value)}
-                  style={styles.input}
-                  placeholder="e.g., INV-12345"
-                />
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="text"
+                    value={invoiceNumber}
+                    onChange={(e) => setInvoiceNumber(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., INV-12345"
+                  />
+                  {getFieldBoundingBox('InvoiceId') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('InvoiceId')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'InvoiceId' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
               </label>
 
               <label style={{ ...styles.label, flex: 1 }}>
                 Invoice Date
-                <input
-                  type="date"
-                  value={invoiceDate}
-                  onChange={(e) => setInvoiceDate(e.target.value)}
-                  style={styles.input}
-                />
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="date"
+                    value={invoiceDate}
+                    onChange={(e) => setInvoiceDate(e.target.value)}
+                    style={styles.input}
+                  />
+                  {getFieldBoundingBox('InvoiceDate') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('InvoiceDate')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'InvoiceDate' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
               </label>
             </div>
 
             <div style={styles.row}>
               <label style={{ ...styles.label, flex: 1 }}>
                 Gross Total (£)
-                <input
-                  type="number"
-                  step="0.01"
-                  value={total}
-                  onChange={(e) => setTotal(e.target.value)}
-                  style={styles.input}
-                  placeholder="Inc. VAT"
-                />
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={total}
+                    onChange={(e) => setTotal(e.target.value)}
+                    style={styles.input}
+                    placeholder="Inc. VAT"
+                  />
+                  {getFieldBoundingBox('InvoiceTotal') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('InvoiceTotal')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'InvoiceTotal' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
               </label>
 
               <label style={{ ...styles.label, flex: 1 }}>
                 Net Total (£)
-                <input
-                  type="number"
-                  step="0.01"
-                  value={netTotal}
-                  onChange={(e) => setNetTotal(e.target.value)}
-                  style={styles.input}
-                  placeholder="Exc. VAT"
-                />
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={netTotal}
+                    onChange={(e) => setNetTotal(e.target.value)}
+                    style={styles.input}
+                    placeholder="Exc. VAT"
+                  />
+                  {getFieldBoundingBox('SubTotal') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('SubTotal')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'SubTotal' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
               </label>
             </div>
 
@@ -490,6 +892,19 @@ export default function Review() {
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
+                {getFieldBoundingBox('VendorName') && (
+                  <button
+                    type="button"
+                    onClick={() => handleHighlightField('VendorName')}
+                    style={{
+                      ...styles.eyeBtn,
+                      ...(highlightedField === 'VendorName' ? styles.eyeBtnActive : {})
+                    }}
+                    title="Show on document"
+                  >
+                    👁
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={openCreateSupplierModal}
@@ -534,13 +949,28 @@ export default function Review() {
             <div style={styles.row}>
               <label style={{ ...styles.label, flex: 1 }}>
                 Order/PO Number
-                <input
-                  type="text"
-                  value={orderNumber}
-                  onChange={(e) => setOrderNumber(e.target.value)}
-                  style={styles.input}
-                  placeholder="e.g., PO-12345"
-                />
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="text"
+                    value={orderNumber}
+                    onChange={(e) => setOrderNumber(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., PO-12345"
+                  />
+                  {getFieldBoundingBox('PurchaseOrder') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('PurchaseOrder')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'PurchaseOrder' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
               </label>
 
               <label style={{ ...styles.label, flex: 1 }}>
@@ -624,6 +1054,7 @@ export default function Review() {
           <table style={styles.lineItemsTable}>
             <thead>
               <tr>
+                <th style={{ ...styles.th, width: '30px' }}></th>
                 <th style={styles.th}>Description</th>
                 <th style={styles.th}>Qty</th>
                 <th style={styles.th}>Unit Price</th>
@@ -633,87 +1064,198 @@ export default function Review() {
               </tr>
             </thead>
             <tbody>
-              {lineItems.map((item) => (
-                <tr key={item.id}>
-                  {editingLineItem === item.id ? (
-                    <>
+              {lineItems.map((item, idx) => {
+                const bbox = getLineItemBoundingBox(idx)
+                return (
+                  <React.Fragment key={item.id}>
+                    <tr>
                       <td style={styles.td}>
-                        <input
-                          type="text"
-                          value={lineItemEdits.description || ''}
-                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, description: e.target.value })}
-                          style={styles.tableInput}
-                        />
+                        {bbox && (
+                          <button
+                            type="button"
+                            onClick={() => handleHighlightLineItem(item.id, idx)}
+                            style={{
+                              ...styles.eyeBtn,
+                              padding: '0.25rem 0.4rem',
+                              fontSize: '0.8rem',
+                              ...(expandedLineItem === item.id ? styles.eyeBtnActive : {})
+                            }}
+                            title="Show on document"
+                          >
+                            👁
+                          </button>
+                        )}
                       </td>
-                      <td style={styles.td}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={lineItemEdits.quantity || ''}
-                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) })}
-                          style={{ ...styles.tableInput, width: '70px' }}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={lineItemEdits.unit_price || ''}
-                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) })}
-                          style={{ ...styles.tableInput, width: '80px' }}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={lineItemEdits.amount || ''}
-                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) })}
-                          style={{ ...styles.tableInput, width: '80px' }}
-                        />
-                      </td>
-                      <td style={{ ...styles.td, textAlign: 'center' }}>
-                        <input
-                          type="checkbox"
-                          checked={lineItemEdits.is_non_stock || false}
-                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
-                          style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
-                        <button onClick={() => setEditingLineItem(null)} style={styles.smallBtnCancel}>X</button>
-                      </td>
-                    </>
-                  ) : (
-                    <>
-                      <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
-                        {item.description || '—'}
-                      </td>
-                      <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
-                      <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
-                      <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
-                      <td style={{ ...styles.td, textAlign: 'center' }}>
-                        <input
-                          type="checkbox"
-                          checked={item.is_non_stock}
-                          onChange={(e) => {
-                            updateLineItemMutation.mutate({
-                              itemId: item.id,
-                              data: { is_non_stock: e.target.checked }
-                            })
-                          }}
-                          style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                          title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
-                        />
-                      </td>
-                      <td style={styles.td}>
-                        <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
+                      {editingLineItem === item.id ? (
+                        <>
+                          <td style={styles.td}>
+                            <input
+                              type="text"
+                              value={lineItemEdits.description || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, description: e.target.value })}
+                              style={styles.tableInput}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={lineItemEdits.quantity || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) })}
+                              style={{ ...styles.tableInput, width: '70px' }}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={lineItemEdits.unit_price || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) })}
+                              style={{ ...styles.tableInput, width: '80px' }}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={lineItemEdits.amount || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) })}
+                              style={{ ...styles.tableInput, width: '80px' }}
+                            />
+                          </td>
+                          <td style={{ ...styles.td, textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={lineItemEdits.is_non_stock || false}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
+                              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
+                            <button onClick={() => setEditingLineItem(null)} style={styles.smallBtnCancel}>X</button>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
+                            {item.description || '—'}
+                          </td>
+                          <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
+                          <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
+                          <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
+                          <td style={{ ...styles.td, textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={item.is_non_stock}
+                              onChange={(e) => {
+                                updateLineItemMutation.mutate({
+                                  itemId: item.id,
+                                  data: { is_non_stock: e.target.checked }
+                                })
+                              }}
+                              style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                              title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                    {expandedLineItem === item.id && bbox && (
+                      <tr>
+                        <td colSpan={7} style={styles.lineItemPreviewCell}>
+                          {isPDF && pdfPages.length > 0 ? (
+                            (() => {
+                              // Get the correct page canvas (high-res)
+                              const pageIndex = bbox.pageNumber - 1
+                              const pageData = pdfPages[pageIndex]
+                              if (!pageData) return null
+
+                              // Calculate crop coordinates in high-res canvas pixels
+                              const cropX = (bbox.x / 100) * pageData.width
+                              const cropY = (bbox.y / 100) * pageData.height
+                              const cropW = (bbox.width / 100) * pageData.width
+                              const cropH = (bbox.height / 100) * pageData.height
+
+                              // Crop around bounding box with padding
+                              const horzPadding = 40 // Horizontal padding in pixels
+                              const vertPadding = 20 // Vertical padding in pixels
+                              const startX = Math.max(0, cropX - horzPadding)
+                              const startY = Math.max(0, cropY - vertPadding)
+                              const endX = Math.min(pageData.width, cropX + cropW + horzPadding)
+                              const endY = Math.min(pageData.height, cropY + cropH + vertPadding)
+                              const finalW = endX - startX
+                              const finalH = endY - startY
+
+                              // Create a cropped canvas around the bounding box
+                              const croppedCanvas = document.createElement('canvas')
+                              croppedCanvas.width = finalW
+                              croppedCanvas.height = finalH
+                              const ctx = croppedCanvas.getContext('2d')
+                              if (ctx) {
+                                ctx.drawImage(
+                                  pageData.canvas,
+                                  startX, startY, finalW, finalH,
+                                  0, 0, finalW, finalH
+                                )
+                              }
+
+                              return (
+                                <div style={styles.lineItemPreviewContainer}>
+                                  <div style={{
+                                    background: '#fff',
+                                    borderRadius: '4px',
+                                    padding: '8px',
+                                    border: '1px solid #ddd',
+                                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                                    display: 'flex',
+                                    justifyContent: 'center',
+                                  }}>
+                                    <img
+                                      src={croppedCanvas.toDataURL()}
+                                      alt="Line item from invoice"
+                                      style={{
+                                        maxWidth: '100%',
+                                        height: 'auto',
+                                        display: 'block',
+                                        borderRadius: '2px',
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              )
+                            })()
+                          ) : imageUrl ? (
+                            <div style={styles.lineItemPreviewContainer}>
+                              <div style={{
+                                position: 'relative',
+                                width: '100%',
+                                height: '60px',
+                                overflow: 'hidden',
+                              }}>
+                                <img
+                                  src={`${imageUrl.split('?')[0]}?token=${encodeURIComponent(token || '')}`}
+                                  alt="Line item location"
+                                  style={{
+                                    position: 'absolute',
+                                    width: `${100 / (bbox.width / 100)}%`,
+                                    left: `${-bbox.x * (100 / bbox.width)}%`,
+                                    top: `${-bbox.y * (100 / bbox.height) * (60 / 100)}%`,
+                                    maxWidth: 'none',
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                )
+              })}
             </tbody>
           </table>
         ) : (
@@ -912,17 +1454,29 @@ const styles: Record<string, React.CSSProperties> = {
   pageContainer: { display: 'flex', flexDirection: 'column', gap: '1.5rem' },
   topRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' },
   imageSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
-  image: { width: '100%', borderRadius: '8px', marginTop: '1rem' },
+  imageContainer: { position: 'relative', marginTop: '1rem' },
+  image: { width: '100%', borderRadius: '8px', display: 'block' },
+  pdfScrollContainer: { marginTop: '1rem', maxHeight: '70vh', overflowY: 'auto', overflowX: 'hidden', background: '#e5e5e5', borderRadius: '8px', padding: '16px' },
+  pdfPageWrapper: { marginBottom: '16px' },
+  pdfPageContainer: { position: 'relative', margin: '0 auto', boxShadow: '0 2px 8px rgba(0,0,0,0.15)' },
+  pdfPageImage: { width: '100%', height: '100%', display: 'block' },
+  pageLabel: { textAlign: 'center', fontSize: '0.8rem', color: '#666', marginTop: '4px' },
+  pdfCanvas: { width: '100%', borderRadius: '8px', display: 'block' },
+  highlightOverlay: { position: 'absolute', background: 'rgba(255, 200, 0, 0.3)', borderRadius: '2px', cursor: 'pointer', boxShadow: '0 0 8px rgba(255, 200, 0, 0.6)', animation: 'pulse 1.5s infinite' },
   imagePlaceholder: { width: '100%', height: '300px', background: '#f5f5f5', borderRadius: '8px', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' },
-  pdfViewer: { width: '100%', height: '500px', borderRadius: '8px', marginTop: '1rem', border: 'none' },
+  pdfViewer: { width: '100%', height: '500px', borderRadius: '8px', border: 'none' },
   openPdfLink: { display: 'block', marginTop: '0.5rem', textAlign: 'center', color: '#0066cc', fontSize: '0.85rem' },
+  zoomResetBtn: { display: 'block', margin: '0.5rem auto', padding: '0.4rem 1rem', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '500' },
   confidenceBadge: { marginTop: '1rem', padding: '0.5rem 1rem', background: '#f0f0f0', borderRadius: '20px', textAlign: 'center', fontSize: '0.9rem', color: '#666' },
   formSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   duplicateWarning: { padding: '1rem', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer', border: '1px solid', fontWeight: '500' },
   form: { display: 'flex', flexDirection: 'column', gap: '0.75rem' },
   row: { display: 'flex', gap: '1rem' },
   label: { display: 'flex', flexDirection: 'column', gap: '0.25rem', color: '#333', fontWeight: '500', fontSize: '0.9rem' },
-  input: { padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.95rem' },
+  input: { padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.95rem', flex: 1 },
+  inputWithEye: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
+  eyeBtn: { padding: '0.4rem 0.5rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1, flexShrink: 0 },
+  eyeBtnActive: { background: '#fff3cd', borderColor: '#ffc107' },
   extractedHint: { fontSize: '0.8rem', color: '#666', fontWeight: 'normal', fontStyle: 'italic' },
   extractedHintRow: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' },
   fuzzyMatchWarning: { fontSize: '0.8rem', color: '#856404', background: '#fff3cd', padding: '0.35rem 0.5rem', borderRadius: '4px', marginTop: '0.25rem', border: '1px solid #ffc107', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' },
@@ -968,4 +1522,7 @@ const styles: Record<string, React.CSSProperties> = {
   rawOcrTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.85rem' },
   rawOcrTh: { textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#e9ecef' },
   rawOcrTd: { padding: '0.5rem', borderBottom: '1px solid #eee', verticalAlign: 'top', wordBreak: 'break-word', maxWidth: '300px' },
+  lineItemPreviewCell: { padding: '0.5rem', background: '#f8f9fa', borderBottom: '1px solid #eee' },
+  lineItemPreviewContainer: { maxWidth: '100%', overflow: 'hidden', borderRadius: '4px', border: '2px solid #ffc107', background: '#fff' },
+  lineItemPreviewCrop: { width: '100%', backgroundRepeat: 'no-repeat' },
 }

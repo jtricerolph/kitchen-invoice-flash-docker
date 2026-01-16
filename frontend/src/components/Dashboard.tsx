@@ -19,7 +19,7 @@ interface DashboardData {
 export default function Dashboard() {
   const { token } = useAuth()
 
-  const { data, isLoading } = useQuery<DashboardData>({
+  const { data, isLoading, error } = useQuery<DashboardData>({
     queryKey: ['dashboard'],
     queryFn: async () => {
       const res = await fetch('/api/reports/dashboard', {
@@ -32,6 +32,10 @@ export default function Dashboard() {
 
   if (isLoading) {
     return <div style={styles.loading}>Loading dashboard...</div>
+  }
+
+  if (error) {
+    return <div style={styles.loading}>Error loading dashboard. Please try logging in again.</div>
   }
 
   const current = data?.current_period

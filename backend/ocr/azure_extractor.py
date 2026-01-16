@@ -52,6 +52,24 @@ def extract_currency_amount(field: Any) -> Optional[Decimal]:
         return None
 
 
+def serialize_bounding_regions(field: Any) -> list:
+    """Extract bounding regions from an Azure DocumentField."""
+    regions = []
+    if hasattr(field, 'bounding_regions') and field.bounding_regions:
+        for region in field.bounding_regions:
+            region_data = {
+                'page_number': region.page_number if hasattr(region, 'page_number') else 1,
+                'polygon': []
+            }
+            if hasattr(region, 'polygon') and region.polygon:
+                # polygon is a list of Point objects with x, y attributes
+                region_data['polygon'] = [
+                    [p.x, p.y] for p in region.polygon
+                ]
+            regions.append(region_data)
+    return regions
+
+
 def serialize_azure_field(field: Any) -> Any:
     """Serialize an Azure DocumentField to a JSON-compatible dict."""
     if field is None:
@@ -70,6 +88,11 @@ def serialize_azure_field(field: Any) -> Any:
     # Get confidence
     if hasattr(field, 'confidence'):
         result['confidence'] = field.confidence
+
+    # Get bounding regions (coordinates for highlighting)
+    bounding_regions = serialize_bounding_regions(field)
+    if bounding_regions:
+        result['bounding_regions'] = bounding_regions
 
     # Get the value based on type
     value = extract_field_value(field)
@@ -106,8 +129,20 @@ def serialize_azure_result(result: Any) -> dict:
     """Serialize the full Azure AnalyzeResult to a JSON-compatible dict."""
     output = {
         'content': result.content,
-        'documents': []
+        'documents': [],
+        'pages': []
     }
+
+    # Capture page dimensions for coordinate scaling
+    if hasattr(result, 'pages') and result.pages:
+        for page in result.pages:
+            page_info = {
+                'page_number': page.page_number if hasattr(page, 'page_number') else 1,
+                'width': page.width if hasattr(page, 'width') else None,
+                'height': page.height if hasattr(page, 'height') else None,
+                'unit': str(page.unit) if hasattr(page, 'unit') else 'inch'
+            }
+            output['pages'].append(page_info)
 
     if result.documents:
         for doc in result.documents:
@@ -304,7 +339,11 @@ async def process_invoice_with_azure(
                             "unit_price": None,
                             "amount": None,
                             "product_code": None,
+                            "bounding_regions": [],
                         }
+
+                        # Capture bounding regions for this line item
+                        line_item["bounding_regions"] = serialize_bounding_regions(item)
 
                         # Helper to safely get field value
                         def safe_get_field(fields, key):

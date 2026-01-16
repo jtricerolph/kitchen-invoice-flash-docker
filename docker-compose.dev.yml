@@ -1,0 +1,49 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgresql://kitchen:kitchen_secret@db:5432/kitchen_gp
+      - JWT_SECRET=dev-secret-change-in-production
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source code for development (allows code changes without rebuild)
+      - ./backend:/app
+      # Local data directory for invoice files
+      - ./data/invoices:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    # Auto-restart on code changes (uvicorn reload)
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3080:5173"
+    volumes:
+      # Mount source code for hot reload
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://backend:8000
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=kitchen
+      - POSTGRES_PASSWORD=kitchen_secret
+      - POSTGRES_DB=kitchen_gp
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kitchen -d kitchen_gp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

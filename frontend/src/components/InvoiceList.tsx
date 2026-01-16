@@ -40,6 +40,7 @@ const statusColors: Record<string, string> = {
 
 export default function InvoiceList() {
   const { token } = useAuth()
+  const [statusFilter, setStatusFilter] = useState<string>('pending_confirmation')
   const [supplierFilter, setSupplierFilter] = useState<string>('')
   const [dateFrom, setDateFrom] = useState<string>('')
   const [dateTo, setDateTo] = useState<string>('')
@@ -58,13 +59,14 @@ export default function InvoiceList() {
 
   // Build query params
   const queryParams = new URLSearchParams()
+  if (statusFilter) queryParams.append('status', statusFilter)
   if (supplierFilter) queryParams.append('supplier_id', supplierFilter)
   if (dateFrom) queryParams.append('date_from', dateFrom)
   if (dateTo) queryParams.append('date_to', dateTo)
   const queryString = queryParams.toString()
 
   const { data, isLoading, error } = useQuery<InvoiceListResponse>({
-    queryKey: ['invoices', supplierFilter, dateFrom, dateTo],
+    queryKey: ['invoices', statusFilter, supplierFilter, dateFrom, dateTo],
     queryFn: async () => {
       const url = queryString ? `/api/invoices/?${queryString}` : '/api/invoices/'
       const res = await fetch(url, {
@@ -97,6 +99,19 @@ export default function InvoiceList() {
       {/* Filters */}
       <div style={styles.filters}>
         <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={styles.filterSelect}
+        >
+          <option value="">All Statuses</option>
+          <option value="pending_confirmation">Pending Confirmation</option>
+          <option value="pending">Pending</option>
+          <option value="processed">Processed</option>
+          <option value="reviewed">Reviewed</option>
+          <option value="confirmed">Confirmed</option>
+        </select>
+
+        <select
           value={supplierFilter}
           onChange={(e) => setSupplierFilter(e.target.value)}
           style={styles.filterSelect}
@@ -128,9 +143,9 @@ export default function InvoiceList() {
           </label>
         </div>
 
-        {(supplierFilter || dateFrom || dateTo) && (
+        {(statusFilter !== 'pending_confirmation' || supplierFilter || dateFrom || dateTo) && (
           <button
-            onClick={() => { setSupplierFilter(''); setDateFrom(''); setDateTo(''); }}
+            onClick={() => { setStatusFilter('pending_confirmation'); setSupplierFilter(''); setDateFrom(''); setDateTo(''); }}
             style={styles.clearBtn}
           >
             Clear Filters

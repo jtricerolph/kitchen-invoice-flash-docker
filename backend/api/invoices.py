@@ -314,15 +314,27 @@ async def list_invoices(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List invoices for the current kitchen with optional filters"""
+    """List invoices for the current kitchen with optional filters
+
+    Status filter supports:
+    - pending, processed, reviewed, confirmed: filter by specific status
+    - pending_confirmation: filter by processed OR reviewed (awaiting confirmation)
+    """
     from sqlalchemy.orm import selectinload
+    from sqlalchemy import or_
 
     # Only load supplier for list view - line_items not needed and slows query significantly
     query = select(Invoice).options(
         selectinload(Invoice.supplier)
     ).where(Invoice.kitchen_id == current_user.kitchen_id)
 
-    if status:
+    # Handle special "pending_confirmation" filter (processed OR reviewed)
+    if status == "pending_confirmation":
+        query = query.where(or_(
+            Invoice.status == InvoiceStatus.PROCESSED,
+            Invoice.status == InvoiceStatus.REVIEWED
+        ))
+    elif status:
         query = query.where(Invoice.status == status)
     if supplier_id:
         query = query.where(Invoice.supplier_id == supplier_id)
@@ -338,7 +350,12 @@ async def list_invoices(
 
     # Count query with same filters
     count_query = select(func.count(Invoice.id)).where(Invoice.kitchen_id == current_user.kitchen_id)
-    if status:
+    if status == "pending_confirmation":
+        count_query = count_query.where(or_(
+            Invoice.status == InvoiceStatus.PROCESSED,
+            Invoice.status == InvoiceStatus.REVIEWED
+        ))
+    elif status:
         count_query = count_query.where(Invoice.status == status)
     if supplier_id:
         count_query = count_query.where(Invoice.supplier_id == supplier_id)
