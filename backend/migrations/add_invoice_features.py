@@ -137,6 +137,19 @@ async def run_migration():
         else:
             logger.warning(f"ocr_raw_json column: {e}")
 
+    # Add supplier_match_type column to invoices table (for fuzzy matching)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE invoices ADD COLUMN supplier_match_type VARCHAR(20)"
+            ))
+            logger.info("Added supplier_match_type column to invoices")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("supplier_match_type column already exists")
+        else:
+            logger.warning(f"supplier_match_type column: {e}")
+
     # Create field_mappings table
     create_field_mappings = """
     CREATE TABLE IF NOT EXISTS field_mappings (

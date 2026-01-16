@@ -9,6 +9,15 @@ interface SettingsData {
   date_format: string
 }
 
+interface UserData {
+  id: number
+  email: string
+  name: string | null
+  is_active: boolean
+  is_admin: boolean
+  created_at: string
+}
+
 export default function Settings() {
   const { user, token } = useAuth()
   const queryClient = useQueryClient()
@@ -137,6 +146,56 @@ export default function Settings() {
     })
   }
 
+  // User management (admin only)
+  const { data: users } = useQuery<UserData[]>({
+    queryKey: ['users'],
+    queryFn: async () => {
+      const res = await fetch('/auth/users', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        if (res.status === 403) return [] // Not admin
+        throw new Error('Failed to fetch users')
+      }
+      return res.json()
+    },
+    enabled: !!user?.is_admin,
+  })
+
+  const toggleUserMutation = useMutation({
+    mutationFn: async (userId: number) => {
+      const res = await fetch(`/auth/users/${userId}/toggle-active`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to toggle user')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
+  const deleteUserMutation = useMutation({
+    mutationFn: async (userId: number) => {
+      const res = await fetch(`/auth/users/${userId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to delete user')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
   const handleSave = () => {
     const data: Record<string, string> = {
       azure_endpoint: azureEndpoint,
@@ -163,7 +222,68 @@ export default function Settings() {
         <p><strong>Email:</strong> {user?.email}</p>
         <p><strong>Name:</strong> {user?.name}</p>
         <p><strong>Kitchen:</strong> {user?.kitchen_name}</p>
+        {user?.is_admin && <p><strong>Role:</strong> Admin</p>}
       </div>
+
+      {/* User Management (Admin Only) */}
+      {user?.is_admin && users && users.length > 0 && (
+        <div style={styles.section}>
+          <h3 style={styles.sectionTitle}>User Management</h3>
+          <p style={styles.hint}>Manage users who have access to this kitchen.</p>
+          <table style={styles.userTable}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Email</th>
+                <th style={styles.th}>Name</th>
+                <th style={styles.th}>Status</th>
+                <th style={styles.th}>Role</th>
+                <th style={styles.th}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id} style={!u.is_active ? styles.disabledRow : undefined}>
+                  <td style={styles.td}>{u.email}</td>
+                  <td style={styles.td}>{u.name || '-'}</td>
+                  <td style={styles.td}>
+                    <span style={u.is_active ? styles.activeStatus : styles.inactiveStatus}>
+                      {u.is_active ? 'Active' : 'Disabled'}
+                    </span>
+                  </td>
+                  <td style={styles.td}>{u.is_admin ? 'Admin' : 'User'}</td>
+                  <td style={styles.td}>
+                    {u.id !== user.id && (
+                      <div style={styles.actionButtons}>
+                        <button
+                          onClick={() => toggleUserMutation.mutate(u.id)}
+                          style={u.is_active ? styles.disableBtn : styles.enableBtn}
+                          disabled={toggleUserMutation.isPending}
+                        >
+                          {u.is_active ? 'Disable' : 'Enable'}
+                        </button>
+                        {!u.is_admin && (
+                          <button
+                            onClick={() => {
+                              if (confirm(`Delete user ${u.email}? This cannot be undone.`)) {
+                                deleteUserMutation.mutate(u.id)
+                              }
+                            }}
+                            style={styles.deleteBtn}
+                            disabled={deleteUserMutation.isPending}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {u.id === user.id && <span style={styles.youLabel}>(You)</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Change Password */}
       <div style={styles.section}>
@@ -428,5 +548,71 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: '500',
     fontSize: '0.95rem',
     alignSelf: 'flex-start',
+  },
+  userTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    marginTop: '1rem',
+  },
+  th: {
+    textAlign: 'left',
+    padding: '0.75rem',
+    borderBottom: '2px solid #eee',
+    color: '#666',
+    fontSize: '0.85rem',
+    fontWeight: '600',
+  },
+  td: {
+    padding: '0.75rem',
+    borderBottom: '1px solid #eee',
+    fontSize: '0.9rem',
+  },
+  disabledRow: {
+    opacity: 0.6,
+    background: '#f9f9f9',
+  },
+  activeStatus: {
+    color: '#28a745',
+    fontWeight: '500',
+  },
+  inactiveStatus: {
+    color: '#dc3545',
+    fontWeight: '500',
+  },
+  actionButtons: {
+    display: 'flex',
+    gap: '0.5rem',
+  },
+  disableBtn: {
+    padding: '0.35rem 0.75rem',
+    background: '#ffc107',
+    color: '#212529',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+  },
+  enableBtn: {
+    padding: '0.35rem 0.75rem',
+    background: '#28a745',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+  },
+  deleteBtn: {
+    padding: '0.35rem 0.75rem',
+    background: '#dc3545',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+  },
+  youLabel: {
+    color: '#666',
+    fontSize: '0.85rem',
+    fontStyle: 'italic',
   },
 }
