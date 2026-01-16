@@ -139,19 +139,8 @@ export default function Review() {
     refetchOnWindowFocus: false,
   })
 
-  const { data: imageUrl } = useQuery<string>({
-    queryKey: ['invoice-image', id, invoice?.image_path],
-    queryFn: async () => {
-      // Fetch as blob and create blob URL - bypasses proxy iframe restrictions
-      const res = await fetch(`/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`)
-      if (!res.ok) throw new Error('Failed to fetch file')
-      const blob = await res.blob()
-      return URL.createObjectURL(blob)
-    },
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
-    enabled: !!invoice,
-  })
+  // Direct URL with token for file access
+  const imageUrl = invoice ? `/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}` : null
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
     queryKey: ['invoice-line-items', id],
@@ -380,13 +369,11 @@ export default function Review() {
           <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
           {imageUrl ? (
             isPDF ? (
-              <object
-                data={imageUrl}
+              <embed
+                src={imageUrl}
                 type="application/pdf"
                 style={styles.pdfViewer}
-              >
-                <p>Unable to display PDF. <a href={`/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`} target="_blank" rel="noopener noreferrer">Open in new tab</a></p>
-              </object>
+              />
             ) : (
               <img src={imageUrl} alt="Invoice" style={styles.image} />
             )
