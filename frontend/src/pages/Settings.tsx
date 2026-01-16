@@ -35,6 +35,9 @@ export default function Settings() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null)
 
+  // Data management state
+  const [dataMessage, setDataMessage] = useState<string | null>(null)
+
   const { data: settings, isLoading } = useQuery<SettingsData>({
     queryKey: ['settings'],
     queryFn: async () => {
@@ -193,6 +196,50 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+  })
+
+  const reprocessMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/invoices/reprocess-all', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to reprocess invoices')
+      }
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setDataMessage(data.message)
+      queryClient.invalidateQueries({ queryKey: ['invoices'] })
+      setTimeout(() => setDataMessage(null), 5000)
+    },
+    onError: (error) => {
+      setDataMessage(`Error: ${error.message}`)
+    },
+  })
+
+  const rematchFuzzyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/suppliers/rematch-fuzzy', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to rematch invoices')
+      }
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setDataMessage(data.message)
+      queryClient.invalidateQueries({ queryKey: ['invoices'] })
+      setTimeout(() => setDataMessage(null), 5000)
+    },
+    onError: (error) => {
+      setDataMessage(`Error: ${error.message}`)
     },
   })
 
@@ -429,6 +476,68 @@ export default function Settings() {
         </div>
       </div>
 
+      {/* Data Management */}
+      <div style={styles.section}>
+        <h3 style={styles.sectionTitle}>Data Management</h3>
+        <p style={styles.hint}>
+          Tools for reprocessing invoices and fixing supplier matching issues.
+        </p>
+
+        <div style={styles.dataActions}>
+          <div style={styles.dataAction}>
+            <div>
+              <strong>Reprocess All Invoices</strong>
+              <p style={styles.actionDesc}>
+                Re-run OCR processing on all non-confirmed invoices. This clears existing
+                extracted data and line items, then processes them again with current settings.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                if (confirm('Reprocess all non-confirmed invoices? This will clear their current data and re-run OCR.')) {
+                  reprocessMutation.mutate()
+                }
+              }}
+              style={styles.actionBtn}
+              disabled={reprocessMutation.isPending}
+            >
+              {reprocessMutation.isPending ? 'Reprocessing...' : 'Reprocess Invoices'}
+            </button>
+          </div>
+
+          <div style={styles.dataAction}>
+            <div>
+              <strong>Clear Fuzzy Matches</strong>
+              <p style={styles.actionDesc}>
+                Clear all invoices with fuzzy supplier matches and re-run supplier matching.
+                Use this after updating supplier names or aliases.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                if (confirm('Clear all fuzzy supplier matches and re-run matching?')) {
+                  rematchFuzzyMutation.mutate()
+                }
+              }}
+              style={styles.actionBtn}
+              disabled={rematchFuzzyMutation.isPending}
+            >
+              {rematchFuzzyMutation.isPending ? 'Clearing...' : 'Clear Fuzzy Matches'}
+            </button>
+          </div>
+        </div>
+
+        {dataMessage && (
+          <div style={{
+            ...styles.statusMessage,
+            background: dataMessage.startsWith('Error') ? '#fee' : '#efe',
+            color: dataMessage.startsWith('Error') ? '#c00' : '#060',
+          }}>
+            {dataMessage}
+          </div>
+        )}
+      </div>
+
       {/* Save Button */}
       <div style={styles.saveSection}>
         <button
@@ -614,5 +723,35 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#666',
     fontSize: '0.85rem',
     fontStyle: 'italic',
+  },
+  dataActions: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '1.5rem',
+  },
+  dataAction: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: '1rem',
+    padding: '1rem',
+    background: '#f8f9fa',
+    borderRadius: '8px',
+  },
+  actionDesc: {
+    margin: '0.5rem 0 0 0',
+    fontSize: '0.85rem',
+    color: '#666',
+  },
+  actionBtn: {
+    padding: '0.5rem 1rem',
+    background: '#6c757d',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: '500',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
   },
 }

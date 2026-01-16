@@ -748,3 +748,68 @@ async def get_invoice_ocr_data(
         "raw_json": raw_json,
         "confidence": float(invoice.ocr_confidence) if invoice.ocr_confidence else None
     }
+
+
+@router.post("/reprocess-all")
+async def reprocess_all_invoices(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Reprocess all non-confirmed invoices through OCR.
+    Clears existing extracted data and line items, then re-runs OCR processing.
+    """
+    # Get all non-confirmed invoices
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.status != InvoiceStatus.CONFIRMED
+        )
+    )
+    invoices = result.scalars().all()
+    count = len(invoices)
+
+    if count == 0:
+        return {"message": "No invoices to reprocess", "count": 0}
+
+    # Queue each invoice for reprocessing
+    for invoice in invoices:
+        # Clear existing line items
+        await db.execute(
+            select(LineItem).where(LineItem.invoice_id == invoice.id)
+        )
+        # Delete line items for this invoice
+        from sqlalchemy import delete
+        await db.execute(
+            delete(LineItem).where(LineItem.invoice_id == invoice.id)
+        )
+
+        # Reset invoice status to pending
+        invoice.status = InvoiceStatus.PENDING
+        invoice.supplier_id = None
+        invoice.supplier_match_type = None
+        invoice.invoice_number = None
+        invoice.invoice_date = None
+        invoice.total = None
+        invoice.net_total = None
+        invoice.vendor_name = None
+        invoice.ocr_raw_text = None
+        invoice.ocr_raw_json = None
+        invoice.ocr_confidence = None
+        invoice.document_type = None
+        invoice.order_number = None
+        invoice.duplicate_status = None
+        invoice.duplicate_of_id = None
+
+        # Queue background processing
+        background_tasks.add_task(
+            process_invoice_background,
+            invoice.id,
+            invoice.image_path,
+            current_user.kitchen_id
+        )
+
+    await db.commit()
+
+    return {"message": f"Queued {count} invoices for reprocessing", "count": count}
