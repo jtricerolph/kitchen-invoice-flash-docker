@@ -19,7 +19,7 @@ export default function Login() {
     try {
       const endpoint = isRegister ? '/auth/register' : '/auth/login'
       const body = isRegister
-        ? { email, password, name, kitchen_name: kitchenName }
+        ? { email, password, name, ...(kitchenName && { kitchen_name: kitchenName }) }
         : { email, password }
 
       const res = await fetch(endpoint, {
@@ -83,12 +83,12 @@ export default function Login() {
               />
               <input
                 type="text"
-                placeholder="Kitchen Name"
+                placeholder="Kitchen Name (optional)"
                 value={kitchenName}
                 onChange={(e) => setKitchenName(e.target.value)}
                 style={styles.input}
-                required
               />
+              <p style={styles.hint}>All users share the same kitchen data</p>
             </>
           )}
 
@@ -172,5 +172,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#0066cc',
     cursor: 'pointer',
     width: '100%',
+  },
+  hint: {
+    fontSize: '0.8rem',
+    color: '#666',
+    textAlign: 'center',
+    margin: '0',
   },
 }

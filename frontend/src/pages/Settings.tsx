@@ -92,7 +92,7 @@ export default function Settings() {
 
   const passwordMutation = useMutation({
     mutationFn: async (data: { current_password: string; new_password: string }) => {
-      const res = await fetch('/api/auth/change-password', {
+      const res = await fetch('/auth/change-password', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,

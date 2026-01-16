@@ -14,7 +14,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     name: str
-    kitchen_name: str
+    kitchen_name: str = "My Kitchen"  # Optional - ignored if kitchen exists
 
 
 class LoginRequest(BaseModel):
@@ -46,7 +46,7 @@ class UserResponse(BaseModel):
 
 @router.post("/register", response_model=TokenResponse)
 async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    """Register a new user and kitchen"""
+    """Register a new user - joins existing kitchen or creates first one"""
     # Check if email already exists
     result = await db.execute(select(User).where(User.email == request.email))
     if result.scalar_one_or_none():
@@ -55,18 +55,25 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
             detail="Email already registered"
         )
 
-    # Create kitchen
-    kitchen = Kitchen(name=request.kitchen_name)
-    db.add(kitchen)
-    await db.flush()  # Get kitchen ID
+    # Check if a kitchen already exists (single kitchen per instance)
+    kitchen_result = await db.execute(select(Kitchen).limit(1))
+    kitchen = kitchen_result.scalar_one_or_none()
 
-    # Create user
+    is_first_user = kitchen is None
+
+    if not kitchen:
+        # First user - create the kitchen
+        kitchen = Kitchen(name=request.kitchen_name)
+        db.add(kitchen)
+        await db.flush()  # Get kitchen ID
+
+    # Create user - first user is admin
     user = User(
         email=request.email,
         password_hash=hash_password(request.password),
         name=request.name,
         kitchen_id=kitchen.id,
-        is_admin=True  # First user is admin
+        is_admin=is_first_user
     )
     db.add(user)
     await db.commit()
