@@ -31,7 +31,6 @@ export default function Upload() {
   const [pages, setPages] = useState<PageImage[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const [processing, setProcessing] = useState(false)
-  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const [queue, setQueue] = useState<QueueItem[]>([])
@@ -274,7 +273,7 @@ export default function Upload() {
     setStatus('')
   }
 
-  const isWorking = processing || uploading
+  const isWorking = processing || queue.some(item => item.status === 'uploading' || item.status === 'processing')
 
   return (
     <div>
@@ -438,7 +437,7 @@ export default function Upload() {
             ))}
           </div>
 
-          {(processing || uploading) && (
+          {processing && (
             <div style={styles.processingOverlay}>
               <div style={styles.spinner}></div>
               <p>{status || 'Processing...'}</p>

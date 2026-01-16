@@ -139,7 +139,7 @@ export default function Review() {
   })
 
   const { data: imageUrl } = useQuery<string>({
-    queryKey: ['invoice-image', id, isPDF],
+    queryKey: ['invoice-image', id, invoice?.image_path],
     queryFn: async () => {
       // For PDFs, use direct URL with token (blob URLs don't work in iframes)
       if (invoice?.image_path?.toLowerCase().endsWith('.pdf')) {
