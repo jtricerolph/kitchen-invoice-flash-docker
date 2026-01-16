@@ -280,3 +280,36 @@ async def add_supplier_alias(
         identifier_config=supplier.identifier_config,
         created_at=supplier.created_at.isoformat()
     )
+
+
+@router.post("/rematch-fuzzy")
+async def rematch_fuzzy_invoices(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Clear all fuzzy-matched invoices and re-run supplier matching.
+    Use this after updating matching logic to fix incorrect fuzzy matches.
+    """
+    # Count fuzzy matches before clearing
+    count_result = await db.execute(
+        select(Invoice).where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.supplier_match_type == "fuzzy"
+        )
+    )
+    fuzzy_invoices = count_result.scalars().all()
+    count = len(fuzzy_invoices)
+
+    # Clear supplier assignment for all fuzzy matches
+    for invoice in fuzzy_invoices:
+        invoice.supplier_id = None
+        invoice.supplier_match_type = None
+
+    await db.commit()
+
+    # Re-run matching in background
+    background_tasks.add_task(rematch_unmatched_invoices, current_user.kitchen_id)
+
+    return {"message": f"Cleared {count} fuzzy matches. Re-matching in background."}
