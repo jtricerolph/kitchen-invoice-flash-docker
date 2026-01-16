@@ -46,8 +46,6 @@ interface DuplicateCompare {
   related_documents: Invoice[]
 }
 
-// VAT rates to check against
-const VAT_RATES = [0, 0.05, 0.125, 0.20]; // 0%, 5%, 12.5%, 20%
 const TOLERANCE = 0.02; // 2p tolerance for rounding
 
 function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems: LineItem[]; invoiceTotal: number; netTotal: number | null }) {
@@ -60,35 +58,8 @@ function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems:
     .reduce((sum, item) => sum + (item.amount || 0), 0);
 
   const difference = Math.abs(invoiceTotal - lineItemsTotal);
-
-  // Check if difference could be explained by VAT
-  let vatMatch: { rate: number; calculatedTotal: number } | null = null;
-  for (const rate of VAT_RATES) {
-    const withVat = lineItemsTotal * (1 + rate);
-    if (Math.abs(invoiceTotal - withVat) <= TOLERANCE) {
-      vatMatch = { rate, calculatedTotal: withVat };
-      break;
-    }
-  }
-
-  // Check if line items already include VAT (invoice total matches line items)
   const exactMatch = difference <= TOLERANCE;
-
-  // Check if invoice total equals line items + standard VAT amounts
-  let vatExplanation = '';
-  if (exactMatch) {
-    vatExplanation = 'Line items total matches invoice total';
-  } else if (vatMatch) {
-    vatExplanation = `Line items (£${lineItemsTotal.toFixed(2)}) + ${(vatMatch.rate * 100).toFixed(0)}% VAT = £${vatMatch.calculatedTotal.toFixed(2)}`;
-  } else {
-    // Try to find what VAT rate would make it match
-    const impliedVatRate = ((invoiceTotal / lineItemsTotal) - 1);
-    if (impliedVatRate > 0 && impliedVatRate <= 0.25) {
-      vatExplanation = `Implied VAT: ${(impliedVatRate * 100).toFixed(1)}%`;
-    }
-  }
-
-  const isValid = exactMatch || vatMatch !== null;
+  const isValid = exactMatch;
   const hasNonStock = nonStockItemsTotal > 0;
 
   return (
@@ -119,14 +90,13 @@ function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems:
           </div>
         </div>
       )}
-      {!exactMatch && (
-        <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: isValid ? '#155724' : '#856404' }}>
-          {isValid ? '✓ ' : '⚠ '}{vatExplanation || `Difference: £${difference.toFixed(2)}`}
-        </div>
-      )}
-      {exactMatch && !hasNonStock && (
+      {exactMatch ? (
         <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#155724' }}>
-          ✓ Totals match (VAT likely included in line items)
+          ✓ Totals match
+        </div>
+      ) : (
+        <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: isValid ? '#155724' : '#856404' }}>
+          {isValid ? '✓ ' : '⚠ '}Difference: £{difference.toFixed(2)}
         </div>
       )}
     </div>
