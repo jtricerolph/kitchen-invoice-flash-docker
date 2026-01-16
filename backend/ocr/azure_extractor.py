@@ -233,75 +233,90 @@ async def process_invoice_with_azure(
             if "Items" in doc_fields:
                 items_field = doc_fields["Items"]
                 items_value = extract_field_value(items_field)
-                if items_value:
+                if items_value and hasattr(items_value, '__iter__'):
                     logger.info(f"Document {doc_idx}: Found {len(items_value)} line items")
                     for item_idx, item in enumerate(items_value):
-                        # Get the item's fields - it could be item.value or item itself
-                        item_fields = extract_field_value(item)
-                        if item_fields is None:
-                            item_fields = item
-                        if not isinstance(item_fields, dict):
-                            # Try to access as object with value attribute
-                            if hasattr(item_fields, 'value') and isinstance(item_fields.value, dict):
-                                item_fields = item_fields.value
-                            else:
+                        try:
+                            # Get the item's fields - handle various Azure SDK structures
+                            item_fields = None
+
+                            # Try item.value first (standard DocumentField)
+                            if hasattr(item, 'value') and item.value is not None:
+                                item_fields = item.value
+
+                            # If value is still None, try to use item directly
+                            if item_fields is None:
+                                item_fields = item
+
+                            # Skip if we still don't have usable fields
+                            if item_fields is None:
+                                logger.warning(f"Item {item_idx}: fields is None, skipping")
+                                continue
+
+                            # item_fields should be dict-like (either dict or has __getitem__)
+                            if not (isinstance(item_fields, dict) or hasattr(item_fields, '__getitem__')):
                                 logger.warning(f"Item {item_idx}: Unexpected item_fields type: {type(item_fields)}")
                                 continue
 
-                        line_item = {
-                            "description": None,
-                            "quantity": None,
-                            "unit_price": None,
-                            "amount": None,
-                            "product_code": None,
-                        }
+                            line_item = {
+                                "description": None,
+                                "quantity": None,
+                                "unit_price": None,
+                                "amount": None,
+                                "product_code": None,
+                            }
 
-                        # Extract description
-                        if "Description" in item_fields:
-                            line_item["description"] = extract_field_value(item_fields["Description"])
+                            # Helper to safely get field value
+                            def safe_get_field(fields, key):
+                                try:
+                                    if key in fields:
+                                        return extract_field_value(fields[key])
+                                except (KeyError, TypeError):
+                                    pass
+                                return None
 
-                        # Extract quantity
-                        if "Quantity" in item_fields:
-                            qty = extract_field_value(item_fields["Quantity"])
+                            # Extract description
+                            line_item["description"] = safe_get_field(item_fields, "Description")
+
+                            # Extract quantity
+                            qty = safe_get_field(item_fields, "Quantity")
                             if qty is not None:
                                 try:
                                     line_item["quantity"] = float(qty)
                                 except (ValueError, TypeError):
                                     pass
 
-                        # Extract unit price
-                        if "UnitPrice" in item_fields:
-                            up_field = item_fields["UnitPrice"]
-                            up_val = extract_field_value(up_field)
+                            # Extract unit price
+                            up_val = safe_get_field(item_fields, "UnitPrice")
                             if up_val is not None:
                                 try:
-                                    if hasattr(up_val, 'amount'):
+                                    if hasattr(up_val, 'amount') and up_val.amount is not None:
                                         line_item["unit_price"] = float(up_val.amount)
                                     else:
                                         line_item["unit_price"] = float(up_val)
                                 except (ValueError, TypeError):
                                     pass
 
-                        # Extract amount
-                        if "Amount" in item_fields:
-                            amt_field = item_fields["Amount"]
-                            amt_val = extract_field_value(amt_field)
+                            # Extract amount
+                            amt_val = safe_get_field(item_fields, "Amount")
                             if amt_val is not None:
                                 try:
-                                    if hasattr(amt_val, 'amount'):
+                                    if hasattr(amt_val, 'amount') and amt_val.amount is not None:
                                         line_item["amount"] = float(amt_val.amount)
                                     else:
                                         line_item["amount"] = float(amt_val)
                                 except (ValueError, TypeError):
                                     pass
 
-                        # Extract product code
-                        if "ProductCode" in item_fields:
-                            line_item["product_code"] = extract_field_value(item_fields["ProductCode"])
+                            # Extract product code
+                            line_item["product_code"] = safe_get_field(item_fields, "ProductCode")
 
-                        line_items.append(line_item)
-                        logger.debug(f"Line item {item_idx}: {line_item.get('description', 'N/A')[:30]} - "
-                                    f"qty={line_item.get('quantity')} amt={line_item.get('amount')}")
+                            line_items.append(line_item)
+                            desc_preview = (line_item.get('description') or 'N/A')[:30]
+                            logger.debug(f"Line item {item_idx}: {desc_preview} - "
+                                        f"qty={line_item.get('quantity')} amt={line_item.get('amount')}")
+                        except Exception as item_err:
+                            logger.warning(f"Error processing line item {item_idx}: {item_err}")
 
         # Calculate average confidence
         confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
