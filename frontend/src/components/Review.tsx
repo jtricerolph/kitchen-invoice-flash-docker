@@ -139,8 +139,40 @@ export default function Review() {
     refetchOnWindowFocus: false,
   })
 
-  // Direct URL with token for file access
-  const imageUrl = invoice ? `/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}` : null
+  // Fetch file as blob - creates local URL that works in iframe without proxy issues
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!invoice || !token) {
+      setImageUrl(null)
+      return
+    }
+
+    let cancelled = false
+    let blobUrl: string | null = null
+
+    const fetchFile = async () => {
+      try {
+        const res = await fetch(`/api/invoices/${id}/file?token=${encodeURIComponent(token)}`)
+        if (!res.ok || cancelled) return
+        const contentType = res.headers.get('content-type') || 'application/pdf'
+        const arrayBuffer = await res.arrayBuffer()
+        if (cancelled) return
+        const blob = new Blob([arrayBuffer], { type: contentType })
+        blobUrl = URL.createObjectURL(blob)
+        setImageUrl(blobUrl)
+      } catch (err) {
+        console.error('Failed to load file:', err)
+      }
+    }
+
+    fetchFile()
+
+    return () => {
+      cancelled = true
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
+    }
+  }, [invoice?.id, token])
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
     queryKey: ['invoice-line-items', id],
@@ -370,7 +402,7 @@ export default function Review() {
           {imageUrl ? (
             isPDF ? (
               <iframe
-                src={`${imageUrl}#toolbar=1&navpanes=0`}
+                src={imageUrl}
                 style={styles.pdfViewer}
                 title="Invoice PDF"
               />
