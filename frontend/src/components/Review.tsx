@@ -139,7 +139,7 @@ export default function Review() {
     refetchOnWindowFocus: false,
   })
 
-  // Fetch file as blob - creates local URL that works in iframe without proxy issues
+  // Fetch file as data URL - embeds content directly, bypassing all proxy issues
   const [imageUrl, setImageUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -149,7 +149,6 @@ export default function Review() {
     }
 
     let cancelled = false
-    let blobUrl: string | null = null
 
     const fetchFile = async () => {
       try {
@@ -158,9 +157,11 @@ export default function Review() {
         const contentType = res.headers.get('content-type') || 'application/pdf'
         const arrayBuffer = await res.arrayBuffer()
         if (cancelled) return
-        const blob = new Blob([arrayBuffer], { type: contentType })
-        blobUrl = URL.createObjectURL(blob)
-        setImageUrl(blobUrl)
+        // Convert to base64 data URL
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        )
+        setImageUrl(`data:${contentType};base64,${base64}`)
       } catch (err) {
         console.error('Failed to load file:', err)
       }
@@ -168,10 +169,7 @@ export default function Review() {
 
     fetchFile()
 
-    return () => {
-      cancelled = true
-      if (blobUrl) URL.revokeObjectURL(blobUrl)
-    }
+    return () => { cancelled = true }
   }, [invoice?.id, token])
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
