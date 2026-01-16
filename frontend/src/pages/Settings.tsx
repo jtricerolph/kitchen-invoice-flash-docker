@@ -20,6 +20,12 @@ export default function Settings() {
   const [testStatus, setTestStatus] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
+  // Password change state
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null)
+
   const { data: settings, isLoading } = useQuery<SettingsData>({
     queryKey: ['settings'],
     queryFn: async () => {
@@ -84,6 +90,53 @@ export default function Settings() {
     },
   })
 
+  const passwordMutation = useMutation({
+    mutationFn: async (data: { current_password: string; new_password: string }) => {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const errorData = await res.json()
+        throw new Error(errorData.detail || 'Failed to change password')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      setPasswordMessage('Password changed successfully')
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setTimeout(() => setPasswordMessage(null), 5000)
+    },
+    onError: (error) => {
+      setPasswordMessage(`Error: ${error.message}`)
+    },
+  })
+
+  const handlePasswordChange = () => {
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      setPasswordMessage('Error: Please fill in all password fields')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage('Error: New passwords do not match')
+      return
+    }
+    if (newPassword.length < 6) {
+      setPasswordMessage('Error: Password must be at least 6 characters')
+      return
+    }
+    passwordMutation.mutate({
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+  }
+
   const handleSave = () => {
     const data: Record<string, string> = {
       azure_endpoint: azureEndpoint,
@@ -110,6 +163,63 @@ export default function Settings() {
         <p><strong>Email:</strong> {user?.email}</p>
         <p><strong>Name:</strong> {user?.name}</p>
         <p><strong>Kitchen:</strong> {user?.kitchen_name}</p>
+      </div>
+
+      {/* Change Password */}
+      <div style={styles.section}>
+        <h3 style={styles.sectionTitle}>Change Password</h3>
+        <div style={styles.form}>
+          <label style={styles.label}>
+            Current Password
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              style={styles.input}
+              placeholder="Enter your current password"
+            />
+          </label>
+
+          <label style={styles.label}>
+            New Password
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              style={styles.input}
+              placeholder="Enter new password (min 6 characters)"
+            />
+          </label>
+
+          <label style={styles.label}>
+            Confirm New Password
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              style={styles.input}
+              placeholder="Confirm new password"
+            />
+          </label>
+
+          <button
+            onClick={handlePasswordChange}
+            style={styles.changePasswordBtn}
+            disabled={passwordMutation.isPending}
+          >
+            {passwordMutation.isPending ? 'Changing...' : 'Change Password'}
+          </button>
+
+          {passwordMessage && (
+            <div style={{
+              ...styles.statusMessage,
+              background: passwordMessage.startsWith('Error') ? '#fee' : '#efe',
+              color: passwordMessage.startsWith('Error') ? '#c00' : '#060',
+            }}>
+              {passwordMessage}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Azure Document Intelligence Settings */}
@@ -307,5 +417,16 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontWeight: 'bold',
     fontSize: '1rem',
+  },
+  changePasswordBtn: {
+    padding: '0.75rem 1.5rem',
+    background: '#1a1a2e',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: '500',
+    fontSize: '0.95rem',
+    alignSelf: 'flex-start',
   },
 }
