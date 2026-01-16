@@ -1,16 +1,46 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
-from database import get_db
+from database import get_db, async_session_maker
 from models.user import User
 from models.supplier import Supplier
+from models.invoice import Invoice
 from auth.jwt import get_current_user
+from ocr.parser import identify_supplier
 
 router = APIRouter()
+
+
+async def rematch_unmatched_invoices(kitchen_id: int):
+    """
+    Re-run supplier matching for all invoices without a supplier.
+    Called after supplier create/update to match previously unmatched invoices.
+    """
+    async with async_session_maker() as db:
+        # Get all invoices without a supplier that have vendor_name from OCR
+        result = await db.execute(
+            select(Invoice).where(
+                Invoice.kitchen_id == kitchen_id,
+                Invoice.supplier_id == None,
+                Invoice.vendor_name != None
+            )
+        )
+        invoices = result.scalars().all()
+
+        for invoice in invoices:
+            if invoice.vendor_name:
+                supplier_id, match_type = await identify_supplier(
+                    invoice.vendor_name, kitchen_id, db
+                )
+                if supplier_id:
+                    invoice.supplier_id = supplier_id
+                    invoice.supplier_match_type = match_type
+
+        await db.commit()
 
 
 class SupplierCreate(BaseModel):
@@ -42,6 +72,7 @@ class SupplierResponse(BaseModel):
 @router.post("/", response_model=SupplierResponse)
 async def create_supplier(
     request: SupplierCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -56,6 +87,9 @@ async def create_supplier(
     db.add(supplier)
     await db.commit()
     await db.refresh(supplier)
+
+    # Rematch unmatched invoices in background
+    background_tasks.add_task(rematch_unmatched_invoices, current_user.kitchen_id)
 
     return SupplierResponse(
         id=supplier.id,
@@ -125,6 +159,7 @@ async def get_supplier(
 async def update_supplier(
     supplier_id: int,
     update: SupplierUpdate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -146,6 +181,9 @@ async def update_supplier(
 
     await db.commit()
     await db.refresh(supplier)
+
+    # Rematch unmatched invoices in background
+    background_tasks.add_task(rematch_unmatched_invoices, current_user.kitchen_id)
 
     return SupplierResponse(
         id=supplier.id,
@@ -190,12 +228,11 @@ class AddAliasRequest(BaseModel):
 async def add_supplier_alias(
     supplier_id: int,
     request: AddAliasRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Add an alias to a supplier for better matching"""
-    from models.invoice import Invoice
-
     result = await db.execute(
         select(Supplier).where(
             Supplier.id == supplier_id,
@@ -231,6 +268,9 @@ async def add_supplier_alias(
 
     await db.commit()
     await db.refresh(supplier)
+
+    # Rematch unmatched invoices in background
+    background_tasks.add_task(rematch_unmatched_invoices, current_user.kitchen_id)
 
     return SupplierResponse(
         id=supplier.id,
