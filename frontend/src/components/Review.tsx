@@ -139,7 +139,7 @@ export default function Review() {
     refetchOnWindowFocus: false,
   })
 
-  // Fetch file as data URL - embeds content directly, bypassing all proxy issues
+  // Fetch file as data URL using FileReader - handles large files properly
   const [imageUrl, setImageUrl] = useState<string | null>(null)
 
   useEffect(() => {
@@ -152,16 +152,27 @@ export default function Review() {
 
     const fetchFile = async () => {
       try {
+        console.log('Fetching file for invoice:', id)
         const res = await fetch(`/api/invoices/${id}/file?token=${encodeURIComponent(token)}`)
-        if (!res.ok || cancelled) return
-        const contentType = res.headers.get('content-type') || 'application/pdf'
-        const arrayBuffer = await res.arrayBuffer()
+        if (!res.ok) {
+          console.error('Fetch failed:', res.status)
+          return
+        }
         if (cancelled) return
-        // Convert to base64 data URL
-        const base64 = btoa(
-          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-        )
-        setImageUrl(`data:${contentType};base64,${base64}`)
+        const blob = await res.blob()
+        console.log('Got blob:', blob.size, blob.type)
+        if (cancelled) return
+
+        // Use FileReader to convert blob to data URL
+        const reader = new FileReader()
+        reader.onload = () => {
+          if (!cancelled && reader.result) {
+            console.log('FileReader done, setting URL')
+            setImageUrl(reader.result as string)
+          }
+        }
+        reader.onerror = () => console.error('FileReader error:', reader.error)
+        reader.readAsDataURL(blob)
       } catch (err) {
         console.error('Failed to load file:', err)
       }
