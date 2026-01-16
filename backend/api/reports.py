@@ -56,6 +56,34 @@ class DashboardResponse(BaseModel):
     pending_review: int
 
 
+class PurchaseInvoice(BaseModel):
+    id: int
+    invoice_number: str | None
+    total: Decimal | None
+    supplier_match_type: str | None  # "exact", "fuzzy", or None (unmatched)
+
+    class Config:
+        from_attributes = True
+
+
+class SupplierRow(BaseModel):
+    supplier_id: int | None  # None for unmatched invoices
+    supplier_name: str  # Supplier name or vendor_name for unmatched
+    is_unmatched: bool
+    invoices_by_date: dict[str, list[PurchaseInvoice]]  # date string -> invoices
+    total: Decimal
+    percentage: Decimal
+
+
+class WeeklyPurchasesResponse(BaseModel):
+    week_start: date
+    week_end: date
+    dates: list[date]  # 7 days
+    suppliers: list[SupplierRow]
+    daily_totals: dict[str, Decimal]  # date string -> total
+    week_total: Decimal
+
+
 @router.post("/revenue", response_model=RevenueEntryResponse)
 async def add_revenue(
     request: RevenueEntryCreate,
@@ -261,4 +289,103 @@ async def get_dashboard(
         previous_period=await calc_period_gp(prev_start, prev_end),
         recent_invoices=recent_invoices,
         pending_review=pending_review
+    )
+
+
+@router.get("/purchases/weekly", response_model=WeeklyPurchasesResponse)
+async def get_weekly_purchases(
+    week_offset: int = 0,  # 0 = current week, -1 = last week, etc.
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get weekly purchases organized by supplier and date for table view"""
+    from models.supplier import Supplier
+    from collections import defaultdict
+
+    today = date.today()
+    # Calculate week start (Monday) with offset
+    week_start = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+    week_end = week_start + timedelta(days=6)
+    dates = [week_start + timedelta(days=i) for i in range(7)]
+
+    # Get all invoices for the week (all statuses, matched or not)
+    result = await db.execute(
+        select(Invoice)
+        .where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= week_start,
+            Invoice.invoice_date <= week_end,
+            Invoice.invoice_date.isnot(None)
+        )
+        .order_by(Invoice.invoice_date)
+    )
+    invoices = result.scalars().all()
+
+    # Get all suppliers for name lookup
+    supplier_result = await db.execute(
+        select(Supplier).where(Supplier.kitchen_id == current_user.kitchen_id)
+    )
+    suppliers_map = {s.id: s.name for s in supplier_result.scalars().all()}
+
+    # Organize invoices by supplier
+    supplier_invoices: dict[tuple, list] = defaultdict(list)  # (supplier_id, name, is_unmatched) -> invoices
+
+    for inv in invoices:
+        if inv.supplier_id:
+            key = (inv.supplier_id, suppliers_map.get(inv.supplier_id, "Unknown"), False)
+        else:
+            # Unmatched - use vendor_name or "Unknown Supplier"
+            vendor = inv.vendor_name or "Unknown Supplier"
+            key = (None, vendor, True)
+        supplier_invoices[key].append(inv)
+
+    # Calculate week total
+    week_total = sum(inv.total or Decimal("0") for inv in invoices)
+
+    # Build supplier rows
+    supplier_rows = []
+    for (supplier_id, supplier_name, is_unmatched), invs in sorted(
+        supplier_invoices.items(), key=lambda x: (x[0][2], x[0][1].lower())  # Matched first, then alphabetical
+    ):
+        invoices_by_date: dict[str, list[PurchaseInvoice]] = defaultdict(list)
+        row_total = Decimal("0")
+
+        for inv in invs:
+            date_str = inv.invoice_date.isoformat()
+            invoices_by_date[date_str].append(PurchaseInvoice(
+                id=inv.id,
+                invoice_number=inv.invoice_number,
+                total=inv.total,
+                supplier_match_type=inv.supplier_match_type
+            ))
+            row_total += inv.total or Decimal("0")
+
+        percentage = (row_total / week_total * 100) if week_total > 0 else Decimal("0")
+
+        supplier_rows.append(SupplierRow(
+            supplier_id=supplier_id,
+            supplier_name=supplier_name,
+            is_unmatched=is_unmatched,
+            invoices_by_date=dict(invoices_by_date),
+            total=row_total,
+            percentage=round(percentage, 1)
+        ))
+
+    # Calculate daily totals
+    daily_totals = {}
+    for d in dates:
+        date_str = d.isoformat()
+        daily_totals[date_str] = sum(
+            inv.total or Decimal("0")
+            for inv in invoices
+            if inv.invoice_date and inv.invoice_date.isoformat() == date_str
+        )
+
+    return WeeklyPurchasesResponse(
+        week_start=week_start,
+        week_end=week_end,
+        dates=dates,
+        suppliers=supplier_rows,
+        daily_totals=daily_totals,
+        week_total=week_total
     )
