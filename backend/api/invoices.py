@@ -317,9 +317,9 @@ async def list_invoices(
     """List invoices for the current kitchen with optional filters"""
     from sqlalchemy.orm import selectinload
 
+    # Only load supplier for list view - line_items not needed and slows query significantly
     query = select(Invoice).options(
-        selectinload(Invoice.supplier),
-        selectinload(Invoice.line_items)
+        selectinload(Invoice.supplier)
     ).where(Invoice.kitchen_id == current_user.kitchen_id)
 
     if status:
