@@ -153,15 +153,6 @@ export default function Review() {
     enabled: !!invoice,
   })
 
-  // Cleanup blob URL when component unmounts or URL changes
-  useEffect(() => {
-    return () => {
-      if (imageUrl && imageUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(imageUrl)
-      }
-    }
-  }, [imageUrl])
-
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
     queryKey: ['invoice-line-items', id],
     queryFn: async () => {
@@ -389,11 +380,13 @@ export default function Review() {
           <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
           {imageUrl ? (
             isPDF ? (
-              <iframe
-                src={imageUrl}
+              <object
+                data={imageUrl}
+                type="application/pdf"
                 style={styles.pdfViewer}
-                title="Invoice PDF"
-              />
+              >
+                <p>Unable to display PDF. <a href={`/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`} target="_blank" rel="noopener noreferrer">Open in new tab</a></p>
+              </object>
             ) : (
               <img src={imageUrl} alt="Invoice" style={styles.image} />
             )
