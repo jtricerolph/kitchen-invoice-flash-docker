@@ -130,6 +130,8 @@ function App() {
 }
 
 function Header({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const [reportsOpen, setReportsOpen] = useState(false)
+
   return (
     <header style={styles.header}>
       <div style={styles.headerContent}>
@@ -138,7 +140,18 @@ function Header({ user, onLogout }: { user: User; onLogout: () => void }) {
           <a href="/" style={styles.navLink}>Dashboard</a>
           <a href="/upload" style={styles.navLink}>Upload</a>
           <a href="/invoices" style={styles.navLink}>Invoices</a>
-          <a href="/purchases" style={styles.navLink}>Purchases</a>
+          <div
+            style={styles.dropdownContainer}
+            onMouseEnter={() => setReportsOpen(true)}
+            onMouseLeave={() => setReportsOpen(false)}
+          >
+            <span style={styles.navLink}>Reports ▾</span>
+            {reportsOpen && (
+              <div style={styles.dropdown}>
+                <a href="/purchases" style={styles.dropdownLink}>Weekly Purchases</a>
+              </div>
+            )}
+          </div>
           <a href="/suppliers" style={styles.navLink}>Suppliers</a>
           <a href="/settings" style={styles.navLink}>Settings</a>
         </nav>
@@ -179,6 +192,27 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '1.5rem',
   },
   navLink: {
+    color: 'white',
+    textDecoration: 'none',
+    cursor: 'pointer',
+  },
+  dropdownContainer: {
+    position: 'relative',
+  },
+  dropdown: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    background: '#2d2d44',
+    borderRadius: '4px',
+    padding: '0.5rem 0',
+    minWidth: '160px',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+    zIndex: 100,
+  },
+  dropdownLink: {
+    display: 'block',
+    padding: '0.5rem 1rem',
     color: 'white',
     textDecoration: 'none',
   },

@@ -309,17 +309,22 @@ async def get_weekly_purchases(
     dates = [week_start + timedelta(days=i) for i in range(7)]
 
     # Get all invoices for the week (all statuses, matched or not)
+    # Fetch all recent invoices and filter in Python for reliable date handling
     result = await db.execute(
         select(Invoice)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
-            Invoice.invoice_date >= week_start,
-            Invoice.invoice_date <= week_end,
-            Invoice.invoice_date.isnot(None)
         )
-        .order_by(Invoice.invoice_date)
+        .order_by(Invoice.invoice_date.desc().nullslast())
     )
-    invoices = result.scalars().all()
+    all_invoices = result.scalars().all()
+
+    # Filter to invoices in the week range, using invoice_date or created_at as fallback
+    invoices = []
+    for inv in all_invoices:
+        inv_date = inv.invoice_date or inv.created_at.date()
+        if week_start <= inv_date <= week_end:
+            invoices.append(inv)
 
     # Get all suppliers for name lookup
     supplier_result = await db.execute(
@@ -351,7 +356,9 @@ async def get_weekly_purchases(
         row_total = Decimal("0")
 
         for inv in invs:
-            date_str = inv.invoice_date.isoformat()
+            # Use invoice_date if available, otherwise use created_at date
+            inv_date = inv.invoice_date or inv.created_at.date()
+            date_str = inv_date.isoformat()
             invoices_by_date[date_str].append(PurchaseInvoice(
                 id=inv.id,
                 invoice_number=inv.invoice_number,
@@ -378,7 +385,7 @@ async def get_weekly_purchases(
         daily_totals[date_str] = sum(
             inv.total or Decimal("0")
             for inv in invoices
-            if inv.invoice_date and inv.invoice_date.isoformat() == date_str
+            if (inv.invoice_date or inv.created_at.date()).isoformat() == date_str
         )
 
     return WeeklyPurchasesResponse(
