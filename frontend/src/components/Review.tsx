@@ -139,41 +139,10 @@ export default function Review() {
     refetchOnWindowFocus: false,
   })
 
-  // Fetch file as data URL using FileReader - handles large files properly
-  const [imageUrl, setImageUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!invoice || !token) {
-      setImageUrl(null)
-      return
-    }
-
-    let cancelled = false
-
-    const fetchFile = async () => {
-      try {
-        const res = await fetch(`/api/invoices/${id}/file?token=${encodeURIComponent(token)}`)
-        if (!res.ok || cancelled) return
-        const blob = await res.blob()
-        if (cancelled) return
-
-        // Use FileReader to convert blob to data URL - works through proxies
-        const reader = new FileReader()
-        reader.onload = () => {
-          if (!cancelled && reader.result) {
-            setImageUrl(reader.result as string)
-          }
-        }
-        reader.readAsDataURL(blob)
-      } catch (err) {
-        console.error('Failed to load invoice file:', err)
-      }
-    }
-
-    fetchFile()
-
-    return () => { cancelled = true }
-  }, [invoice?.id, token])
+  // Direct URL with token - simpler approach
+  const imageUrl = invoice
+    ? `/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}#toolbar=0&navpanes=0&view=FitH`
+    : null
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
     queryKey: ['invoice-line-items', id],
