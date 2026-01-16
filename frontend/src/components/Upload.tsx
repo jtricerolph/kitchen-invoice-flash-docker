@@ -199,7 +199,7 @@ export default function Upload() {
       // Step 3: Save PDF
       setStatus('Finalizing PDF...')
       const pdfBytes = await pdfDoc.save()
-      const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' })
+      const pdfBlob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' })
       const pdfFile = new File([pdfBlob], 'invoice.pdf', { type: 'application/pdf' })
 
       // Step 4: Upload
