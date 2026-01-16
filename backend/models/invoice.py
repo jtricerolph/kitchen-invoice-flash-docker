@@ -38,10 +38,10 @@ class Invoice(Base):
     # Duplicate detection
     duplicate_status: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("invoices.id"), nullable=True
+        Integer, ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
     )
     related_document_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("invoices.id"), nullable=True
+        Integer, ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True
     )
 
     # OCR metadata

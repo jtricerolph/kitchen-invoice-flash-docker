@@ -432,7 +432,21 @@ async def delete_invoice(
     db: AsyncSession = Depends(get_db)
 ):
     """Delete an invoice"""
+    from sqlalchemy import update
+
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    # Clear any references from other invoices pointing to this one
+    await db.execute(
+        update(Invoice)
+        .where(Invoice.duplicate_of_id == invoice_id)
+        .values(duplicate_of_id=None, duplicate_status=None)
+    )
+    await db.execute(
+        update(Invoice)
+        .where(Invoice.related_document_id == invoice_id)
+        .values(related_document_id=None)
+    )
 
     if os.path.exists(invoice.image_path):
         os.remove(invoice.image_path)
