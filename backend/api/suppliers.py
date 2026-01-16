@@ -179,3 +179,48 @@ async def delete_supplier(
     await db.commit()
 
     return {"message": "Supplier deleted"}
+
+
+class AddAliasRequest(BaseModel):
+    alias: str
+
+
+@router.post("/{supplier_id}/aliases", response_model=SupplierResponse)
+async def add_supplier_alias(
+    supplier_id: int,
+    request: AddAliasRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Add an alias to a supplier for better matching"""
+    result = await db.execute(
+        select(Supplier).where(
+            Supplier.id == supplier_id,
+            Supplier.kitchen_id == current_user.kitchen_id
+        )
+    )
+    supplier = result.scalar_one_or_none()
+
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    alias = request.alias.strip()
+    if not alias:
+        raise HTTPException(status_code=400, detail="Alias cannot be empty")
+
+    # Add alias if not already present
+    current_aliases = supplier.aliases or []
+    if alias not in current_aliases:
+        current_aliases.append(alias)
+        supplier.aliases = current_aliases
+        await db.commit()
+        await db.refresh(supplier)
+
+    return SupplierResponse(
+        id=supplier.id,
+        name=supplier.name,
+        aliases=supplier.aliases or [],
+        template_config=supplier.template_config,
+        identifier_config=supplier.identifier_config,
+        created_at=supplier.created_at.isoformat()
+    )

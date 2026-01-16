@@ -294,6 +294,25 @@ export default function Review() {
     },
   })
 
+  const addAliasMutation = useMutation({
+    mutationFn: async ({ supplierId, alias }: { supplierId: number; alias: string }) => {
+      const res = await fetch(`/api/suppliers/${supplierId}/aliases`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ alias }),
+      })
+      if (!res.ok) throw new Error('Failed to add alias')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['suppliers'] })
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+    },
+  })
+
   const handleCreateSupplier = () => {
     if (newSupplierName.trim()) {
       createSupplierMutation.mutate(newSupplierName.trim())
@@ -492,9 +511,21 @@ export default function Review() {
                   + New
                 </button>
               </div>
-              {invoice?.supplier_match_type === 'fuzzy' && supplierId && (
+              {invoice?.supplier_match_type === 'fuzzy' && supplierId && invoice.vendor_name && (
                 <div style={styles.fuzzyMatchWarning}>
-                  Fuzzy match from "{invoice.vendor_name}" - please verify
+                  <span>Fuzzy match from "{invoice.vendor_name}" - please verify</span>
+                  <button
+                    type="button"
+                    onClick={() => addAliasMutation.mutate({
+                      supplierId: parseInt(supplierId),
+                      alias: invoice.vendor_name!
+                    })}
+                    style={styles.addAliasBtn}
+                    disabled={addAliasMutation.isPending}
+                    title="Add this name as an alias so future invoices match exactly"
+                  >
+                    {addAliasMutation.isPending ? 'Adding...' : '+ Add as alias'}
+                  </button>
                 </div>
               )}
               {invoice?.vendor_name && !supplierId && (
@@ -904,7 +935,8 @@ const styles: Record<string, React.CSSProperties> = {
   input: { padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.95rem' },
   extractedHint: { fontSize: '0.8rem', color: '#666', fontWeight: 'normal', fontStyle: 'italic' },
   extractedHintRow: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' },
-  fuzzyMatchWarning: { fontSize: '0.8rem', color: '#856404', background: '#fff3cd', padding: '0.35rem 0.5rem', borderRadius: '4px', marginTop: '0.25rem', border: '1px solid #ffc107' },
+  fuzzyMatchWarning: { fontSize: '0.8rem', color: '#856404', background: '#fff3cd', padding: '0.35rem 0.5rem', borderRadius: '4px', marginTop: '0.25rem', border: '1px solid #ffc107', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' },
+  addAliasBtn: { padding: '0.2rem 0.5rem', background: '#28a745', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: '500', whiteSpace: 'nowrap' },
   supplierRow: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
   createSupplierBtn: { padding: '0.5rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' },
   createFromExtractedBtn: { padding: '0.25rem 0.5rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'normal' },
