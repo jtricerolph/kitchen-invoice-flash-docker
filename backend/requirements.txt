@@ -18,16 +18,8 @@ email-validator==2.1.0
 # OCR - Azure Document Intelligence
 azure-ai-formrecognizer==3.3.0
 
-# OCR - PaddlePaddle GPU (fallback)
-paddlepaddle-gpu==2.5.2
-paddleocr==2.7.0.3
-
 # Image processing
 Pillow==10.2.0
-opencv-python-headless==4.9.0.80
-
-# Numpy (must be 1.x for PaddleOCR/OpenCV compatibility)
-numpy<2.0.0
 
 # Utilities
 pydantic==2.5.3

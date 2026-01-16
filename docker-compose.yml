@@ -1,10 +1,7 @@
 services:
   backend:
     build: ./backend
-    runtime: nvidia
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - DATABASE_URL=postgresql://kitchen:kitchen_secret@db:5432/kitchen_gp
       - JWT_SECRET=CHANGE-THIS-TO-SOMETHING-SECURE-AND-RANDOM
     ports:

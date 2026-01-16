@@ -4,16 +4,18 @@ OCR-powered invoice processing for kitchen GP (Gross Profit) estimation.
 
 ## Features
 
-- **Invoice OCR**: Upload invoice photos, extract date, invoice number, and total automatically
-- **GPU Accelerated**: Uses PaddleOCR with NVIDIA GPU support for fast processing
-- **Supplier Templates**: Configure extraction patterns for regular suppliers
+- **Invoice OCR**: Upload invoice photos, extract date, invoice number, total, and line items automatically
+- **Azure Document Intelligence**: Uses Microsoft's pre-trained invoice model for accurate extraction
+- **Multi-page Support**: Combine multiple photos into a single PDF with automatic compression
+- **Supplier Management**: Track and manage suppliers with alias matching
+- **Duplicate Detection**: Automatic detection of duplicate invoices
 - **GP Calculator**: Track costs vs revenue to calculate gross profit
 - **Multi-user**: Support for multiple kitchens with user authentication
 
 ## Requirements
 
-- Docker with NVIDIA GPU support (nvidia-docker2)
-- NVIDIA GPU with CUDA support (tested on P4000)
+- Docker
+- Azure Document Intelligence resource (for OCR)
 
 ## Quick Start
 
@@ -30,22 +32,26 @@ docker-compose up -d
 
 3. Access the app at `http://localhost`
 
+4. Configure Azure credentials in Settings
+
 ## Configuration
 
 Edit `docker-compose.yml` to configure:
 
 - `JWT_SECRET`: Change to a secure random string for production
 - `DATABASE_URL`: PostgreSQL connection string
-- GPU memory limits in the backend service
+
+Configure in the app Settings page:
+- Azure Document Intelligence endpoint and API key
 
 ## Architecture
 
 ```
-├── backend/          # FastAPI + PaddleOCR
+├── backend/          # FastAPI + Azure OCR
 │   ├── api/          # REST endpoints
 │   ├── auth/         # JWT authentication
 │   ├── models/       # SQLAlchemy models
-│   ├── ocr/          # OCR engine & parsing
+│   ├── ocr/          # Azure Document Intelligence
 │   └── services/     # Business logic
 ├── frontend/         # React SPA
 └── docker-compose.yml
@@ -55,9 +61,10 @@ Edit `docker-compose.yml` to configure:
 
 - `POST /auth/register` - Create account
 - `POST /auth/login` - Login
-- `POST /api/invoices/upload` - Upload invoice image
+- `POST /api/invoices/upload` - Upload invoice image/PDF
 - `GET /api/invoices/` - List invoices
 - `PATCH /api/invoices/{id}` - Update invoice data
+- `GET /api/invoices/{id}/ocr-data` - Get raw OCR data
 - `POST /api/reports/gp` - Calculate GP for date range
 - `GET /api/reports/dashboard` - Dashboard summary
 

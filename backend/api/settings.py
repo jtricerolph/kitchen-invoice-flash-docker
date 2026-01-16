@@ -14,7 +14,6 @@ router = APIRouter()
 class SettingsResponse(BaseModel):
     azure_endpoint: str | None
     azure_key_set: bool  # Don't expose the actual key, just whether it's set
-    ocr_provider: str
     currency_symbol: str
     date_format: str
 
@@ -25,7 +24,6 @@ class SettingsResponse(BaseModel):
 class SettingsUpdate(BaseModel):
     azure_endpoint: str | None = None
     azure_key: str | None = None
-    ocr_provider: str | None = None
     currency_symbol: str | None = None
     date_format: str | None = None
 
@@ -45,7 +43,6 @@ async def get_settings(
         # Create default settings if none exist
         settings = KitchenSettings(
             kitchen_id=current_user.kitchen_id,
-            ocr_provider="azure",
             currency_symbol="£",
             date_format="DD/MM/YYYY"
         )
@@ -56,7 +53,6 @@ async def get_settings(
     return SettingsResponse(
         azure_endpoint=settings.azure_endpoint,
         azure_key_set=bool(settings.azure_key),
-        ocr_provider=settings.ocr_provider,
         currency_symbol=settings.currency_symbol,
         date_format=settings.date_format
     )
@@ -90,7 +86,6 @@ async def update_settings(
     return SettingsResponse(
         azure_endpoint=settings.azure_endpoint,
         azure_key_set=bool(settings.azure_key),
-        ocr_provider=settings.ocr_provider,
         currency_symbol=settings.currency_symbol,
         date_format=settings.date_format
     )

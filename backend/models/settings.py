@@ -15,9 +15,6 @@ class KitchenSettings(Base):
     azure_endpoint: Mapped[str | None] = mapped_column(String(500), nullable=True)
     azure_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # OCR provider selection
-    ocr_provider: Mapped[str] = mapped_column(String(50), default="azure")  # "azure" or "paddle"
-
     # General settings
     currency_symbol: Mapped[str] = mapped_column(String(5), default="£")
     date_format: Mapped[str] = mapped_column(String(20), default="DD/MM/YYYY")

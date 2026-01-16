@@ -5,7 +5,6 @@ import { useAuth } from '../App'
 interface SettingsData {
   azure_endpoint: string | null
   azure_key_set: boolean
-  ocr_provider: string
   currency_symbol: string
   date_format: string
 }
@@ -16,7 +15,6 @@ export default function Settings() {
 
   const [azureEndpoint, setAzureEndpoint] = useState('')
   const [azureKey, setAzureKey] = useState('')
-  const [ocrProvider, setOcrProvider] = useState('azure')
   const [currencySymbol, setCurrencySymbol] = useState('£')
   const [dateFormat, setDateFormat] = useState('DD/MM/YYYY')
   const [testStatus, setTestStatus] = useState<string | null>(null)
@@ -36,7 +34,6 @@ export default function Settings() {
   useEffect(() => {
     if (settings) {
       setAzureEndpoint(settings.azure_endpoint || '')
-      setOcrProvider(settings.ocr_provider)
       setCurrencySymbol(settings.currency_symbol)
       setDateFormat(settings.date_format)
     }
@@ -90,7 +87,6 @@ export default function Settings() {
   const handleSave = () => {
     const data: Record<string, string> = {
       azure_endpoint: azureEndpoint,
-      ocr_provider: ocrProvider,
       currency_symbol: currencySymbol,
       date_format: dateFormat,
     }
@@ -168,40 +164,6 @@ export default function Settings() {
               {testStatus}
             </div>
           )}
-        </div>
-      </div>
-
-      {/* OCR Provider Selection */}
-      <div style={styles.section}>
-        <h3 style={styles.sectionTitle}>OCR Provider</h3>
-        <div style={styles.form}>
-          <label style={styles.radioLabel}>
-            <input
-              type="radio"
-              name="ocrProvider"
-              value="azure"
-              checked={ocrProvider === 'azure'}
-              onChange={(e) => setOcrProvider(e.target.value)}
-            />
-            <span>Azure Document Intelligence (Recommended)</span>
-          </label>
-          <p style={styles.radioHint}>
-            Uses Microsoft's pre-trained invoice model. Extracts line items, vendor info, and more.
-          </p>
-
-          <label style={styles.radioLabel}>
-            <input
-              type="radio"
-              name="ocrProvider"
-              value="paddle"
-              checked={ocrProvider === 'paddle'}
-              onChange={(e) => setOcrProvider(e.target.value)}
-            />
-            <span>PaddleOCR (Local GPU)</span>
-          </label>
-          <p style={styles.radioHint}>
-            Uses local GPU for OCR. Basic field extraction only.
-          </p>
         </div>
       </div>
 
@@ -332,19 +294,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0.75rem',
     borderRadius: '6px',
     marginTop: '0.5rem',
-  },
-  radioLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    cursor: 'pointer',
-    fontWeight: '500',
-  },
-  radioHint: {
-    color: '#666',
-    fontSize: '0.85rem',
-    marginLeft: '1.5rem',
-    marginTop: '-0.5rem',
   },
   saveSection: {
     marginTop: '2rem',
