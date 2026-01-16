@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
-from database import get_db, async_session_maker
+from database import get_db, AsyncSessionLocal
 from models.user import User
 from models.supplier import Supplier
 from models.invoice import Invoice
@@ -20,7 +20,7 @@ async def rematch_unmatched_invoices(kitchen_id: int):
     Re-run supplier matching for all invoices without a supplier.
     Called after supplier create/update to match previously unmatched invoices.
     """
-    async with async_session_maker() as db:
+    async with AsyncSessionLocal() as db:
         # Get all invoices without a supplier that have vendor_name from OCR
         result = await db.execute(
             select(Invoice).where(
