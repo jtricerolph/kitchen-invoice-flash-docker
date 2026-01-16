@@ -152,29 +152,21 @@ export default function Review() {
 
     const fetchFile = async () => {
       try {
-        console.log('Fetching file for invoice:', id)
         const res = await fetch(`/api/invoices/${id}/file?token=${encodeURIComponent(token)}`)
-        if (!res.ok) {
-          console.error('Fetch failed:', res.status)
-          return
-        }
-        if (cancelled) return
+        if (!res.ok || cancelled) return
         const blob = await res.blob()
-        console.log('Got blob:', blob.size, blob.type)
         if (cancelled) return
 
-        // Use FileReader to convert blob to data URL
+        // Use FileReader to convert blob to data URL - works through proxies
         const reader = new FileReader()
         reader.onload = () => {
           if (!cancelled && reader.result) {
-            console.log('FileReader done, setting URL')
             setImageUrl(reader.result as string)
           }
         }
-        reader.onerror = () => console.error('FileReader error:', reader.error)
         reader.readAsDataURL(blob)
       } catch (err) {
-        console.error('Failed to load file:', err)
+        console.error('Failed to load invoice file:', err)
       }
     }
 
