@@ -14,6 +14,7 @@ interface User {
   name: string | null
   kitchen_id: number
   kitchen_name: string
+  is_admin: boolean
 }
 
 interface AuthContextType {
