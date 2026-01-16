@@ -353,171 +353,166 @@ export default function Review() {
   const isPDF = invoice?.image_path?.toLowerCase().endsWith('.pdf')
 
   return (
-    <div style={styles.container}>
-      <div style={styles.imageSection}>
-        <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
-        {imageUrl ? (
-          isPDF ? (
-            <object
-              data={imageUrl}
-              type="application/pdf"
-              style={styles.pdfViewer}
-            >
-              <div style={styles.pdfFallback}>
-                <p>PDF preview not available in your browser.</p>
-                <a href={imageUrl} target="_blank" rel="noopener noreferrer" style={styles.pdfLink}>
-                  Open PDF in new tab
-                </a>
-              </div>
-            </object>
+    <div style={styles.pageContainer}>
+      {/* Top row: Image and Form side by side */}
+      <div style={styles.topRow}>
+        <div style={styles.imageSection}>
+          <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
+          {imageUrl ? (
+            isPDF ? (
+              <iframe
+                src={imageUrl}
+                style={styles.pdfViewer}
+                title="Invoice PDF"
+              />
+            ) : (
+              <img src={imageUrl} alt="Invoice" style={styles.image} />
+            )
           ) : (
-            <img src={imageUrl} alt="Invoice" style={styles.image} />
-          )
-        ) : (
-          <div style={styles.imagePlaceholder}>Loading {isPDF ? 'document' : 'image'}...</div>
-        )}
-        {confidence && (
-          <div style={styles.confidenceBadge}>
-            OCR Confidence: {confidence}%
-          </div>
-        )}
-      </div>
-
-      <div style={styles.formSection}>
-        {/* Duplicate Warning Banner */}
-        {invoice.duplicate_status && (
-          <div
-            style={{
-              ...styles.duplicateWarning,
-              background: invoice.duplicate_status === 'firm_duplicate' ? '#f8d7da' : '#fff3cd',
-              borderColor: invoice.duplicate_status === 'firm_duplicate' ? '#f5c6cb' : '#ffeeba',
-              color: invoice.duplicate_status === 'firm_duplicate' ? '#721c24' : '#856404',
-            }}
-            onClick={() => setShowDuplicateModal(true)}
-          >
-            {invoice.duplicate_status === 'firm_duplicate'
-              ? '⚠️ DUPLICATE: This invoice matches an existing record. Click to compare.'
-              : '⚠️ Possible duplicate detected. Click to compare.'}
-          </div>
-        )}
-
-        <h3>Extracted Data</h3>
-        <p style={styles.hint}>
-          Review and correct the extracted information below
-        </p>
-
-        <div style={styles.form}>
-          <label style={styles.label}>
-            Invoice Number
-            <input
-              type="text"
-              value={invoiceNumber}
-              onChange={(e) => setInvoiceNumber(e.target.value)}
-              style={styles.input}
-              placeholder="e.g., INV-12345"
-            />
-          </label>
-
-          <label style={styles.label}>
-            Invoice Date
-            <input
-              type="date"
-              value={invoiceDate}
-              onChange={(e) => setInvoiceDate(e.target.value)}
-              style={styles.input}
-            />
-          </label>
-
-          <div style={styles.row}>
-            <label style={{ ...styles.label, flex: 1 }}>
-              Gross Total (£)
-              <input
-                type="number"
-                step="0.01"
-                value={total}
-                onChange={(e) => setTotal(e.target.value)}
-                style={styles.input}
-                placeholder="Inc. VAT"
-              />
-            </label>
-
-            <label style={{ ...styles.label, flex: 1 }}>
-              Net Total (£)
-              <input
-                type="number"
-                step="0.01"
-                value={netTotal}
-                onChange={(e) => setNetTotal(e.target.value)}
-                style={styles.input}
-                placeholder="Exc. VAT"
-              />
-            </label>
-          </div>
-
-          <div style={styles.label}>
-            <span>Supplier</span>
-            <div style={styles.supplierRow}>
-              <select
-                value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
-                style={{ ...styles.input, flex: 1 }}
-              >
-                <option value="">-- Select Supplier --</option>
-                {suppliers?.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={openCreateSupplierModal}
-                style={styles.createSupplierBtn}
-                title="Create new supplier"
-              >
-                + New
-              </button>
+            <div style={styles.imagePlaceholder}>Loading {isPDF ? 'document' : 'image'}...</div>
+          )}
+          {confidence && (
+            <div style={styles.confidenceBadge}>
+              OCR Confidence: {confidence}%
             </div>
-            {invoice?.vendor_name && !supplierId && (
-              <div style={styles.extractedHintRow}>
-                <span style={styles.extractedHint}>Extracted: {invoice.vendor_name}</span>
+          )}
+        </div>
+
+        <div style={styles.formSection}>
+          {/* Duplicate Warning Banner */}
+          {invoice.duplicate_status && (
+            <div
+              style={{
+                ...styles.duplicateWarning,
+                background: invoice.duplicate_status === 'firm_duplicate' ? '#f8d7da' : '#fff3cd',
+                borderColor: invoice.duplicate_status === 'firm_duplicate' ? '#f5c6cb' : '#ffeeba',
+                color: invoice.duplicate_status === 'firm_duplicate' ? '#721c24' : '#856404',
+              }}
+              onClick={() => setShowDuplicateModal(true)}
+            >
+              {invoice.duplicate_status === 'firm_duplicate'
+                ? '⚠️ DUPLICATE: This invoice matches an existing record. Click to compare.'
+                : '⚠️ Possible duplicate detected. Click to compare.'}
+            </div>
+          )}
+
+          <h3>Invoice Details</h3>
+
+          <div style={styles.form}>
+            <div style={styles.row}>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Invoice Number
+                <input
+                  type="text"
+                  value={invoiceNumber}
+                  onChange={(e) => setInvoiceNumber(e.target.value)}
+                  style={styles.input}
+                  placeholder="e.g., INV-12345"
+                />
+              </label>
+
+              <label style={{ ...styles.label, flex: 1 }}>
+                Invoice Date
+                <input
+                  type="date"
+                  value={invoiceDate}
+                  onChange={(e) => setInvoiceDate(e.target.value)}
+                  style={styles.input}
+                />
+              </label>
+            </div>
+
+            <div style={styles.row}>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Gross Total (£)
+                <input
+                  type="number"
+                  step="0.01"
+                  value={total}
+                  onChange={(e) => setTotal(e.target.value)}
+                  style={styles.input}
+                  placeholder="Inc. VAT"
+                />
+              </label>
+
+              <label style={{ ...styles.label, flex: 1 }}>
+                Net Total (£)
+                <input
+                  type="number"
+                  step="0.01"
+                  value={netTotal}
+                  onChange={(e) => setNetTotal(e.target.value)}
+                  style={styles.input}
+                  placeholder="Exc. VAT"
+                />
+              </label>
+            </div>
+
+            <div style={styles.label}>
+              <span>Supplier</span>
+              <div style={styles.supplierRow}>
+                <select
+                  value={supplierId}
+                  onChange={(e) => setSupplierId(e.target.value)}
+                  style={{ ...styles.input, flex: 1 }}
+                >
+                  <option value="">-- Select Supplier --</option>
+                  {suppliers?.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
                 <button
                   type="button"
                   onClick={openCreateSupplierModal}
-                  style={styles.createFromExtractedBtn}
+                  style={styles.createSupplierBtn}
+                  title="Create new supplier"
                 >
-                  Create "{invoice.vendor_name}"
+                  + New
                 </button>
               </div>
-            )}
-          </div>
+              {invoice?.vendor_name && !supplierId && (
+                <div style={styles.extractedHintRow}>
+                  <span style={styles.extractedHint}>Extracted: {invoice.vendor_name}</span>
+                  <button
+                    type="button"
+                    onClick={openCreateSupplierModal}
+                    style={styles.createFromExtractedBtn}
+                  >
+                    Create "{invoice.vendor_name}"
+                  </button>
+                </div>
+              )}
+            </div>
 
-          <label style={styles.label}>
-            Order/PO Number
-            <input
-              type="text"
-              value={orderNumber}
-              onChange={(e) => setOrderNumber(e.target.value)}
-              style={styles.input}
-              placeholder="e.g., PO-12345"
-            />
-          </label>
+            <div style={styles.row}>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Order/PO Number
+                <input
+                  type="text"
+                  value={orderNumber}
+                  onChange={(e) => setOrderNumber(e.target.value)}
+                  style={styles.input}
+                  placeholder="e.g., PO-12345"
+                />
+              </label>
 
-          <div style={styles.row}>
-            <label style={{ ...styles.label, flex: 1 }}>
-              Category
-              <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                style={styles.input}
-              >
-                <option value="food">Food</option>
-                <option value="beverages">Beverages</option>
-                <option value="supplies">Supplies</option>
-                <option value="equipment">Equipment</option>
-                <option value="other">Other</option>
-              </select>
-            </label>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Category
+                <select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  style={styles.input}
+                >
+                  <option value="food">Food</option>
+                  <option value="beverages">Beverages</option>
+                  <option value="supplies">Supplies</option>
+                  <option value="equipment">Equipment</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+            </div>
 
-            <label style={{ ...styles.label, flex: 1 }}>
+            <label style={styles.label}>
               Document Type
               <select
                 value={documentType}
@@ -529,162 +524,163 @@ export default function Review() {
               </select>
             </label>
           </div>
-        </div>
 
-        {/* Line Items Section */}
-        <div style={styles.lineItemsSection}>
-          <h4>Line Items</h4>
-          {lineItems && lineItems.length > 0 ? (
-            <table style={styles.lineItemsTable}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Description</th>
-                  <th style={styles.th}>Qty</th>
-                  <th style={styles.th}>Unit</th>
-                  <th style={styles.th}>Amount</th>
-                  <th style={{ ...styles.th, textAlign: 'center' }}>Non-Stock</th>
-                  <th style={styles.th}></th>
+          <div style={styles.status}>
+            Current status: <strong>{invoice.status}</strong>
+            {invoice.document_type === 'delivery_note' && (
+              <span style={styles.docTypeBadge}>Delivery Note</span>
+            )}
+          </div>
+
+          <div style={styles.actions}>
+            <button
+              onClick={() => handleSave('reviewed')}
+              style={styles.saveBtn}
+              disabled={updateMutation.isPending}
+            >
+              Save Changes
+            </button>
+            <button
+              onClick={handleConfirm}
+              style={styles.confirmBtn}
+              disabled={updateMutation.isPending}
+            >
+              Confirm & Include in GP
+            </button>
+          </div>
+
+          <div style={styles.secondaryActions}>
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              style={styles.deleteBtn}
+            >
+              Delete Invoice
+            </button>
+            <button
+              onClick={() => setShowRawOcrModal(true)}
+              style={styles.rawOcrBtn}
+            >
+              View Raw OCR Data
+            </button>
+          </div>
+
+          <button onClick={() => navigate('/invoices')} style={styles.backBtn}>
+            ← Back to Invoices
+          </button>
+        </div>
+      </div>
+
+      {/* Full-width Line Items Section */}
+      <div style={styles.lineItemsSection}>
+        <h3>Line Items</h3>
+        {lineItems && lineItems.length > 0 ? (
+          <table style={styles.lineItemsTable}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Description</th>
+                <th style={styles.th}>Qty</th>
+                <th style={styles.th}>Unit Price</th>
+                <th style={styles.th}>Amount</th>
+                <th style={{ ...styles.th, textAlign: 'center' }}>Non-Stock</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {lineItems.map((item) => (
+                <tr key={item.id}>
+                  {editingLineItem === item.id ? (
+                    <>
+                      <td style={styles.td}>
+                        <input
+                          type="text"
+                          value={lineItemEdits.description || ''}
+                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, description: e.target.value })}
+                          style={styles.tableInput}
+                        />
+                      </td>
+                      <td style={styles.td}>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={lineItemEdits.quantity || ''}
+                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) })}
+                          style={{ ...styles.tableInput, width: '70px' }}
+                        />
+                      </td>
+                      <td style={styles.td}>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={lineItemEdits.unit_price || ''}
+                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) })}
+                          style={{ ...styles.tableInput, width: '80px' }}
+                        />
+                      </td>
+                      <td style={styles.td}>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={lineItemEdits.amount || ''}
+                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) })}
+                          style={{ ...styles.tableInput, width: '80px' }}
+                        />
+                      </td>
+                      <td style={{ ...styles.td, textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={lineItemEdits.is_non_stock || false}
+                          onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
+                          style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                        />
+                      </td>
+                      <td style={styles.td}>
+                        <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
+                        <button onClick={() => setEditingLineItem(null)} style={styles.smallBtnCancel}>X</button>
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
+                        {item.description || '—'}
+                      </td>
+                      <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
+                      <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
+                      <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
+                      <td style={{ ...styles.td, textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={item.is_non_stock}
+                          onChange={(e) => {
+                            updateLineItemMutation.mutate({
+                              itemId: item.id,
+                              data: { is_non_stock: e.target.checked }
+                            })
+                          }}
+                          style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                          title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
+                        />
+                      </td>
+                      <td style={styles.td}>
+                        <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
+                      </td>
+                    </>
+                  )}
                 </tr>
-              </thead>
-              <tbody>
-                {lineItems.map((item) => (
-                  <tr key={item.id}>
-                    {editingLineItem === item.id ? (
-                      <>
-                        <td style={styles.td}>
-                          <input
-                            type="text"
-                            value={lineItemEdits.description || ''}
-                            onChange={(e) => setLineItemEdits({ ...lineItemEdits, description: e.target.value })}
-                            style={styles.tableInput}
-                          />
-                        </td>
-                        <td style={styles.td}>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={lineItemEdits.quantity || ''}
-                            onChange={(e) => setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) })}
-                            style={{ ...styles.tableInput, width: '60px' }}
-                          />
-                        </td>
-                        <td style={styles.td}>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={lineItemEdits.unit_price || ''}
-                            onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) })}
-                            style={{ ...styles.tableInput, width: '70px' }}
-                          />
-                        </td>
-                        <td style={styles.td}>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={lineItemEdits.amount || ''}
-                            onChange={(e) => setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) })}
-                            style={{ ...styles.tableInput, width: '70px' }}
-                          />
-                        </td>
-                        <td style={{ ...styles.td, textAlign: 'center' }}>
-                          <input
-                            type="checkbox"
-                            checked={lineItemEdits.is_non_stock || false}
-                            onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
-                            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                          />
-                        </td>
-                        <td style={styles.td}>
-                          <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
-                          <button onClick={() => setEditingLineItem(null)} style={styles.smallBtnCancel}>X</button>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
-                          {item.description || '—'}
-                        </td>
-                        <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
-                        <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
-                        <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
-                        <td style={{ ...styles.td, textAlign: 'center' }}>
-                          <input
-                            type="checkbox"
-                            checked={item.is_non_stock}
-                            onChange={(e) => {
-                              updateLineItemMutation.mutate({
-                                itemId: item.id,
-                                data: { is_non_stock: e.target.checked }
-                              })
-                            }}
-                            style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                            title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
-                          />
-                        </td>
-                        <td style={styles.td}>
-                          <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
-                        </td>
-                      </>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p style={styles.noItems}>No line items extracted</p>
-          )}
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p style={styles.noItems}>No line items extracted</p>
+        )}
 
-          {/* Line Items Total Validation */}
-          {lineItems && lineItems.length > 0 && (
-            <LineItemsValidation
-              lineItems={lineItems}
-              invoiceTotal={parseFloat(total) || 0}
-              netTotal={netTotal ? parseFloat(netTotal) : null}
-            />
-          )}
-        </div>
-
-        <div style={styles.status}>
-          Current status: <strong>{invoice.status}</strong>
-          {invoice.document_type === 'delivery_note' && (
-            <span style={styles.docTypeBadge}>Delivery Note</span>
-          )}
-        </div>
-
-        <div style={styles.actions}>
-          <button
-            onClick={() => handleSave('reviewed')}
-            style={styles.saveBtn}
-            disabled={updateMutation.isPending}
-          >
-            Save Changes
-          </button>
-          <button
-            onClick={handleConfirm}
-            style={styles.confirmBtn}
-            disabled={updateMutation.isPending}
-          >
-            Confirm & Include in GP
-          </button>
-        </div>
-
-        <button
-          onClick={() => setShowDeleteModal(true)}
-          style={styles.deleteBtn}
-        >
-          Delete Invoice
-        </button>
-
-        <button
-          onClick={() => setShowRawOcrModal(true)}
-          style={styles.rawOcrBtn}
-        >
-          View Raw OCR Data
-        </button>
-
-        <button onClick={() => navigate('/invoices')} style={styles.backBtn}>
-          ← Back to Invoices
-        </button>
+        {/* Line Items Total Validation */}
+        {lineItems && lineItems.length > 0 && (
+          <LineItemsValidation
+            lineItems={lineItems}
+            invoiceTotal={parseFloat(total) || 0}
+            netTotal={netTotal ? parseFloat(netTotal) : null}
+          />
+        )}
       </div>
 
       {/* Delete Confirmation Modal */}
@@ -866,45 +862,43 @@ export default function Review() {
 const styles: Record<string, React.CSSProperties> = {
   loading: { padding: '2rem', textAlign: 'center', color: '#666' },
   error: { padding: '2rem', textAlign: 'center', color: '#c00' },
-  container: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' },
+  pageContainer: { display: 'flex', flexDirection: 'column', gap: '1.5rem' },
+  topRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' },
   imageSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   image: { width: '100%', borderRadius: '8px', marginTop: '1rem' },
   imagePlaceholder: { width: '100%', height: '300px', background: '#f5f5f5', borderRadius: '8px', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' },
-  pdfViewer: { width: '100%', height: '600px', borderRadius: '8px', marginTop: '1rem', border: '1px solid #ddd' },
-  pdfFallback: { width: '100%', height: '300px', background: '#f5f5f5', borderRadius: '8px', marginTop: '1rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#666' },
-  pdfLink: { marginTop: '1rem', padding: '0.75rem 1.5rem', background: '#1a1a2e', color: 'white', textDecoration: 'none', borderRadius: '6px' },
+  pdfViewer: { width: '100%', height: '500px', borderRadius: '8px', marginTop: '1rem', border: 'none' },
   confidenceBadge: { marginTop: '1rem', padding: '0.5rem 1rem', background: '#f0f0f0', borderRadius: '20px', textAlign: 'center', fontSize: '0.9rem', color: '#666' },
   formSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   duplicateWarning: { padding: '1rem', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer', border: '1px solid', fontWeight: '500' },
-  hint: { color: '#666', marginBottom: '1.5rem' },
-  form: { display: 'flex', flexDirection: 'column', gap: '1rem' },
+  form: { display: 'flex', flexDirection: 'column', gap: '0.75rem' },
   row: { display: 'flex', gap: '1rem' },
-  label: { display: 'flex', flexDirection: 'column', gap: '0.5rem', color: '#333', fontWeight: '500' },
-  input: { padding: '0.75rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '1rem' },
+  label: { display: 'flex', flexDirection: 'column', gap: '0.25rem', color: '#333', fontWeight: '500', fontSize: '0.9rem' },
+  input: { padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.95rem' },
   extractedHint: { fontSize: '0.8rem', color: '#666', fontWeight: 'normal', fontStyle: 'italic' },
   extractedHintRow: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' },
   supplierRow: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
-  createSupplierBtn: { padding: '0.75rem 1rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' },
+  createSupplierBtn: { padding: '0.5rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' },
   createFromExtractedBtn: { padding: '0.25rem 0.5rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'normal' },
   modalLabel: { display: 'flex', flexDirection: 'column', gap: '0.5rem', color: '#333', fontWeight: '500', marginTop: '1rem' },
-  lineItemsSection: { marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid #eee' },
-  lineItemsTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.9rem' },
-  th: { textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600' },
-  td: { padding: '0.5rem', borderBottom: '1px solid #eee' },
-  tableInput: { padding: '0.25rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.85rem' },
-  smallBtn: { padding: '0.25rem 0.5rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginRight: '0.25rem', fontSize: '0.75rem' },
-  smallBtnCancel: { padding: '0.25rem 0.5rem', background: '#999', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' },
-  editBtn: { padding: '0.25rem 0.5rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' },
-  nonStockBadge: { padding: '0.125rem 0.375rem', background: '#fff3cd', color: '#856404', borderRadius: '4px', fontSize: '0.7rem', fontWeight: '500' },
+  lineItemsSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
+  lineItemsTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.95rem' },
+  th: { textAlign: 'left', padding: '0.75rem 0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#f8f9fa' },
+  td: { padding: '0.75rem 0.5rem', borderBottom: '1px solid #eee' },
+  tableInput: { padding: '0.35rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.9rem', width: '100%' },
+  smallBtn: { padding: '0.35rem 0.75rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginRight: '0.25rem', fontSize: '0.8rem' },
+  smallBtnCancel: { padding: '0.35rem 0.75rem', background: '#999', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' },
+  editBtn: { padding: '0.35rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' },
   noItems: { color: '#999', fontStyle: 'italic', marginTop: '0.5rem' },
-  status: { marginTop: '1.5rem', padding: '1rem', background: '#f5f5f5', borderRadius: '6px', color: '#666' },
+  status: { marginTop: '1rem', padding: '0.75rem', background: '#f5f5f5', borderRadius: '6px', color: '#666', fontSize: '0.9rem' },
   docTypeBadge: { marginLeft: '1rem', padding: '0.25rem 0.5rem', background: '#17a2b8', color: 'white', borderRadius: '4px', fontSize: '0.75rem' },
-  actions: { display: 'flex', gap: '1rem', marginTop: '1.5rem' },
+  actions: { display: 'flex', gap: '0.75rem', marginTop: '1rem' },
   saveBtn: { flex: 1, padding: '0.75rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
   confirmBtn: { flex: 1, padding: '0.75rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
-  deleteBtn: { marginTop: '1rem', padding: '0.75rem', background: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%' },
-  rawOcrBtn: { marginTop: '0.5rem', padding: '0.75rem', background: '#6c757d', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', width: '100%', fontSize: '0.9rem' },
-  backBtn: { marginTop: '0.5rem', padding: '0.75rem', background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', width: '100%' },
+  secondaryActions: { display: 'flex', gap: '0.75rem', marginTop: '0.75rem' },
+  deleteBtn: { flex: 1, padding: '0.5rem', background: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' },
+  rawOcrBtn: { flex: 1, padding: '0.5rem', background: '#6c757d', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' },
+  backBtn: { marginTop: '0.5rem', padding: '0.5rem', background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', width: '100%', fontSize: '0.9rem' },
   modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
   modal: { background: 'white', padding: '2rem', borderRadius: '12px', maxWidth: '400px', width: '90%' },
   wideModal: { background: 'white', padding: '2rem', borderRadius: '12px', maxWidth: '800px', width: '90%', maxHeight: '80vh', overflowY: 'auto' },
