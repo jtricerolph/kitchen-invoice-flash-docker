@@ -142,13 +142,25 @@ export default function Review() {
   const { data: imageUrl } = useQuery<string>({
     queryKey: ['invoice-image', id, invoice?.image_path],
     queryFn: async () => {
-      // Use token in query param for all files - works better through proxies
-      return `/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`
+      // Fetch as blob and create blob URL - bypasses proxy iframe restrictions
+      const res = await fetch(`/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`)
+      if (!res.ok) throw new Error('Failed to fetch file')
+      const blob = await res.blob()
+      return URL.createObjectURL(blob)
     },
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     enabled: !!invoice,
   })
+
+  // Cleanup blob URL when component unmounts or URL changes
+  useEffect(() => {
+    return () => {
+      if (imageUrl && imageUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(imageUrl)
+      }
+    }
+  }, [imageUrl])
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
     queryKey: ['invoice-line-items', id],
@@ -390,7 +402,7 @@ export default function Review() {
           )}
           {isPDF && imageUrl && (
             <a
-              href={imageUrl}
+              href={`/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`}
               target="_blank"
               rel="noopener noreferrer"
               style={styles.openPdfLink}
