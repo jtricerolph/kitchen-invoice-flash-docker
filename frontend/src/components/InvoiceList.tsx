@@ -17,6 +17,7 @@ interface Invoice {
   duplicate_status: string | null
   supplier_id: number | null
   supplier_name: string | null
+  supplier_match_type: string | null
 }
 
 interface Supplier {
@@ -168,7 +169,15 @@ export default function InvoiceList() {
                 </div>
                 <div style={styles.invoiceMeta}>
                   {invoice.supplier_name && (
-                    <span style={styles.supplierName}>{invoice.supplier_name}</span>
+                    <span style={{
+                      ...styles.supplierName,
+                      ...(invoice.supplier_match_type === 'fuzzy' ? styles.fuzzySupplier : {})
+                    }}>
+                      {invoice.supplier_name}
+                      {invoice.supplier_match_type === 'fuzzy' && (
+                        <span style={styles.fuzzyBadge} title="Suggested match - please verify">?</span>
+                      )}
+                    </span>
                   )}
                   <span style={styles.invoiceDate}>
                     {invoice.invoice_date
@@ -381,6 +390,26 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#1a1a2e',
     fontSize: '0.9rem',
     fontWeight: '500',
+  },
+  fuzzySupplier: {
+    color: '#856404',
+    background: '#fff3cd',
+    padding: '0.1rem 0.4rem',
+    borderRadius: '4px',
+    border: '1px solid #ffc107',
+  },
+  fuzzyBadge: {
+    display: 'inline-block',
+    marginLeft: '0.3rem',
+    width: '14px',
+    height: '14px',
+    lineHeight: '14px',
+    textAlign: 'center',
+    background: '#ffc107',
+    color: '#856404',
+    borderRadius: '50%',
+    fontSize: '0.7rem',
+    fontWeight: 'bold',
   },
   invoiceDate: {
     color: '#666',

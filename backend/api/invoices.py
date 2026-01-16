@@ -385,7 +385,7 @@ async def get_invoice_image(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get the invoice image or PDF file"""
+    """Get the invoice image or PDF file (requires auth header)"""
     from starlette.responses import Response
 
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
@@ -419,13 +419,60 @@ async def get_invoice_image(
     )
 
 
+@router.get("/{invoice_id}/file")
+async def get_invoice_file(
+    invoice_id: int,
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get invoice file (image or PDF) with token in query param - works through proxies"""
+    from auth.jwt import get_current_user_from_token
+    from starlette.responses import Response
+
+    # Verify token and get user
+    current_user = await get_current_user_from_token(token, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    if not os.path.exists(invoice.image_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ext = invoice.image_path.split(".")[-1].lower()
+    media_types = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "heic": "image/heic",
+        "pdf": "application/pdf",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+
+    # Read file and return with headers that allow embedding through proxies
+    with open(invoice.image_path, "rb") as f:
+        content = f.read()
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": "inline",
+            "Access-Control-Allow-Origin": "*",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "Cache-Control": "no-cache",
+        }
+    )
+
+
 @router.get("/{invoice_id}/pdf")
 async def get_invoice_pdf(
     invoice_id: int,
     token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Get invoice PDF with token in query param (for iframe embedding)"""
+    """Get invoice PDF with token in query param (for iframe embedding) - DEPRECATED, use /file"""
     from auth.jwt import get_current_user_from_token
     from starlette.responses import Response
 

@@ -142,21 +142,12 @@ export default function Review() {
   const { data: imageUrl } = useQuery<string>({
     queryKey: ['invoice-image', id, invoice?.image_path],
     queryFn: async () => {
-      // For PDFs, use direct URL with token (blob URLs don't work in iframes)
-      if (invoice?.image_path?.toLowerCase().endsWith('.pdf')) {
-        return `/api/invoices/${id}/pdf?token=${encodeURIComponent(token || '')}`
-      }
-      // For images, use blob URL
-      const res = await fetch(`/api/invoices/${id}/image`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (!res.ok) throw new Error('Failed to fetch image')
-      const blob = await res.blob()
-      return URL.createObjectURL(blob)
+      // Use token in query param for all files - works better through proxies
+      return `/api/invoices/${id}/file?token=${encodeURIComponent(token || '')}`
     },
     staleTime: Infinity,
     refetchOnWindowFocus: false,
-    enabled: !!invoice,  // Wait for invoice data to know if PDF
+    enabled: !!invoice,
   })
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
@@ -386,23 +377,26 @@ export default function Review() {
           <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
           {imageUrl ? (
             isPDF ? (
-              <object
-                data={imageUrl}
-                type="application/pdf"
+              <iframe
+                src={imageUrl}
                 style={styles.pdfViewer}
-              >
-                <p style={{ padding: '1rem', textAlign: 'center' }}>
-                  PDF preview not available.{' '}
-                  <a href={imageUrl} target="_blank" rel="noopener noreferrer">
-                    Open PDF in new tab
-                  </a>
-                </p>
-              </object>
+                title="Invoice PDF"
+              />
             ) : (
               <img src={imageUrl} alt="Invoice" style={styles.image} />
             )
           ) : (
             <div style={styles.imagePlaceholder}>Loading {isPDF ? 'document' : 'image'}...</div>
+          )}
+          {isPDF && imageUrl && (
+            <a
+              href={imageUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={styles.openPdfLink}
+            >
+              Open PDF in new tab
+            </a>
           )}
           {confidence && (
             <div style={styles.confidenceBadge}>
@@ -927,6 +921,7 @@ const styles: Record<string, React.CSSProperties> = {
   image: { width: '100%', borderRadius: '8px', marginTop: '1rem' },
   imagePlaceholder: { width: '100%', height: '300px', background: '#f5f5f5', borderRadius: '8px', marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' },
   pdfViewer: { width: '100%', height: '500px', borderRadius: '8px', marginTop: '1rem', border: 'none' },
+  openPdfLink: { display: 'block', marginTop: '0.5rem', textAlign: 'center', color: '#0066cc', fontSize: '0.85rem' },
   confidenceBadge: { marginTop: '1rem', padding: '0.5rem 1rem', background: '#f0f0f0', borderRadius: '20px', textAlign: 'center', fontSize: '0.9rem', color: '#666' },
   formSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   duplicateWarning: { padding: '1rem', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer', border: '1px solid', fontWeight: '500' },
