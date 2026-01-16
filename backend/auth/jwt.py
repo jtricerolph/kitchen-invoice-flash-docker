@@ -67,28 +67,30 @@ async def get_current_user(
 ) -> User:
     """Get the current authenticated user from the JWT token"""
     token = credentials.credentials
-    payload = verify_token(token)
+    user = await get_current_user_from_token(token, db)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
+    return user
+
+
+async def get_current_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
+    """Get user from a token string (for query param auth)"""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        return None
 
     user_id = payload.get("sub")
     if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload"
-        )
+        return None
 
     result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalar_one_or_none()
 
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is disabled"
-        )
+    if user is None or not user.is_active:
+        return None
 
     return user

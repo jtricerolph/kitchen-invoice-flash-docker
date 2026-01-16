@@ -402,6 +402,39 @@ async def get_invoice_image(
     return FileResponse(invoice.image_path, media_type=media_type)
 
 
+@router.get("/{invoice_id}/pdf")
+async def get_invoice_pdf(
+    invoice_id: int,
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get invoice PDF with token in query param (for iframe embedding)"""
+    from auth.jwt import get_current_user_from_token
+    from starlette.responses import Response
+
+    # Verify token and get user
+    current_user = await get_current_user_from_token(token, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    if not os.path.exists(invoice.image_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Read file and return with headers that allow iframe embedding
+    with open(invoice.image_path, "rb") as f:
+        content = f.read()
+
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": "inline",
+        }
+    )
+
+
 @router.patch("/{invoice_id}", response_model=InvoiceResponse)
 async def update_invoice(
     invoice_id: int,

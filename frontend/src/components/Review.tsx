@@ -139,8 +139,13 @@ export default function Review() {
   })
 
   const { data: imageUrl } = useQuery<string>({
-    queryKey: ['invoice-image', id],
+    queryKey: ['invoice-image', id, isPDF],
     queryFn: async () => {
+      // For PDFs, use direct URL with token (blob URLs don't work in iframes)
+      if (invoice?.image_path?.toLowerCase().endsWith('.pdf')) {
+        return `/api/invoices/${id}/pdf?token=${encodeURIComponent(token || '')}`
+      }
+      // For images, use blob URL
       const res = await fetch(`/api/invoices/${id}/image`, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -150,6 +155,7 @@ export default function Review() {
     },
     staleTime: Infinity,
     refetchOnWindowFocus: false,
+    enabled: !!invoice,  // Wait for invoice data to know if PDF
   })
 
   const { data: lineItems, refetch: refetchLineItems } = useQuery<LineItem[]>({
@@ -360,11 +366,18 @@ export default function Review() {
           <h3>Invoice {isPDF ? 'Document' : 'Image'}</h3>
           {imageUrl ? (
             isPDF ? (
-              <iframe
-                src={imageUrl}
+              <object
+                data={imageUrl}
+                type="application/pdf"
                 style={styles.pdfViewer}
-                title="Invoice PDF"
-              />
+              >
+                <p style={{ padding: '1rem', textAlign: 'center' }}>
+                  PDF preview not available.{' '}
+                  <a href={imageUrl} target="_blank" rel="noopener noreferrer">
+                    Open PDF in new tab
+                  </a>
+                </p>
+              </object>
             ) : (
               <img src={imageUrl} alt="Invoice" style={styles.image} />
             )
