@@ -205,30 +205,51 @@ def fuzzy_match_score(supplier_name: str, text: str) -> float:
     """
     Calculate fuzzy match score between supplier name and text.
     Returns score from 0.0 to 1.0
+
+    Requires strong evidence of match - simple word overlap is not enough.
     """
     supplier_norm = normalize_text(supplier_name)
     text_norm = normalize_text(text)
 
     # Check if supplier name is contained in text (high confidence)
     if supplier_norm in text_norm:
-        return 0.9
+        return 0.95
 
-    # Check word overlap
-    supplier_words = get_words(supplier_name)
-    text_words = get_words(text)
+    # Get significant words (4+ chars to avoid common short words like "the", "ltd", "and")
+    supplier_words = {w for w in normalize_text(supplier_name).split() if len(w) >= 4}
+    text_words = {w for w in normalize_text(text).split() if len(w) >= 4}
 
     if not supplier_words:
-        return 0.0
+        # Fall back to 3+ char words if no 4+ char words
+        supplier_words = get_words(supplier_name)
+        if not supplier_words:
+            return 0.0
 
     # Count how many supplier words appear in text
     matching_words = supplier_words & text_words
+
+    # No matches at all = no fuzzy match
+    if not matching_words:
+        return 0.0
+
+    # Calculate base score from word overlap
     word_score = len(matching_words) / len(supplier_words)
 
-    # Check if first word matches (often most important - company name)
+    # Bonus: Check if first word (company name) matches - this is most important
     supplier_first = supplier_norm.split()[0] if supplier_norm.split() else ""
-    if supplier_first and len(supplier_first) >= 3:
+    first_word_matches = False
+    if supplier_first and len(supplier_first) >= 4:
         if supplier_first in text_norm:
-            word_score = max(word_score, 0.7)
+            first_word_matches = True
+            word_score = max(word_score, 0.75)
+
+    # Require either:
+    # - First word matching (strong signal), OR
+    # - Multiple words matching (at least 2)
+    # Single non-first word matches are not reliable
+    if not first_word_matches and len(matching_words) < 2:
+        # Single word match (not first word) - reduce confidence significantly
+        word_score = word_score * 0.5
 
     return word_score
 
@@ -278,9 +299,15 @@ async def identify_supplier(
                 return (supplier.id, "exact")
 
     # Second pass: fuzzy matches
+    # Only do fuzzy matching on vendor name-like text (short text, not full OCR dump)
+    # Full OCR text has too many words that could accidentally match
+    if len(text) > 500:
+        # Text is too long - likely full OCR text, skip fuzzy matching
+        return (None, None)
+
     best_match = None
     best_score = 0.0
-    FUZZY_THRESHOLD = 0.5  # Minimum score to consider a fuzzy match
+    FUZZY_THRESHOLD = 0.6  # Minimum score to consider a fuzzy match (was 0.5)
 
     for supplier in suppliers:
         # Check supplier name fuzzy match
