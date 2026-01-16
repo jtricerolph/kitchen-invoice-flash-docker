@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
+import { useQueryClient } from '@tanstack/react-query'
 import { PDFDocument } from 'pdf-lib'
 import imageCompression from 'browser-image-compression'
 
@@ -11,9 +12,18 @@ interface PageImage {
   compressed?: Blob
 }
 
+interface QueueItem {
+  id: string
+  filename: string
+  status: 'uploading' | 'processing' | 'complete' | 'error'
+  error?: string
+  invoiceId?: number
+}
+
 export default function Upload() {
   const { token } = useAuth()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const addMoreInputRef = useRef<HTMLInputElement>(null)
@@ -24,6 +34,7 @@ export default function Upload() {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
+  const [queue, setQueue] = useState<QueueItem[]>([])
 
   // Compression options - balance quality vs size
   const compressionOptions = {
@@ -50,9 +61,9 @@ export default function Upload() {
       }
 
       if (isPDF) {
-        // For PDFs, upload directly without conversion
-        await uploadFile(file)
-        return
+        // For PDFs, upload directly without conversion (don't wait)
+        uploadFile(file)
+        continue
       }
 
       // Create preview for image
@@ -69,7 +80,9 @@ export default function Upload() {
       })
     }
 
-    setPages(prev => [...prev, ...newPages])
+    if (newPages.length > 0) {
+      setPages(prev => [...prev, ...newPages])
+    }
     setError('')
   }
 
@@ -107,13 +120,34 @@ export default function Upload() {
     })
   }
 
-  const uploadFile = async (file: File) => {
-    setUploading(true)
-    setError('')
+  const generateQueueId = () => Math.random().toString(36).substr(2, 9)
+
+  const uploadFile = async (file: File, fromPages: boolean = false) => {
+    const queueId = generateQueueId()
+    const filename = file.name || 'invoice.pdf'
+
+    // Add to queue as uploading
+    setQueue(prev => [...prev, {
+      id: queueId,
+      filename,
+      status: 'uploading'
+    }])
+
+    // Clear pages if this was from multi-page upload
+    if (fromPages) {
+      setPages([])
+      setProcessing(false)
+      setStatus('')
+    }
 
     try {
       const formData = new FormData()
       formData.append('file', file)
+
+      // Update to processing (upload complete, OCR starting)
+      setQueue(prev => prev.map(item =>
+        item.id === queueId ? { ...item, status: 'processing' as const } : item
+      ))
 
       const res = await fetch('/api/invoices/upload', {
         method: 'POST',
@@ -126,13 +160,34 @@ export default function Upload() {
         throw new Error(data.detail || 'Upload failed')
       }
 
-      await res.json()
-      navigate('/invoices')
+      const result = await res.json()
+
+      // Update to complete
+      setQueue(prev => prev.map(item =>
+        item.id === queueId ? { ...item, status: 'complete' as const, invoiceId: result.id } : item
+      ))
+
+      // Refresh invoice list
+      queryClient.invalidateQueries({ queryKey: ['invoices'] })
+
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
-      setUploading(false)
+      // Update to error
+      setQueue(prev => prev.map(item =>
+        item.id === queueId ? {
+          ...item,
+          status: 'error' as const,
+          error: err instanceof Error ? err.message : 'Upload failed'
+        } : item
+      ))
     }
+  }
+
+  const removeFromQueue = (id: string) => {
+    setQueue(prev => prev.filter(item => item.id !== id))
+  }
+
+  const clearCompletedFromQueue = () => {
+    setQueue(prev => prev.filter(item => item.status !== 'complete' && item.status !== 'error'))
   }
 
   const processAndUpload = async () => {
@@ -200,12 +255,10 @@ export default function Upload() {
       setStatus('Finalizing PDF...')
       const pdfBytes = await pdfDoc.save()
       const pdfBlob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' })
-      const pdfFile = new File([pdfBlob], 'invoice.pdf', { type: 'application/pdf' })
+      const pdfFile = new File([pdfBlob], `invoice-${pages.length}pages.pdf`, { type: 'application/pdf' })
 
-      // Step 4: Upload
-      setStatus('Uploading to server...')
-      setProcessing(false)
-      await uploadFile(pdfFile)
+      // Step 4: Upload (don't wait - let it run in background)
+      uploadFile(pdfFile, true)
 
     } catch (err) {
       console.error('Processing error:', err)
@@ -228,6 +281,65 @@ export default function Upload() {
       <h2 style={styles.title}>Upload Invoice</h2>
 
       {error && <div style={styles.error}>{error}</div>}
+
+      {/* Processing Queue */}
+      {queue.length > 0 && (
+        <div style={styles.queueSection}>
+          <div style={styles.queueHeader}>
+            <h3 style={styles.queueTitle}>Processing Queue</h3>
+            {queue.some(item => item.status === 'complete' || item.status === 'error') && (
+              <button onClick={clearCompletedFromQueue} style={styles.clearQueueBtn}>
+                Clear Completed
+              </button>
+            )}
+          </div>
+          <div style={styles.queueList}>
+            {queue.map(item => (
+              <div key={item.id} style={{
+                ...styles.queueItem,
+                ...(item.status === 'complete' ? styles.queueItemComplete : {}),
+                ...(item.status === 'error' ? styles.queueItemError : {}),
+              }}>
+                <div style={styles.queueItemInfo}>
+                  <span style={styles.queueItemName}>{item.filename}</span>
+                  <span style={{
+                    ...styles.queueItemStatus,
+                    color: item.status === 'complete' ? '#28a745' :
+                           item.status === 'error' ? '#dc3545' :
+                           item.status === 'processing' ? '#0066cc' : '#666'
+                  }}>
+                    {item.status === 'uploading' && '⬆️ Uploading...'}
+                    {item.status === 'processing' && '⏳ Processing OCR...'}
+                    {item.status === 'complete' && '✓ Complete'}
+                    {item.status === 'error' && `✗ ${item.error || 'Failed'}`}
+                  </span>
+                </div>
+                <div style={styles.queueItemActions}>
+                  {item.status === 'complete' && item.invoiceId && (
+                    <button
+                      onClick={() => navigate(`/invoice/${item.invoiceId}`)}
+                      style={styles.queueViewBtn}
+                    >
+                      View
+                    </button>
+                  )}
+                  {(item.status === 'complete' || item.status === 'error') && (
+                    <button
+                      onClick={() => removeFromQueue(item.id)}
+                      style={styles.queueRemoveBtn}
+                    >
+                      ×
+                    </button>
+                  )}
+                  {(item.status === 'uploading' || item.status === 'processing') && (
+                    <div style={styles.queueSpinner}></div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {pages.length === 0 ? (
         // Initial drop zone
@@ -582,5 +694,99 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '0.5rem 0 0 1.5rem',
     color: '#666',
     lineHeight: '1.8',
+  },
+  queueSection: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '1rem 1.5rem',
+    marginBottom: '1.5rem',
+  },
+  queueHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '0.75rem',
+  },
+  queueTitle: {
+    margin: 0,
+    fontSize: '1rem',
+    color: '#1a1a2e',
+  },
+  clearQueueBtn: {
+    padding: '0.35rem 0.75rem',
+    background: '#f0f0f0',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    color: '#666',
+  },
+  queueList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+  },
+  queueItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '0.75rem 1rem',
+    background: '#f8f9fa',
+    borderRadius: '8px',
+    borderLeft: '4px solid #0066cc',
+  },
+  queueItemComplete: {
+    borderLeftColor: '#28a745',
+    background: '#f0fff4',
+  },
+  queueItemError: {
+    borderLeftColor: '#dc3545',
+    background: '#fff5f5',
+  },
+  queueItemInfo: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+  },
+  queueItemName: {
+    fontWeight: '500',
+    fontSize: '0.9rem',
+  },
+  queueItemStatus: {
+    fontSize: '0.8rem',
+  },
+  queueItemActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+  },
+  queueViewBtn: {
+    padding: '0.35rem 0.75rem',
+    background: '#1a1a2e',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+  },
+  queueRemoveBtn: {
+    width: '24px',
+    height: '24px',
+    background: 'transparent',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '1.2rem',
+    color: '#999',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  queueSpinner: {
+    width: '20px',
+    height: '20px',
+    border: '2px solid #ddd',
+    borderTopColor: '#0066cc',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
   },
 }
