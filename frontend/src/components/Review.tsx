@@ -7,6 +7,17 @@ import * as pdfjsLib from 'pdfjs-dist'
 // Use unpkg CDN for the worker (matches installed version 5.4.530)
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@5.4.530/build/pdf.worker.min.mjs'
 
+// Simple Scale icon SVG component
+const ScaleIcon = ({ style }: { style?: React.CSSProperties }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    style={{ width: '18px', height: '18px', ...style }}
+  >
+    <path d="M12 3c-1.27 0-2.4.8-2.82 2H3v2h1.95L2 14c-.47 2 1 4 4 4s4.5-2 4-4L7.05 7H9.18c.35.99 1.17 1.74 2.18 1.94V19H7v2h10v-2h-4.18V8.94c1.01-.2 1.83-.95 2.18-1.94h2.13L14 14c-.47 2 1 4 4 4s4.5-2 4-4l-2.95-7H21V5h-6.18C14.4 3.8 13.27 3 12 3zm0 2c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zM6 10.45L7.5 14h-3L6 10.45zm12 0L19.5 14h-3L18 10.45z" />
+  </svg>
+)
+
 interface Invoice {
   id: number
   invoice_number: string | null
@@ -143,8 +154,9 @@ export default function Review() {
   const [lineItemEdits, setLineItemEdits] = useState<Partial<LineItem>>({})
   const [highlightedField, setHighlightedField] = useState<string | null>(null)
   const [expandedLineItem, setExpandedLineItem] = useState<number | null>(null)
+  const [expandedCostBreakdown, setExpandedCostBreakdown] = useState<number | null>(null)
+  const [costBreakdownEdits, setCostBreakdownEdits] = useState<Partial<LineItem>>({})
   const [pdfPages, setPdfPages] = useState<{ width: number; height: number; displayWidth: number; displayHeight: number; canvas: HTMLCanvasElement }[]>([])
-  const [pdfScale, setPdfScale] = useState<number>(1)
   const [zoomLevel, setZoomLevel] = useState<number>(1)
   const [zoomTranslate, setZoomTranslate] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [zoomPageNum, setZoomPageNum] = useState<number>(0) // Which page the zoom applies to
@@ -362,7 +374,7 @@ export default function Review() {
   }
 
   // Handler to toggle line item inline preview (no zoom/scroll for line items)
-  const handleHighlightLineItem = (itemId: number, lineIndex: number) => {
+  const handleHighlightLineItem = (itemId: number, _lineIndex: number) => {
     if (expandedLineItem === itemId) {
       setExpandedLineItem(null)
     } else {
@@ -445,6 +457,7 @@ export default function Review() {
             await page.render({
               canvasContext: context,
               viewport: renderViewport,
+              canvas: canvas,
             }).promise
           }
 
@@ -458,7 +471,6 @@ export default function Review() {
         }
 
         setPdfPages(pages)
-        setPdfScale(containerWidth / (pdf.numPages > 0 ? (await pdf.getPage(1)).getViewport({ scale: 1 }).width : 1))
       } catch (err) {
         console.error('Error rendering PDF:', err)
       }
@@ -607,15 +619,33 @@ export default function Review() {
       tax_rate: item.tax_rate,
       amount: item.amount,
       is_non_stock: item.is_non_stock,
-      pack_quantity: item.pack_quantity,
-      unit_size: item.unit_size,
-      unit_size_type: item.unit_size_type,
-      portions_per_unit: item.portions_per_unit,
     })
   }
 
   const saveLineItemEdit = (itemId: number) => {
     updateLineItemMutation.mutate({ itemId, data: lineItemEdits })
+  }
+
+  const toggleCostBreakdown = (item: LineItem) => {
+    if (expandedCostBreakdown === item.id) {
+      setExpandedCostBreakdown(null)
+      setCostBreakdownEdits({})
+    } else {
+      setExpandedCostBreakdown(item.id)
+      setCostBreakdownEdits({
+        pack_quantity: item.pack_quantity,
+        unit_size: item.unit_size,
+        unit_size_type: item.unit_size_type,
+        portions_per_unit: item.portions_per_unit,
+        unit_price: item.unit_price,
+      })
+    }
+  }
+
+  const saveCostBreakdown = (itemId: number) => {
+    updateLineItemMutation.mutate({ itemId, data: costBreakdownEdits })
+    setExpandedCostBreakdown(null)
+    setCostBreakdownEdits({})
   }
 
   if (isLoading) {
@@ -1102,12 +1132,8 @@ export default function Review() {
                 <th style={{ ...styles.th, width: '70px' }}>Unit Price</th>
                 <th style={{ ...styles.th, width: '50px' }}>VAT %</th>
                 <th style={{ ...styles.th, width: '70px' }}>Net Total</th>
-                <th style={{ ...styles.th, width: '55px' }}>Pack Qty</th>
-                <th style={{ ...styles.th, width: '70px' }}>Unit Size</th>
-                <th style={{ ...styles.th, width: '55px' }}>Portions</th>
-                <th style={{ ...styles.th, width: '70px' }}>Cost/Item</th>
-                <th style={{ ...styles.th, width: '70px' }}>Cost/Portion</th>
                 <th style={{ ...styles.th, textAlign: 'center', width: '60px' }}>Non-Stock</th>
+                <th style={{ ...styles.th, textAlign: 'center', width: '40px' }} title="Cost Breakdown"></th>
                 <th style={{ ...styles.th, width: '70px' }}></th>
               </tr>
             </thead>
@@ -1195,59 +1221,6 @@ export default function Review() {
                               style={{ ...styles.tableInput, width: '60px' }}
                             />
                           </td>
-                          <td style={styles.td}>
-                            <input
-                              type="number"
-                              value={lineItemEdits.pack_quantity || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, pack_quantity: parseInt(e.target.value) || null })}
-                              style={{ ...styles.tableInput, width: '45px' }}
-                              placeholder="—"
-                            />
-                          </td>
-                          <td style={styles.td}>
-                            <div style={{ display: 'flex', gap: '2px' }}>
-                              <input
-                                type="number"
-                                step="0.1"
-                                value={lineItemEdits.unit_size || ''}
-                                onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_size: parseFloat(e.target.value) || null })}
-                                style={{ ...styles.tableInput, width: '35px' }}
-                                placeholder="—"
-                              />
-                              <select
-                                value={lineItemEdits.unit_size_type || ''}
-                                onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_size_type: e.target.value || null })}
-                                style={{ ...styles.tableInput, width: '40px', padding: '0.2rem' }}
-                              >
-                                <option value="">—</option>
-                                <option value="g">g</option>
-                                <option value="kg">kg</option>
-                                <option value="ml">ml</option>
-                                <option value="ltr">ltr</option>
-                                <option value="oz">oz</option>
-                                <option value="cl">cl</option>
-                              </select>
-                            </div>
-                          </td>
-                          <td style={styles.td}>
-                            <input
-                              type="number"
-                              value={lineItemEdits.portions_per_unit || 1}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, portions_per_unit: parseInt(e.target.value) || 1 })}
-                              style={{ ...styles.tableInput, width: '45px' }}
-                              min="1"
-                            />
-                          </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
-                            {lineItemEdits.pack_quantity && lineItemEdits.unit_price
-                              ? `£${(lineItemEdits.unit_price / lineItemEdits.pack_quantity).toFixed(3)}`
-                              : '—'}
-                          </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
-                            {lineItemEdits.pack_quantity && lineItemEdits.unit_price
-                              ? `£${(lineItemEdits.unit_price / (lineItemEdits.pack_quantity * (lineItemEdits.portions_per_unit || 1))).toFixed(3)}`
-                              : '—'}
-                          </td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
                               type="checkbox"
@@ -1255,6 +1228,9 @@ export default function Review() {
                               onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
                               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                             />
+                          </td>
+                          <td style={{ ...styles.td, textAlign: 'center' }}>
+                            {/* Scale icon disabled during edit */}
                           </td>
                           <td style={styles.td}>
                             <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
@@ -1274,21 +1250,6 @@ export default function Review() {
                           <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.tax_rate || '—'}</td>
                           <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>
-                            {item.pack_quantity || '—'}
-                          </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>
-                            {item.unit_size ? `${item.unit_size}${item.unit_size_type || ''}` : '—'}
-                          </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>
-                            {item.portions_per_unit || 1}
-                          </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem', color: item.cost_per_item ? '#28a745' : '#999' }}>
-                            {item.cost_per_item ? `£${item.cost_per_item.toFixed(3)}` : '—'}
-                          </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem', color: item.cost_per_portion ? '#28a745' : '#999' }}>
-                            {item.cost_per_portion ? `£${item.cost_per_portion.toFixed(3)}` : '—'}
-                          </td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
                               type="checkbox"
@@ -1303,15 +1264,124 @@ export default function Review() {
                               title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
                             />
                           </td>
+                          <td style={{ ...styles.td, textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => toggleCostBreakdown(item)}
+                              style={{
+                                ...styles.scaleBtn,
+                                ...(expandedCostBreakdown === item.id ? styles.scaleBtnActive : {}),
+                                ...(item.cost_per_item ? { color: '#28a745' } : {})
+                              }}
+                              title="Cost breakdown"
+                            >
+                              <ScaleIcon />
+                            </button>
+                          </td>
                           <td style={styles.td}>
                             <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
                           </td>
                         </>
                       )}
                     </tr>
+                    {expandedCostBreakdown === item.id && (
+                      <tr>
+                        <td colSpan={11} style={styles.costBreakdownCell}>
+                          <div style={styles.costBreakdownContainer}>
+                            <div style={styles.costBreakdownHeader}>
+                              <span style={{ fontWeight: '600' }}>Pack Size & Cost Breakdown</span>
+                              {item.raw_content && (
+                                <span style={styles.rawContentHint} title={item.raw_content}>
+                                  Raw: {item.raw_content.substring(0, 50)}...
+                                </span>
+                              )}
+                            </div>
+                            <div style={styles.costBreakdownGrid}>
+                              <div style={styles.costBreakdownField}>
+                                <label>Pack Qty</label>
+                                <input
+                                  type="number"
+                                  value={costBreakdownEdits.pack_quantity || ''}
+                                  onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, pack_quantity: parseInt(e.target.value) || null })}
+                                  style={styles.costBreakdownInput}
+                                  placeholder="e.g., 120"
+                                />
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Unit Size</label>
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={costBreakdownEdits.unit_size || ''}
+                                    onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, unit_size: parseFloat(e.target.value) || null })}
+                                    style={{ ...styles.costBreakdownInput, width: '60px' }}
+                                    placeholder="e.g., 15"
+                                  />
+                                  <select
+                                    value={costBreakdownEdits.unit_size_type || ''}
+                                    onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, unit_size_type: e.target.value || null })}
+                                    style={{ ...styles.costBreakdownInput, width: '55px' }}
+                                  >
+                                    <option value="">—</option>
+                                    <option value="g">g</option>
+                                    <option value="kg">kg</option>
+                                    <option value="ml">ml</option>
+                                    <option value="ltr">ltr</option>
+                                    <option value="oz">oz</option>
+                                    <option value="cl">cl</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Portions/Unit</label>
+                                <input
+                                  type="number"
+                                  value={costBreakdownEdits.portions_per_unit || 1}
+                                  onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, portions_per_unit: parseInt(e.target.value) || 1 })}
+                                  style={styles.costBreakdownInput}
+                                  min="1"
+                                  placeholder="1"
+                                />
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Unit Price</label>
+                                <span style={styles.costBreakdownValue}>
+                                  {costBreakdownEdits.unit_price ? `£${costBreakdownEdits.unit_price.toFixed(2)}` : '—'}
+                                </span>
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Cost/Item</label>
+                                <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600' }}>
+                                  {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price
+                                    ? `£${(costBreakdownEdits.unit_price / costBreakdownEdits.pack_quantity).toFixed(4)}`
+                                    : '—'}
+                                </span>
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Cost/Portion</label>
+                                <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600' }}>
+                                  {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price
+                                    ? `£${(costBreakdownEdits.unit_price / (costBreakdownEdits.pack_quantity * (costBreakdownEdits.portions_per_unit || 1))).toFixed(4)}`
+                                    : '—'}
+                                </span>
+                              </div>
+                            </div>
+                            <div style={styles.costBreakdownActions}>
+                              <button onClick={() => saveCostBreakdown(item.id)} style={styles.smallBtn}>
+                                Save
+                              </button>
+                              <button onClick={() => { setExpandedCostBreakdown(null); setCostBreakdownEdits({}); }} style={styles.smallBtnCancel}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                     {expandedLineItem === item.id && bbox && (
                       <tr>
-                        <td colSpan={15} style={styles.lineItemPreviewCell}>
+                        <td colSpan={11} style={styles.lineItemPreviewCell}>
                           {isPDF && pdfPages.length > 0 ? (
                             (() => {
                               // Get the correct page canvas (high-res)
@@ -1670,4 +1740,15 @@ const styles: Record<string, React.CSSProperties> = {
   lineItemPreviewCell: { padding: '0.5rem', background: '#f8f9fa', borderBottom: '1px solid #eee' },
   lineItemPreviewContainer: { maxWidth: '100%', overflow: 'hidden', borderRadius: '4px', border: '2px solid #ffc107', background: '#fff' },
   lineItemPreviewCrop: { width: '100%', backgroundRepeat: 'no-repeat' },
+  scaleBtn: { padding: '0.25rem', background: 'transparent', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' },
+  scaleBtnActive: { background: '#e8f5e9', borderColor: '#28a745' },
+  costBreakdownCell: { padding: '0', background: '#f8f9fa', borderBottom: '1px solid #ddd' },
+  costBreakdownContainer: { padding: '1rem', margin: '0.5rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' },
+  costBreakdownHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '0.5rem', borderBottom: '1px solid #eee' },
+  rawContentHint: { fontSize: '0.75rem', color: '#999', fontStyle: 'italic', maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  costBreakdownGrid: { display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '1rem', marginBottom: '1rem' },
+  costBreakdownField: { display: 'flex', flexDirection: 'column', gap: '0.25rem' },
+  costBreakdownInput: { padding: '0.4rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.9rem', width: '80px' },
+  costBreakdownValue: { fontSize: '0.95rem', padding: '0.4rem 0' },
+  costBreakdownActions: { display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', paddingTop: '0.5rem', borderTop: '1px solid #eee' },
 }
