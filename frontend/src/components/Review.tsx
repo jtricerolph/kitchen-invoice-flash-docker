@@ -35,13 +35,25 @@ interface Supplier {
 
 interface LineItem {
   id: number
-  description: string | null
-  quantity: number | null
-  unit_price: number | null
-  amount: number | null
   product_code: string | null
+  description: string | null
+  unit: string | null
+  quantity: number | null
+  order_quantity: number | null
+  unit_price: number | null
+  tax_rate: string | null
+  tax_amount: number | null
+  amount: number | null
   line_number: number
   is_non_stock: boolean
+  // Pack size fields
+  raw_content: string | null
+  pack_quantity: number | null
+  unit_size: number | null
+  unit_size_type: string | null
+  portions_per_unit: number
+  cost_per_item: number | null
+  cost_per_portion: number | null
 }
 
 interface DuplicateCompare {
@@ -134,6 +146,8 @@ export default function Review() {
   const [pdfPages, setPdfPages] = useState<{ width: number; height: number; displayWidth: number; displayHeight: number; canvas: HTMLCanvasElement }[]>([])
   const [pdfScale, setPdfScale] = useState<number>(1)
   const [zoomLevel, setZoomLevel] = useState<number>(1)
+  const [zoomTranslate, setZoomTranslate] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [zoomPageNum, setZoomPageNum] = useState<number>(0) // Which page the zoom applies to
   const pdfContainerRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
@@ -278,12 +292,32 @@ export default function Review() {
     return Math.max(2, Math.min(zoom, 8)) // Clamp between 2x and 8x
   }
 
-  // Scroll to page containing the bounding box and set zoom
+  // Scroll to page containing the bounding box and set zoom with centering
   const scrollToHighlight = (bbox: { x: number; y: number; width: number; height: number; pageNumber: number } | null, zoom: number) => {
     if (!bbox || !pdfContainerRef.current || pdfPages.length === 0) return
 
-    // Set zoom level (CSS transform handles the visual zoom)
+    const pageData = pdfPages[bbox.pageNumber - 1]
+    if (!pageData) return
+
+    // Calculate bbox center position in display pixels (relative to page top-left)
+    const bboxCenterX = ((bbox.x + bbox.width / 2) / 100) * pageData.displayWidth
+    const bboxCenterY = ((bbox.y + bbox.height / 2) / 100) * pageData.displayHeight
+
+    // Container visible area center
+    const containerCenterX = pageData.displayWidth / 2
+    const containerCenterY = pageData.displayHeight / 2
+
+    // Calculate translate needed to move bbox center to container center after scaling
+    // When we scale by zoom from top-left, a point at (x, y) moves to (x*zoom, y*zoom)
+    // We want the bbox center (after scaling) to appear at container center
+    // So translate = containerCenter - bboxCenter * zoom
+    const translateX = containerCenterX - bboxCenterX * zoom
+    const translateY = containerCenterY - bboxCenterY * zoom
+
+    // Set zoom and translate
     setZoomLevel(zoom)
+    setZoomTranslate({ x: translateX, y: translateY })
+    setZoomPageNum(bbox.pageNumber)
 
     // Scroll to the correct page
     setTimeout(() => {
@@ -295,7 +329,7 @@ export default function Review() {
         yOffset += (pdfPages[i].displayHeight || pdfPages[i].height) + 24
       }
 
-      // Scroll to show the page (zoom is handled by CSS transform in-place)
+      // Scroll to show the page
       pdfContainerRef.current.scrollTo({
         top: yOffset,
         behavior: 'smooth'
@@ -306,6 +340,8 @@ export default function Review() {
   // Reset zoom
   const resetZoom = () => {
     setZoomLevel(1)
+    setZoomTranslate({ x: 0, y: 0 })
+    setZoomPageNum(0)
     if (pdfContainerRef.current) {
       pdfContainerRef.current.scrollTo({ left: 0, behavior: 'smooth' })
     }
@@ -563,12 +599,18 @@ export default function Review() {
   const startEditLineItem = (item: LineItem) => {
     setEditingLineItem(item.id)
     setLineItemEdits({
+      product_code: item.product_code,
       description: item.description,
+      unit: item.unit,
       quantity: item.quantity,
       unit_price: item.unit_price,
+      tax_rate: item.tax_rate,
       amount: item.amount,
-      product_code: item.product_code,
       is_non_stock: item.is_non_stock,
+      pack_quantity: item.pack_quantity,
+      unit_size: item.unit_size,
+      unit_size_type: item.unit_size_type,
+      portions_per_unit: item.portions_per_unit,
     })
   }
 
@@ -624,11 +666,9 @@ export default function Review() {
                             position: 'relative',
                             width: page.displayWidth,
                             height: page.displayHeight,
-                            transformOrigin: fieldBbox && fieldBbox.pageNumber === pageNum
-                              ? `${fieldBbox.x + fieldBbox.width/2}% ${fieldBbox.y + fieldBbox.height/2}%`
-                              : 'center center',
-                            transform: zoomLevel > 1 && fieldBbox && fieldBbox.pageNumber === pageNum
-                              ? `scale(${zoomLevel})`
+                            transformOrigin: '0 0',
+                            transform: zoomLevel > 1 && zoomPageNum === pageNum
+                              ? `translate(${zoomTranslate.x}px, ${zoomTranslate.y}px) scale(${zoomLevel})`
                               : 'scale(1)',
                             transition: 'transform 0.3s ease',
                           }}>
@@ -1055,12 +1095,20 @@ export default function Review() {
             <thead>
               <tr>
                 <th style={{ ...styles.th, width: '30px' }}></th>
+                <th style={{ ...styles.th, width: '80px' }}>Code</th>
                 <th style={styles.th}>Description</th>
-                <th style={styles.th}>Qty</th>
-                <th style={styles.th}>Unit Price</th>
-                <th style={styles.th}>Amount</th>
-                <th style={{ ...styles.th, textAlign: 'center' }}>Non-Stock</th>
-                <th style={styles.th}></th>
+                <th style={{ ...styles.th, width: '50px' }}>Unit</th>
+                <th style={{ ...styles.th, width: '50px' }}>Qty</th>
+                <th style={{ ...styles.th, width: '70px' }}>Unit Price</th>
+                <th style={{ ...styles.th, width: '50px' }}>VAT %</th>
+                <th style={{ ...styles.th, width: '70px' }}>Net Total</th>
+                <th style={{ ...styles.th, width: '55px' }}>Pack Qty</th>
+                <th style={{ ...styles.th, width: '70px' }}>Unit Size</th>
+                <th style={{ ...styles.th, width: '55px' }}>Portions</th>
+                <th style={{ ...styles.th, width: '70px' }}>Cost/Item</th>
+                <th style={{ ...styles.th, width: '70px' }}>Cost/Portion</th>
+                <th style={{ ...styles.th, textAlign: 'center', width: '60px' }}>Non-Stock</th>
+                <th style={{ ...styles.th, width: '70px' }}></th>
               </tr>
             </thead>
             <tbody>
@@ -1091,9 +1139,25 @@ export default function Review() {
                           <td style={styles.td}>
                             <input
                               type="text"
+                              value={lineItemEdits.product_code || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, product_code: e.target.value })}
+                              style={{ ...styles.tableInput, width: '70px' }}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="text"
                               value={lineItemEdits.description || ''}
                               onChange={(e) => setLineItemEdits({ ...lineItemEdits, description: e.target.value })}
                               style={styles.tableInput}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="text"
+                              value={lineItemEdits.unit || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit: e.target.value })}
+                              style={{ ...styles.tableInput, width: '50px' }}
                             />
                           </td>
                           <td style={styles.td}>
@@ -1102,7 +1166,7 @@ export default function Review() {
                               step="0.01"
                               value={lineItemEdits.quantity || ''}
                               onChange={(e) => setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) })}
-                              style={{ ...styles.tableInput, width: '70px' }}
+                              style={{ ...styles.tableInput, width: '50px' }}
                             />
                           </td>
                           <td style={styles.td}>
@@ -1111,7 +1175,15 @@ export default function Review() {
                               step="0.01"
                               value={lineItemEdits.unit_price || ''}
                               onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) })}
-                              style={{ ...styles.tableInput, width: '80px' }}
+                              style={{ ...styles.tableInput, width: '70px' }}
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="text"
+                              value={lineItemEdits.tax_rate || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, tax_rate: e.target.value })}
+                              style={{ ...styles.tableInput, width: '50px' }}
                             />
                           </td>
                           <td style={styles.td}>
@@ -1120,8 +1192,61 @@ export default function Review() {
                               step="0.01"
                               value={lineItemEdits.amount || ''}
                               onChange={(e) => setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) })}
-                              style={{ ...styles.tableInput, width: '80px' }}
+                              style={{ ...styles.tableInput, width: '60px' }}
                             />
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="number"
+                              value={lineItemEdits.pack_quantity || ''}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, pack_quantity: parseInt(e.target.value) || null })}
+                              style={{ ...styles.tableInput, width: '45px' }}
+                              placeholder="—"
+                            />
+                          </td>
+                          <td style={styles.td}>
+                            <div style={{ display: 'flex', gap: '2px' }}>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={lineItemEdits.unit_size || ''}
+                                onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_size: parseFloat(e.target.value) || null })}
+                                style={{ ...styles.tableInput, width: '35px' }}
+                                placeholder="—"
+                              />
+                              <select
+                                value={lineItemEdits.unit_size_type || ''}
+                                onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_size_type: e.target.value || null })}
+                                style={{ ...styles.tableInput, width: '40px', padding: '0.2rem' }}
+                              >
+                                <option value="">—</option>
+                                <option value="g">g</option>
+                                <option value="kg">kg</option>
+                                <option value="ml">ml</option>
+                                <option value="ltr">ltr</option>
+                                <option value="oz">oz</option>
+                                <option value="cl">cl</option>
+                              </select>
+                            </div>
+                          </td>
+                          <td style={styles.td}>
+                            <input
+                              type="number"
+                              value={lineItemEdits.portions_per_unit || 1}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, portions_per_unit: parseInt(e.target.value) || 1 })}
+                              style={{ ...styles.tableInput, width: '45px' }}
+                              min="1"
+                            />
+                          </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
+                            {lineItemEdits.pack_quantity && lineItemEdits.unit_price
+                              ? `£${(lineItemEdits.unit_price / lineItemEdits.pack_quantity).toFixed(3)}`
+                              : '—'}
+                          </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
+                            {lineItemEdits.pack_quantity && lineItemEdits.unit_price
+                              ? `£${(lineItemEdits.unit_price / (lineItemEdits.pack_quantity * (lineItemEdits.portions_per_unit || 1))).toFixed(3)}`
+                              : '—'}
                           </td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
@@ -1138,12 +1263,32 @@ export default function Review() {
                         </>
                       ) : (
                         <>
+                          <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
+                            {item.product_code || '—'}
+                          </td>
                           <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
                             {item.description || '—'}
                           </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
                           <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
                           <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.tax_rate || '—'}</td>
                           <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>
+                            {item.pack_quantity || '—'}
+                          </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>
+                            {item.unit_size ? `${item.unit_size}${item.unit_size_type || ''}` : '—'}
+                          </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>
+                            {item.portions_per_unit || 1}
+                          </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem', color: item.cost_per_item ? '#28a745' : '#999' }}>
+                            {item.cost_per_item ? `£${item.cost_per_item.toFixed(3)}` : '—'}
+                          </td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem', color: item.cost_per_portion ? '#28a745' : '#999' }}>
+                            {item.cost_per_portion ? `£${item.cost_per_portion.toFixed(3)}` : '—'}
+                          </td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
                               type="checkbox"
@@ -1166,7 +1311,7 @@ export default function Review() {
                     </tr>
                     {expandedLineItem === item.id && bbox && (
                       <tr>
-                        <td colSpan={7} style={styles.lineItemPreviewCell}>
+                        <td colSpan={15} style={styles.lineItemPreviewCell}>
                           {isPDF && pdfPages.length > 0 ? (
                             (() => {
                               // Get the correct page canvas (high-res)

@@ -1,6 +1,7 @@
 import logging
 import json
 import asyncio
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Optional, Any
@@ -9,6 +10,39 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 
 logger = logging.getLogger(__name__)
+
+
+def parse_pack_size(raw_content: str) -> dict:
+    """
+    Extract pack size info from raw line item content.
+
+    Examples:
+        "120x15g" -> pack_quantity=120, unit_size=15, unit_size_type="g"
+        "12×1ltr" -> pack_quantity=12, unit_size=1, unit_size_type="ltr"
+        "6x1.5kg" -> pack_quantity=6, unit_size=1.5, unit_size_type="kg"
+    """
+    result = {
+        "pack_quantity": None,
+        "unit_size": None,
+        "unit_size_type": None,
+    }
+
+    if not raw_content:
+        return result
+
+    # Pattern: 120x15g, 12×1ltr, 6x1.5kg, etc. (note: includes Unicode × symbol)
+    pack_pattern = r'(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(g|kg|ml|ltr|l|oz|cl)\b'
+    match = re.search(pack_pattern, raw_content, re.IGNORECASE)
+
+    if match:
+        result["pack_quantity"] = int(match.group(1))
+        result["unit_size"] = float(match.group(2))
+        result["unit_size_type"] = match.group(3).lower()
+        # Normalize 'l' to 'ltr' for consistency
+        if result["unit_size_type"] == 'l':
+            result["unit_size_type"] = 'ltr'
+
+    return result
 
 # Retry configuration for rate limiting
 MAX_RETRIES = 3
@@ -334,16 +368,29 @@ async def process_invoice_with_azure(
                             continue
 
                         line_item = {
-                            "description": None,
-                            "quantity": None,
-                            "unit_price": None,
-                            "amount": None,
                             "product_code": None,
+                            "description": None,
+                            "unit": None,
+                            "quantity": None,
+                            "order_quantity": None,
+                            "unit_price": None,
+                            "tax_rate": None,
+                            "tax_amount": None,
+                            "amount": None,
                             "bounding_regions": [],
+                            "raw_content": None,
+                            "pack_quantity": None,
+                            "unit_size": None,
+                            "unit_size_type": None,
+                            "cost_per_item": None,
+                            "cost_per_portion": None,
                         }
 
                         # Capture bounding regions for this line item
                         line_item["bounding_regions"] = serialize_bounding_regions(item)
+
+                        # Capture raw content (contains all text including pack size info)
+                        line_item["raw_content"] = item.content if hasattr(item, 'content') else None
 
                         # Helper to safely get field value
                         def safe_get_field(fields, key):
@@ -354,14 +401,28 @@ async def process_invoice_with_azure(
                                 pass
                             return None
 
+                        # Extract product code
+                        line_item["product_code"] = safe_get_field(item_fields, "ProductCode")
+
                         # Extract description
                         line_item["description"] = safe_get_field(item_fields, "Description")
 
-                        # Extract quantity
+                        # Extract unit of measure
+                        line_item["unit"] = safe_get_field(item_fields, "Unit")
+
+                        # Extract quantity (delivered)
                         qty = safe_get_field(item_fields, "Quantity")
                         if qty is not None:
                             try:
                                 line_item["quantity"] = float(qty)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract order quantity (if available, e.g., Brakes invoices)
+                        order_qty = safe_get_field(item_fields, "OrderQuantity")
+                        if order_qty is not None:
+                            try:
+                                line_item["order_quantity"] = float(order_qty)
                             except (ValueError, TypeError):
                                 pass
 
@@ -376,7 +437,26 @@ async def process_invoice_with_azure(
                             except (ValueError, TypeError):
                                 pass
 
-                        # Extract amount
+                        # Extract tax rate (e.g., "ZERO", "20.00", "No VAT")
+                        tax_rate = safe_get_field(item_fields, "TaxRate")
+                        if tax_rate is None:
+                            # Fall back to Tax field which sometimes contains rate description
+                            tax_rate = safe_get_field(item_fields, "Tax")
+                        if tax_rate is not None:
+                            line_item["tax_rate"] = str(tax_rate)
+
+                        # Extract tax amount (if specified separately from rate)
+                        tax_val = safe_get_field(item_fields, "Tax")
+                        if tax_val is not None:
+                            try:
+                                if hasattr(tax_val, 'amount') and tax_val.amount is not None:
+                                    line_item["tax_amount"] = float(tax_val.amount)
+                                elif isinstance(tax_val, (int, float)):
+                                    line_item["tax_amount"] = float(tax_val)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Extract amount (line net total)
                         amt_val = safe_get_field(item_fields, "Amount")
                         if amt_val is not None:
                             try:
@@ -387,8 +467,19 @@ async def process_invoice_with_azure(
                             except (ValueError, TypeError):
                                 pass
 
-                        # Extract product code
-                        line_item["product_code"] = safe_get_field(item_fields, "ProductCode")
+                        # Parse pack size from raw content (e.g., "120x15g")
+                        pack_info = parse_pack_size(line_item["raw_content"])
+                        line_item["pack_quantity"] = pack_info["pack_quantity"]
+                        line_item["unit_size"] = pack_info["unit_size"]
+                        line_item["unit_size_type"] = pack_info["unit_size_type"]
+
+                        # Calculate cost per item if we have pack_quantity and unit_price
+                        if pack_info["pack_quantity"] and line_item.get("unit_price"):
+                            line_item["cost_per_item"] = round(
+                                line_item["unit_price"] / pack_info["pack_quantity"], 4
+                            )
+                            # cost_per_portion defaults to cost_per_item (portions_per_unit=1)
+                            line_item["cost_per_portion"] = line_item["cost_per_item"]
 
                         line_items.append(line_item)
                         desc_preview = (line_item.get('description') or 'N/A')[:30]

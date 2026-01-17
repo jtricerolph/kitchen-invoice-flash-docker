@@ -29,34 +29,69 @@ DATA_DIR = "/app/data"
 # Response Models
 class LineItemResponse(BaseModel):
     id: int
-    description: str | None
-    quantity: float | None
-    unit_price: float | None
-    amount: float | None
     product_code: str | None
+    description: str | None
+    unit: str | None
+    quantity: float | None
+    order_quantity: float | None
+    unit_price: float | None
+    tax_rate: str | None
+    tax_amount: float | None
+    amount: float | None
     line_number: int
     is_non_stock: bool
+    # Pack size fields
+    raw_content: str | None
+    pack_quantity: int | None
+    unit_size: float | None
+    unit_size_type: str | None
+    portions_per_unit: int
+    cost_per_item: float | None
+    cost_per_portion: float | None
 
     class Config:
         from_attributes = True
 
 
 class LineItemCreate(BaseModel):
-    description: Optional[str] = None
-    quantity: Optional[float] = None
-    unit_price: Optional[float] = None
-    amount: Optional[float] = None
     product_code: Optional[str] = None
+    description: Optional[str] = None
+    unit: Optional[str] = None
+    quantity: Optional[float] = None
+    order_quantity: Optional[float] = None
+    unit_price: Optional[float] = None
+    tax_rate: Optional[str] = None
+    tax_amount: Optional[float] = None
+    amount: Optional[float] = None
     is_non_stock: bool = False
+    # Pack size fields
+    raw_content: Optional[str] = None
+    pack_quantity: Optional[int] = None
+    unit_size: Optional[float] = None
+    unit_size_type: Optional[str] = None
+    portions_per_unit: int = 1
+    cost_per_item: Optional[float] = None
+    cost_per_portion: Optional[float] = None
 
 
 class LineItemUpdate(BaseModel):
-    description: Optional[str] = None
-    quantity: Optional[float] = None
-    unit_price: Optional[float] = None
-    amount: Optional[float] = None
     product_code: Optional[str] = None
+    description: Optional[str] = None
+    unit: Optional[str] = None
+    quantity: Optional[float] = None
+    order_quantity: Optional[float] = None
+    unit_price: Optional[float] = None
+    tax_rate: Optional[str] = None
+    tax_amount: Optional[float] = None
+    amount: Optional[float] = None
     is_non_stock: Optional[bool] = None
+    # Pack size fields
+    pack_quantity: Optional[int] = None
+    unit_size: Optional[float] = None
+    unit_size_type: Optional[str] = None
+    portions_per_unit: Optional[int] = None
+    cost_per_item: Optional[float] = None
+    cost_per_portion: Optional[float] = None
 
 
 class DuplicateInfo(BaseModel):
@@ -261,12 +296,23 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
             for idx, item_data in enumerate(line_items):
                 line_item = LineItem(
                     invoice_id=invoice.id,
-                    description=item_data.get("description"),
-                    quantity=Decimal(str(item_data["quantity"])) if item_data.get("quantity") else None,
-                    unit_price=Decimal(str(item_data["unit_price"])) if item_data.get("unit_price") else None,
-                    amount=Decimal(str(item_data["amount"])) if item_data.get("amount") else None,
                     product_code=item_data.get("product_code"),
-                    line_number=idx
+                    description=item_data.get("description"),
+                    unit=item_data.get("unit"),
+                    quantity=Decimal(str(item_data["quantity"])) if item_data.get("quantity") else None,
+                    order_quantity=Decimal(str(item_data["order_quantity"])) if item_data.get("order_quantity") else None,
+                    unit_price=Decimal(str(item_data["unit_price"])) if item_data.get("unit_price") else None,
+                    tax_rate=item_data.get("tax_rate"),
+                    tax_amount=Decimal(str(item_data["tax_amount"])) if item_data.get("tax_amount") else None,
+                    amount=Decimal(str(item_data["amount"])) if item_data.get("amount") else None,
+                    line_number=idx,
+                    # Pack size fields from OCR extraction
+                    raw_content=item_data.get("raw_content"),
+                    pack_quantity=item_data.get("pack_quantity"),
+                    unit_size=Decimal(str(item_data["unit_size"])) if item_data.get("unit_size") else None,
+                    unit_size_type=item_data.get("unit_size_type"),
+                    cost_per_item=Decimal(str(item_data["cost_per_item"])) if item_data.get("cost_per_item") else None,
+                    cost_per_portion=Decimal(str(item_data["cost_per_portion"])) if item_data.get("cost_per_portion") else None
                 )
                 db.add(line_item)
 
@@ -617,13 +663,24 @@ async def get_line_items(
     return [
         LineItemResponse(
             id=item.id,
-            description=item.description,
-            quantity=float(item.quantity) if item.quantity else None,
-            unit_price=float(item.unit_price) if item.unit_price else None,
-            amount=float(item.amount) if item.amount else None,
             product_code=item.product_code,
+            description=item.description,
+            unit=item.unit,
+            quantity=float(item.quantity) if item.quantity else None,
+            order_quantity=float(item.order_quantity) if item.order_quantity else None,
+            unit_price=float(item.unit_price) if item.unit_price else None,
+            tax_rate=item.tax_rate,
+            tax_amount=float(item.tax_amount) if item.tax_amount else None,
+            amount=float(item.amount) if item.amount else None,
             line_number=item.line_number,
-            is_non_stock=item.is_non_stock or False
+            is_non_stock=item.is_non_stock or False,
+            raw_content=item.raw_content,
+            pack_quantity=item.pack_quantity,
+            unit_size=float(item.unit_size) if item.unit_size else None,
+            unit_size_type=item.unit_size_type,
+            portions_per_unit=item.portions_per_unit or 1,
+            cost_per_item=float(item.cost_per_item) if item.cost_per_item else None,
+            cost_per_portion=float(item.cost_per_portion) if item.cost_per_portion else None
         )
         for item in items
     ]
@@ -645,15 +702,34 @@ async def add_line_item(
     )
     max_num = result.scalar() or -1
 
+    # Calculate costs if pack_quantity and unit_price provided
+    cost_per_item = None
+    cost_per_portion = None
+    if item.pack_quantity and item.unit_price:
+        cost_per_item = round(item.unit_price / item.pack_quantity, 4)
+        portions = item.portions_per_unit or 1
+        cost_per_portion = round(item.unit_price / (item.pack_quantity * portions), 4)
+
     line_item = LineItem(
         invoice_id=invoice_id,
-        description=item.description,
-        quantity=Decimal(str(item.quantity)) if item.quantity else None,
-        unit_price=Decimal(str(item.unit_price)) if item.unit_price else None,
-        amount=Decimal(str(item.amount)) if item.amount else None,
         product_code=item.product_code,
+        description=item.description,
+        unit=item.unit,
+        quantity=Decimal(str(item.quantity)) if item.quantity else None,
+        order_quantity=Decimal(str(item.order_quantity)) if item.order_quantity else None,
+        unit_price=Decimal(str(item.unit_price)) if item.unit_price else None,
+        tax_rate=item.tax_rate,
+        tax_amount=Decimal(str(item.tax_amount)) if item.tax_amount else None,
+        amount=Decimal(str(item.amount)) if item.amount else None,
         line_number=max_num + 1,
-        is_non_stock=item.is_non_stock
+        is_non_stock=item.is_non_stock,
+        raw_content=item.raw_content,
+        pack_quantity=item.pack_quantity,
+        unit_size=Decimal(str(item.unit_size)) if item.unit_size else None,
+        unit_size_type=item.unit_size_type,
+        portions_per_unit=item.portions_per_unit,
+        cost_per_item=Decimal(str(cost_per_item)) if cost_per_item else None,
+        cost_per_portion=Decimal(str(cost_per_portion)) if cost_per_portion else None
     )
     db.add(line_item)
     await db.commit()
@@ -661,13 +737,24 @@ async def add_line_item(
 
     return LineItemResponse(
         id=line_item.id,
-        description=line_item.description,
-        quantity=float(line_item.quantity) if line_item.quantity else None,
-        unit_price=float(line_item.unit_price) if line_item.unit_price else None,
-        amount=float(line_item.amount) if line_item.amount else None,
         product_code=line_item.product_code,
+        description=line_item.description,
+        unit=line_item.unit,
+        quantity=float(line_item.quantity) if line_item.quantity else None,
+        order_quantity=float(line_item.order_quantity) if line_item.order_quantity else None,
+        unit_price=float(line_item.unit_price) if line_item.unit_price else None,
+        tax_rate=line_item.tax_rate,
+        tax_amount=float(line_item.tax_amount) if line_item.tax_amount else None,
+        amount=float(line_item.amount) if line_item.amount else None,
         line_number=line_item.line_number,
-        is_non_stock=line_item.is_non_stock or False
+        is_non_stock=line_item.is_non_stock or False,
+        raw_content=line_item.raw_content,
+        pack_quantity=line_item.pack_quantity,
+        unit_size=float(line_item.unit_size) if line_item.unit_size else None,
+        unit_size_type=line_item.unit_size_type,
+        portions_per_unit=line_item.portions_per_unit or 1,
+        cost_per_item=float(line_item.cost_per_item) if line_item.cost_per_item else None,
+        cost_per_portion=float(line_item.cost_per_portion) if line_item.cost_per_portion else None
     )
 
 
@@ -693,24 +780,48 @@ async def update_line_item(
         raise HTTPException(status_code=404, detail="Line item not found")
 
     update_data = update.model_dump(exclude_unset=True)
+    decimal_fields = ["quantity", "order_quantity", "unit_price", "tax_amount", "amount", "unit_size", "cost_per_item", "cost_per_portion"]
     for field, value in update_data.items():
-        if value is not None and field in ["quantity", "unit_price", "amount"]:
+        if value is not None and field in decimal_fields:
             setattr(line_item, field, Decimal(str(value)))
         else:
             setattr(line_item, field, value)
+
+    # Recalculate costs if pack fields or unit_price changed
+    recalc_fields = {"pack_quantity", "portions_per_unit", "unit_price"}
+    if recalc_fields & set(update_data.keys()):
+        if line_item.pack_quantity and line_item.unit_price:
+            line_item.cost_per_item = Decimal(str(
+                round(float(line_item.unit_price) / line_item.pack_quantity, 4)
+            ))
+            portions = line_item.portions_per_unit or 1
+            line_item.cost_per_portion = Decimal(str(
+                round(float(line_item.unit_price) / (line_item.pack_quantity * portions), 4)
+            ))
 
     await db.commit()
     await db.refresh(line_item)
 
     return LineItemResponse(
         id=line_item.id,
-        description=line_item.description,
-        quantity=float(line_item.quantity) if line_item.quantity else None,
-        unit_price=float(line_item.unit_price) if line_item.unit_price else None,
-        amount=float(line_item.amount) if line_item.amount else None,
         product_code=line_item.product_code,
+        description=line_item.description,
+        unit=line_item.unit,
+        quantity=float(line_item.quantity) if line_item.quantity else None,
+        order_quantity=float(line_item.order_quantity) if line_item.order_quantity else None,
+        unit_price=float(line_item.unit_price) if line_item.unit_price else None,
+        tax_rate=line_item.tax_rate,
+        tax_amount=float(line_item.tax_amount) if line_item.tax_amount else None,
+        amount=float(line_item.amount) if line_item.amount else None,
         line_number=line_item.line_number,
-        is_non_stock=line_item.is_non_stock or False
+        is_non_stock=line_item.is_non_stock or False,
+        raw_content=line_item.raw_content,
+        pack_quantity=line_item.pack_quantity,
+        unit_size=float(line_item.unit_size) if line_item.unit_size else None,
+        unit_size_type=line_item.unit_size_type,
+        portions_per_unit=line_item.portions_per_unit or 1,
+        cost_per_item=float(line_item.cost_per_item) if line_item.cost_per_item else None,
+        cost_per_portion=float(line_item.cost_per_portion) if line_item.cost_per_portion else None
     )
 
 

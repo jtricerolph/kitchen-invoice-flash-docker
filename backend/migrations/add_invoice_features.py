@@ -185,6 +185,149 @@ async def run_migration():
     except Exception as e:
         logger.warning(f"field_mappings indexes: {e}")
 
+    # Add unit column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN unit VARCHAR(50)"
+            ))
+            logger.info("Added unit column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("unit column already exists")
+        else:
+            logger.warning(f"unit column: {e}")
+
+    # Add order_quantity column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN order_quantity NUMERIC(10, 3)"
+            ))
+            logger.info("Added order_quantity column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("order_quantity column already exists")
+        else:
+            logger.warning(f"order_quantity column: {e}")
+
+    # Add tax_rate column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN tax_rate VARCHAR(50)"
+            ))
+            logger.info("Added tax_rate column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("tax_rate column already exists")
+        else:
+            logger.warning(f"tax_rate column: {e}")
+
+    # Add tax_amount column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN tax_amount NUMERIC(10, 2)"
+            ))
+            logger.info("Added tax_amount column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("tax_amount column already exists")
+        else:
+            logger.warning(f"tax_amount column: {e}")
+
+    # Add raw_content column to line_items table (for pack size parsing)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN raw_content TEXT"
+            ))
+            logger.info("Added raw_content column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("raw_content column already exists")
+        else:
+            logger.warning(f"raw_content column: {e}")
+
+    # Add pack_quantity column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN pack_quantity INTEGER"
+            ))
+            logger.info("Added pack_quantity column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("pack_quantity column already exists")
+        else:
+            logger.warning(f"pack_quantity column: {e}")
+
+    # Add unit_size column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN unit_size NUMERIC(10, 3)"
+            ))
+            logger.info("Added unit_size column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("unit_size column already exists")
+        else:
+            logger.warning(f"unit_size column: {e}")
+
+    # Add unit_size_type column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN unit_size_type VARCHAR(10)"
+            ))
+            logger.info("Added unit_size_type column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("unit_size_type column already exists")
+        else:
+            logger.warning(f"unit_size_type column: {e}")
+
+    # Add portions_per_unit column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN portions_per_unit INTEGER DEFAULT 1"
+            ))
+            logger.info("Added portions_per_unit column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("portions_per_unit column already exists")
+        else:
+            logger.warning(f"portions_per_unit column: {e}")
+
+    # Add cost_per_item column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN cost_per_item NUMERIC(10, 4)"
+            ))
+            logger.info("Added cost_per_item column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("cost_per_item column already exists")
+        else:
+            logger.warning(f"cost_per_item column: {e}")
+
+    # Add cost_per_portion column to line_items table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN cost_per_portion NUMERIC(10, 4)"
+            ))
+            logger.info("Added cost_per_portion column to line_items")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("cost_per_portion column already exists")
+        else:
+            logger.warning(f"cost_per_portion column: {e}")
+
     logger.info("Migration completed successfully!")
 
 
