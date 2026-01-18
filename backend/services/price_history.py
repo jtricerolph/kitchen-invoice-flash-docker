@@ -553,9 +553,15 @@ class PriceHistoryService:
                     )
 
                 # Get price status
+                # Extend lookback to ensure we have history beyond the search period
                 if most_recent_price:
+                    # Calculate extended lookback: search period + configured lookback days
+                    search_period_days = (date_to - date_from).days
+                    extended_lookback = search_period_days + 30  # Add configured lookback on top
+
                     status = await self.get_price_status(
-                        supplier_id_val, product_code, description, most_recent_price
+                        supplier_id_val, product_code, description, most_recent_price,
+                        lookback_days=extended_lookback
                     )
                     price_change_status = status.status
 
