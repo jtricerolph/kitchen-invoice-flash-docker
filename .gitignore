@@ -48,3 +48,4 @@ nul
 debug_notes.txt
 temp_*.json
 check_*.py
+*.sql
