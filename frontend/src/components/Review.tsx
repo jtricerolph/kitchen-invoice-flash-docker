@@ -1790,24 +1790,35 @@ export default function Review() {
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
                           <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
                           <td style={styles.td}>
-                            {item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}
-                            {item.price_status && item.price_status !== 'no_history' && (() => {
-                              const config = getPriceStatusConfig(item.price_status)
-                              return config.icon ? (
-                                <span
-                                  onClick={() => openPriceHistoryModal(item)}
-                                  title={`${config.label}${item.price_change_percent ? ` (${formatPercent(item.price_change_percent)})` : ''}`}
-                                  style={{
-                                    marginLeft: '6px',
-                                    color: config.color,
-                                    fontWeight: 'bold',
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  {config.icon}
-                                </span>
-                              ) : null
-                            })()}
+                            <div>
+                              <div>
+                                {item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}
+                                {item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null && (
+                                  <span
+                                    onClick={() => openPriceHistoryModal(item)}
+                                    style={{
+                                      marginLeft: '6px',
+                                      cursor: 'pointer',
+                                      color: '#6b7280',
+                                    }}
+                                    title="View price history"
+                                  >
+                                    📊
+                                  </span>
+                                )}
+                              </div>
+                              {item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null && (() => {
+                                const isIncrease = item.price_change_percent > 0
+                                const arrow = isIncrease ? '▲' : '▼'
+                                const color = isIncrease ? '#ef4444' : '#22c55e'
+                                return (
+                                  <div style={{ fontSize: '0.75rem', marginTop: '2px', color }}>
+                                    <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
+                                    {Math.abs(item.price_change_percent).toFixed(1)}%
+                                  </div>
+                                )
+                              })()}
+                            </div>
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.tax_rate || '—'}</td>
                           <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>

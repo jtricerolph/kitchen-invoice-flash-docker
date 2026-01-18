@@ -228,26 +228,31 @@ export default function SearchLineItems() {
 
   const renderPriceStatus = (item: LineItemSearchItem) => {
     const config = getPriceStatusConfig(item.price_change_status)
-    if (!config.icon) return null
+    if (!config.icon || !item.price_change_percent) return null
+
+    const isIncrease = item.price_change_percent > 0
+    const arrow = isIncrease ? '▲' : '▼'
+    const color = isIncrease ? '#ef4444' : '#22c55e' // Red for increase, green for decrease
 
     return (
-      <span
-        title={`${config.label}${item.price_change_percent ? ` (${formatPercent(item.price_change_percent)})` : ''}`}
-        style={{
-          marginLeft: '6px',
-          color: config.color,
-          fontWeight: 'bold',
-          cursor: 'pointer',
-        }}
-        onClick={(e) => {
-          e.stopPropagation()
-          openHistoryModal(item)
-        }}
-      >
-        {config.icon}
-      </span>
+      <div style={{ fontSize: '0.75rem', marginTop: '2px', color }}>
+        <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
+        {Math.abs(item.price_change_percent).toFixed(1)}%
+      </div>
     )
   }
+
+  const clearSearch = () => {
+    setSearchInput('')
+    setSupplierId('')
+    setPriceChangeFilter('')
+    setGroupBy('')
+    const defaultDates = getDefaultDateRange()
+    setDateFrom(defaultDates.from)
+    setDateTo(defaultDates.to)
+  }
+
+  const hasActiveFilters = searchInput || supplierId || priceChangeFilter || groupBy
 
   return (
     <div style={{ padding: '20px', maxWidth: '1600px', margin: '0 auto' }}>
@@ -328,6 +333,23 @@ export default function SearchLineItems() {
             style={{ padding: '6px', border: '1px solid #d1d5db', borderRadius: '4px' }}
           />
         </div>
+
+        {hasActiveFilters && (
+          <button
+            onClick={clearSearch}
+            style={{
+              padding: '8px 16px',
+              background: '#ef4444',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+            }}
+          >
+            Clear Filters
+          </button>
+        )}
       </div>
 
       {/* Legend */}
@@ -418,18 +440,22 @@ export default function SearchLineItems() {
                     </td>
                     <td style={tdStyle}>{item.supplier_name || '-'}</td>
                     <td style={tdStyle}>
-                      {formatCurrency(item.most_recent_price)}
-                      {renderPriceStatus(item)}
-                      <span
-                        onClick={() => openHistoryModal(item)}
-                        style={{
-                          marginLeft: '6px',
-                          cursor: 'pointer',
-                        }}
-                        title="View price history"
-                      >
-                        📊
-                      </span>
+                      <div>
+                        <div>
+                          {formatCurrency(item.most_recent_price)}
+                          <span
+                            onClick={() => openHistoryModal(item)}
+                            style={{
+                              marginLeft: '6px',
+                              cursor: 'pointer',
+                            }}
+                            title="View price history"
+                          >
+                            📊
+                          </span>
+                        </div>
+                        {renderPriceStatus(item)}
+                      </div>
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right' }}>
                       {item.portions_per_unit && item.pack_quantity && item.most_recent_price ? (
