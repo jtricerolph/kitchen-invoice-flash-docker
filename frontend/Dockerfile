@@ -24,6 +24,10 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Add .mjs MIME type to nginx mime.types if not already present
+RUN grep -q "application/javascript.*mjs" /etc/nginx/mime.types || \
+    sed -i '/application\/javascript/s/js;/js mjs;/' /etc/nginx/mime.types
+
 # Expose port
 EXPOSE 80
 
