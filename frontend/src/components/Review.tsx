@@ -999,31 +999,7 @@ export default function Review() {
     setSaveAsDefault(false)
   }
 
-  if (isLoading) {
-    return <div style={styles.loading}>Loading invoice...</div>
-  }
-
-  if (!invoice) {
-    return <div style={styles.error}>Invoice not found</div>
-  }
-
-  const confidence = invoice.ocr_confidence
-    ? (Number(invoice.ocr_confidence) * 100).toFixed(0)
-    : null
-
-  // Check if the file is a PDF
-  const isPDF = invoice?.image_path?.toLowerCase().endsWith('.pdf')
-
-  // Sort and filter line items
-  const handleLineItemSort = (column: string) => {
-    if (lineItemSortColumn === column) {
-      setLineItemSortDirection(lineItemSortDirection === 'asc' ? 'desc' : 'asc')
-    } else {
-      setLineItemSortColumn(column)
-      setLineItemSortDirection('asc')
-    }
-  }
-
+  // Sort and filter line items - must be before early returns (Rules of Hooks)
   const filteredAndSortedLineItems = useMemo(() => {
     if (!lineItems) return []
 
@@ -1090,6 +1066,30 @@ export default function Review() {
 
     return filtered
   }, [lineItems, lineItemSortColumn, lineItemSortDirection, lineItemPriceFilter])
+
+  const handleLineItemSort = (column: string) => {
+    if (lineItemSortColumn === column) {
+      setLineItemSortDirection(lineItemSortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      setLineItemSortColumn(column)
+      setLineItemSortDirection('asc')
+    }
+  }
+
+  if (isLoading) {
+    return <div style={styles.loading}>Loading invoice...</div>
+  }
+
+  if (!invoice) {
+    return <div style={styles.error}>Invoice not found</div>
+  }
+
+  const confidence = invoice.ocr_confidence
+    ? (Number(invoice.ocr_confidence) * 100).toFixed(0)
+    : null
+
+  // Check if the file is a PDF
+  const isPDF = invoice?.image_path?.toLowerCase().endsWith('.pdf')
 
   return (
     <div style={styles.pageContainer}>
