@@ -400,7 +400,7 @@ export default function Settings() {
   })
 
   // Fetch Nextcloud archive stats
-  const { data: nextcloudStats, refetch: refetchNextcloudStats } = useQuery<NextcloudStatsData>({
+  const { data: nextcloudStats } = useQuery<NextcloudStatsData>({
     queryKey: ['nextcloud-stats'],
     queryFn: async () => {
       const res = await fetch('/api/settings/nextcloud/stats', {
@@ -426,7 +426,7 @@ export default function Settings() {
   })
 
   // Fetch Backup history
-  const { data: backupHistory, refetch: refetchBackupHistory } = useQuery<BackupHistoryEntry[]>({
+  const { data: backupHistory } = useQuery<BackupHistoryEntry[]>({
     queryKey: ['backup-history'],
     queryFn: async () => {
       const res = await fetch('/api/backup/history', {
@@ -3636,15 +3636,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: '0.5rem',
     marginBottom: '1rem',
-  },
-  checkboxLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    padding: '0.5rem',
-    background: '#f8f9fa',
-    borderRadius: '6px',
-    cursor: 'pointer',
   },
   youLabel: {
     color: '#666',

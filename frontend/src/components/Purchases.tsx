@@ -277,7 +277,7 @@ export default function Purchases() {
     return <div style={styles.error}>Error loading purchases: {(error as Error).message}</div>
   }
 
-  const { weeks = [], daily_totals = {}, period_total = 0, period_label = '' } = data || {}
+  const { weeks = [], period_total = 0, period_label = '' } = data || {}
 
   // Printable view
   if (showPrintView) {
@@ -416,7 +416,7 @@ export default function Purchases() {
             const weekIdx = weeks.length - 1 - reversedIdx // Original index for week number
             // Check if week has any data in the selected range
             const hasDataInRange = week.dates.some(d => {
-              const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+              const dateStr = d
               if (!isInRange(dateStr)) return false
               return week.suppliers.some(s => s.invoices_by_date[dateStr]?.length > 0)
             })
@@ -435,7 +435,7 @@ export default function Purchases() {
                       <tr>
                         <th style={{ ...styles.th, ...styles.supplierHeader }}>Supplier</th>
                         {week.dates.map((d) => {
-                          const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+                          const dateStr = d
                           const inRange = isInRange(dateStr)
                           return (
                             <th key={dateStr} style={{ ...styles.th, ...(inRange ? {} : styles.outOfMonth) }}>
@@ -464,7 +464,7 @@ export default function Purchases() {
                               {supplier.is_unmatched && <span style={styles.unmatchedBadge}>!</span>}
                             </td>
                             {week.dates.map((d) => {
-                              const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+                              const dateStr = d
                               const invoices = supplier.invoices_by_date[dateStr] || []
                               const inRange = isInRange(dateStr)
                               return (
@@ -509,7 +509,7 @@ export default function Purchases() {
                       <tr style={styles.footerRow}>
                         <td style={{ ...styles.td, ...styles.footerLabel }}>Daily Total</td>
                         {week.dates.map((d) => {
-                          const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+                          const dateStr = d
                           const inRange = isInRange(dateStr)
                           return (
                             <td key={dateStr} style={{ ...styles.td, ...styles.footerCell, ...(inRange ? {} : styles.outOfMonthCell) }}>
