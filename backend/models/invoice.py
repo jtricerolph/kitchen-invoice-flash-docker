@@ -64,6 +64,19 @@ class Invoice(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Dext integration
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    dext_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    dext_sent_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+
+    # File storage tracking (for Nextcloud archival)
+    file_storage_location: Mapped[str] = mapped_column(String(20), default="local")  # "local" or "nextcloud"
+    nextcloud_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    original_local_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
     # Relationships
     kitchen: Mapped["Kitchen"] = relationship("Kitchen", back_populates="invoices")
     supplier: Mapped["Supplier"] = relationship("Supplier", back_populates="invoices")
@@ -88,8 +101,14 @@ class Invoice(Base):
         uselist=False
     )
 
+    # Dext integration relationship
+    dext_sent_by_user: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys=[dext_sent_by_user_id]
+    )
+
 
 # Forward references
-from .user import Kitchen
+from .user import Kitchen, User
 from .supplier import Supplier
 from .line_item import LineItem

@@ -272,6 +272,45 @@ async def toggle_user_active(
     return {"message": f"User {'enabled' if user.is_active else 'disabled'}", "is_active": user.is_active}
 
 
+@router.patch("/users/{user_id}/toggle-admin")
+async def toggle_user_admin(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Promote or demote a user to/from admin (admin only)"""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can modify user roles"
+        )
+
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own admin status"
+        )
+
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.kitchen_id == current_user.kitchen_id
+        )
+    )
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    user.is_admin = not user.is_admin
+    await db.commit()
+
+    return {"message": f"User {'promoted to admin' if user.is_admin else 'demoted from admin'}", "is_admin": user.is_admin}
+
+
 @router.delete("/users/{user_id}")
 async def delete_user(
     user_id: int,

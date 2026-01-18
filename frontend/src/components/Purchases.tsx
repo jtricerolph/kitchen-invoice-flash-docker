@@ -1,40 +1,217 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../App'
 
-interface PurchaseInvoice {
+interface MonthlyPurchaseInvoice {
   id: number
   invoice_number: string | null
+  invoice_date: string | null
   total: number | null
+  net_total: number | null
+  net_stock: number | null
+  gross_stock: number | null
   supplier_match_type: string | null
 }
 
-interface SupplierRow {
+interface MonthlySupplierRow {
   supplier_id: number | null
   supplier_name: string
   is_unmatched: boolean
-  invoices_by_date: Record<string, PurchaseInvoice[]>
-  total: number
+  invoices_by_date: Record<string, MonthlyPurchaseInvoice[]>
+  total_net_stock: number
   percentage: number
 }
 
-interface WeeklyPurchasesResponse {
+interface WeekData {
   week_start: string
   week_end: string
   dates: string[]
-  suppliers: SupplierRow[]
+  suppliers: MonthlySupplierRow[]
   daily_totals: Record<string, number>
   week_total: number
 }
 
+interface DateRangePurchasesResponse {
+  from_date: string
+  to_date: string
+  period_label: string
+  weeks: WeekData[]
+  all_suppliers: string[]
+  daily_totals: Record<string, number>
+  period_total: number
+}
+
+// Helper to format date as YYYY-MM-DD for input fields and API
+const formatDateForApi = (d: Date): string => {
+  return d.toISOString().split('T')[0]
+}
+
+// Session storage keys for persisting dates while tab is open
+const STORAGE_KEY_FROM = 'purchases-report-from-date'
+const STORAGE_KEY_TO = 'purchases-report-to-date'
+
+// Get initial dates - from sessionStorage if available, otherwise default to last 4 weeks
+const getInitialDates = () => {
+  const storedFrom = sessionStorage.getItem(STORAGE_KEY_FROM)
+  const storedTo = sessionStorage.getItem(STORAGE_KEY_TO)
+
+  if (storedFrom && storedTo) {
+    return { from: storedFrom, to: storedTo }
+  }
+
+  // Default: End of this week (Sunday) backward 28 days (4 full weeks)
+  const today = new Date()
+  const daysUntilSunday = (7 - today.getDay()) % 7
+  const endOfWeek = new Date(today)
+  endOfWeek.setDate(today.getDate() + daysUntilSunday)
+  const twentyEightDaysAgo = new Date(endOfWeek)
+  twentyEightDaysAgo.setDate(endOfWeek.getDate() - 27)
+
+  return { from: formatDateForApi(twentyEightDaysAgo), to: formatDateForApi(endOfWeek) }
+}
+
+// Get the start and end of a given month
+const getMonthBounds = (year: number, month: number): { start: string; end: string } => {
+  const start = new Date(year, month, 1)
+  const end = new Date(year, month + 1, 0) // Last day of month
+  return { start: formatDateForApi(start), end: formatDateForApi(end) }
+}
+
+// Generate list of months for the picker (last 12 months + next 2 months)
+const getMonthOptions = (): { label: string; year: number; month: number }[] => {
+  const options: { label: string; year: number; month: number }[] = []
+  const today = new Date()
+
+  for (let i = -12; i <= 2; i++) {
+    const d = new Date(today.getFullYear(), today.getMonth() + i, 1)
+    const label = d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+    options.push({ label, year: d.getFullYear(), month: d.getMonth() })
+  }
+
+  return options.reverse() // Most recent first
+}
+
 export default function Purchases() {
   const { token } = useAuth()
-  const [weekOffset, setWeekOffset] = useState(0)
+  const printRef = useRef<HTMLDivElement>(null)
 
-  const { data, isLoading, error } = useQuery<WeeklyPurchasesResponse>({
-    queryKey: ['weekly-purchases', weekOffset],
+  // Get initial dates (from session or defaults)
+  const initialDates = getInitialDates()
+
+  // Input state (for typing without triggering queries)
+  const [fromDate, setFromDate] = useState(initialDates.from)
+  const [toDate, setToDate] = useState(initialDates.to)
+  const [selectedMonth, setSelectedMonth] = useState<string>('') // Empty means custom range
+  const [selectionMode, setSelectionMode] = useState<'last28' | 'month' | 'custom'>('custom')
+
+  // Submitted state (actually used for queries - only changes on Generate click or preset buttons)
+  const [submittedFromDate, setSubmittedFromDate] = useState(initialDates.from)
+  const [submittedToDate, setSubmittedToDate] = useState(initialDates.to)
+
+  // Persist submitted dates to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem(STORAGE_KEY_FROM, submittedFromDate)
+    sessionStorage.setItem(STORAGE_KEY_TO, submittedToDate)
+  }, [submittedFromDate, submittedToDate])
+
+  const monthOptions = getMonthOptions()
+
+  // Track if dates have changed since last generation
+  const hasUnsavedChanges = fromDate !== submittedFromDate || toDate !== submittedToDate
+
+  // Generate report with current date selection
+  const handleGenerate = () => {
+    setSubmittedFromDate(fromDate)
+    setSubmittedToDate(toDate)
+  }
+
+  // When month selection changes, update the date fields and submit
+  useEffect(() => {
+    if (selectedMonth) {
+      const [year, month] = selectedMonth.split('-').map(Number)
+      const bounds = getMonthBounds(year, month)
+      setFromDate(bounds.start)
+      setToDate(bounds.end)
+      setSubmittedFromDate(bounds.start)
+      setSubmittedToDate(bounds.end)
+    }
+  }, [selectedMonth])
+
+  // When date fields are manually changed, clear the month selection
+  const handleFromDateChange = (value: string) => {
+    setFromDate(value)
+    setSelectedMonth('')
+    setSelectionMode('custom')
+  }
+
+  const handleToDateChange = (value: string) => {
+    setToDate(value)
+    setSelectedMonth('')
+    setSelectionMode('custom')
+  }
+
+  const handleMonthChange = (value: string) => {
+    setSelectedMonth(value)
+    if (value) {
+      setSelectionMode('month')
+    } else {
+      setSelectionMode('custom')
+    }
+  }
+
+  // Quick preset buttons - these immediately submit the dates
+  const setLast4Weeks = () => {
+    const now = new Date()
+    const daysUntilSun = (7 - now.getDay()) % 7
+    const end = new Date(now)
+    end.setDate(now.getDate() + daysUntilSun) // End of this week (Sunday)
+    const start = new Date(end)
+    start.setDate(end.getDate() - 27) // 28 days total
+    const startStr = formatDateForApi(start)
+    const endStr = formatDateForApi(end)
+    setFromDate(startStr)
+    setToDate(endStr)
+    setSubmittedFromDate(startStr)
+    setSubmittedToDate(endStr)
+    setSelectedMonth('')
+    setSelectionMode('last28')
+  }
+
+  const setThisMonth = () => {
+    const now = new Date()
+    setSelectedMonth(`${now.getFullYear()}-${now.getMonth()}`)
+    setSelectionMode('month')
+  }
+
+  const setLastMonth = () => {
+    const now = new Date()
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    setSelectedMonth(`${lastMonth.getFullYear()}-${lastMonth.getMonth()}`)
+    setSelectionMode('month')
+  }
+
+  // Get the period prefix based on selection mode
+  const getPeriodPrefix = (): string => {
+    if (selectionMode === 'last28') {
+      return 'Last 4 Weeks: '
+    } else if (selectionMode === 'month' && selectedMonth) {
+      const [year, month] = selectedMonth.split('-').map(Number)
+      const monthName = new Date(year, month, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+      return `Month of ${monthName}: `
+    } else {
+      return 'Custom Dates: '
+    }
+  }
+
+  // Modal state
+  const [selectedInvoice, setSelectedInvoice] = useState<MonthlyPurchaseInvoice | null>(null)
+  const [selectedSupplierName, setSelectedSupplierName] = useState<string>('')
+  const [showPrintView, setShowPrintView] = useState(false)
+
+  const { data, isLoading, error } = useQuery<DateRangePurchasesResponse>({
+    queryKey: ['purchases-range', submittedFromDate, submittedToDate],
     queryFn: async () => {
-      const res = await fetch(`/api/reports/purchases/weekly?week_offset=${weekOffset}`, {
+      const res = await fetch(`/api/reports/purchases/range?from_date=${submittedFromDate}&to_date=${submittedToDate}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch purchases')
@@ -54,6 +231,44 @@ export default function Purchases() {
     return `${startDate.toLocaleDateString('en-GB', opts)} - ${endDate.toLocaleDateString('en-GB', opts)}`
   }
 
+  // Check if a date is in the selected range
+  const isInRange = (dateStr: string) => {
+    return dateStr >= fromDate && dateStr <= toDate
+  }
+
+  // Get all invoices flat for printable view
+  const getAllInvoices = (): { invoice: MonthlyPurchaseInvoice; supplierName: string }[] => {
+    if (!data) return []
+    const all: { invoice: MonthlyPurchaseInvoice; supplierName: string }[] = []
+    for (const week of data.weeks) {
+      for (const supplier of week.suppliers) {
+        for (const dateStr of Object.keys(supplier.invoices_by_date)) {
+          for (const inv of supplier.invoices_by_date[dateStr]) {
+            // Avoid duplicates (invoice might appear in multiple week iterations if on boundary)
+            if (!all.find(x => x.invoice.id === inv.id)) {
+              all.push({ invoice: inv, supplierName: supplier.supplier_name })
+            }
+          }
+        }
+      }
+    }
+    // Sort by date
+    all.sort((a, b) => {
+      const dateA = a.invoice.invoice_date || ''
+      const dateB = b.invoice.invoice_date || ''
+      return dateA.localeCompare(dateB)
+    })
+    return all
+  }
+
+  const handlePrint = () => {
+    setShowPrintView(true)
+    setTimeout(() => {
+      window.print()
+      setShowPrintView(false)
+    }, 100)
+  }
+
   if (isLoading) {
     return <div style={styles.loading}>Loading purchases...</div>
   }
@@ -62,113 +277,324 @@ export default function Purchases() {
     return <div style={styles.error}>Error loading purchases: {(error as Error).message}</div>
   }
 
-  const { dates = [], suppliers = [], daily_totals = {}, week_total = 0 } = data || {}
+  const { weeks = [], daily_totals = {}, period_total = 0, period_label = '' } = data || {}
 
-  return (
-    <div>
-      <div style={styles.header}>
-        <h2 style={styles.title}>Weekly Purchases</h2>
-        <div style={styles.weekNav}>
-          <button onClick={() => setWeekOffset(weekOffset - 1)} style={styles.navBtn}>
-            ← Previous
-          </button>
-          <span style={styles.weekLabel}>
-            {data ? formatWeekRange(data.week_start, data.week_end) : ''}
-          </span>
-          <button
-            onClick={() => setWeekOffset(weekOffset + 1)}
-            style={styles.navBtn}
-            disabled={weekOffset >= 0}
-          >
-            Next →
-          </button>
-          {weekOffset !== 0 && (
-            <button onClick={() => setWeekOffset(0)} style={styles.todayBtn}>
-              Today
-            </button>
-          )}
-        </div>
-      </div>
-
-      {suppliers.length === 0 ? (
-        <div style={styles.empty}>
-          <p>No purchases this week.</p>
-        </div>
-      ) : (
-        <div style={styles.tableContainer}>
-          <table style={styles.table}>
+  // Printable view
+  if (showPrintView) {
+    const allInvoices = getAllInvoices()
+    return (
+      <>
+        {/* Hide header/nav when printing */}
+        <style>{`
+          @media print {
+            header, nav, .no-print { display: none !important; }
+            body { margin: 0; padding: 0; }
+          }
+        `}</style>
+        <div style={styles.printContainer} ref={printRef}>
+          <h1 style={styles.printTitle}>Purchases Report - {getPeriodPrefix()}{period_label}</h1>
+          <table style={styles.printTable}>
             <thead>
               <tr>
-                <th style={{ ...styles.th, ...styles.supplierHeader }}>Supplier</th>
-                {dates.map((d) => (
-                  <th key={d} style={styles.th}>{formatDate(d)}</th>
-                ))}
-                <th style={{ ...styles.th, ...styles.totalHeader }}>Total</th>
-                <th style={{ ...styles.th, ...styles.percentHeader }}>%</th>
+                <th style={styles.printThDate}>Date</th>
+                <th style={styles.printTh}>Supplier</th>
+                <th style={styles.printTh}>Invoice #</th>
+                <th style={styles.printThRight}>Net Stock</th>
+                <th style={styles.printThRight}>Gross Stock</th>
+                <th style={styles.printThRight}>Net Total</th>
+                <th style={styles.printThRight}>Gross Total</th>
               </tr>
             </thead>
             <tbody>
-              {suppliers.map((row) => (
-                <tr key={row.supplier_id ?? row.supplier_name} style={styles.tr}>
-                  <td style={{
-                    ...styles.td,
-                    ...styles.supplierCell,
-                    ...(row.is_unmatched ? styles.unmatchedSupplier : {})
-                  }}>
-                    {row.supplier_name}
-                    {row.is_unmatched && <span style={styles.unmatchedBadge}>!</span>}
-                  </td>
-                  {dates.map((d) => {
-                    const invoices = row.invoices_by_date[d] || []
-                    return (
-                      <td key={d} style={styles.td}>
-                        {invoices.length > 0 ? (
-                          <div style={styles.invoicesCell}>
-                            {invoices.map((inv) => (
-                              <a
-                                key={inv.id}
-                                href={`/invoice/${inv.id}`}
-                                style={{
-                                  ...styles.invoiceLink,
-                                  ...(inv.supplier_match_type === 'fuzzy' ? styles.fuzzyInvoice : {}),
-                                  ...(inv.supplier_match_type === null && row.is_unmatched ? styles.unmatchedInvoice : {})
-                                }}
-                                title={inv.invoice_number || `Invoice #${inv.id}`}
-                              >
-                                £{Number(inv.total ?? 0).toFixed(2)}
-                              </a>
-                            ))}
-                          </div>
-                        ) : (
-                          <span style={styles.emptyCell}>-</span>
-                        )}
-                      </td>
-                    )
-                  })}
-                  <td style={{ ...styles.td, ...styles.totalCell }}>
-                    £{Number(row.total).toFixed(2)}
-                  </td>
-                  <td style={{ ...styles.td, ...styles.percentCell }}>
-                    {Number(row.percentage).toFixed(1)}%
-                  </td>
-                </tr>
-              ))}
+              {allInvoices.map(({ invoice, supplierName }) => {
+                // Hide stock values if same as totals (no non-stock items)
+                const netStockSame = Number(invoice.net_stock ?? 0).toFixed(2) === Number(invoice.net_total ?? 0).toFixed(2)
+                const grossStockSame = Number(invoice.gross_stock ?? 0).toFixed(2) === Number(invoice.total ?? 0).toFixed(2)
+                return (
+                  <tr key={invoice.id}>
+                    <td style={styles.printTdDate}>{invoice.invoice_date || '-'}</td>
+                    <td style={styles.printTd}>{supplierName}</td>
+                    <td style={styles.printTd}>{invoice.invoice_number || '-'}</td>
+                    <td style={styles.printTdRight}>{netStockSame ? '-' : `£${Number(invoice.net_stock ?? 0).toFixed(2)}`}</td>
+                    <td style={styles.printTdRight}>{grossStockSame ? '-' : `£${Number(invoice.gross_stock ?? 0).toFixed(2)}`}</td>
+                    <td style={styles.printTdRight}>£{Number(invoice.net_total ?? 0).toFixed(2)}</td>
+                    <td style={styles.printTdRight}>£{Number(invoice.total ?? 0).toFixed(2)}</td>
+                  </tr>
+                )
+              })}
             </tbody>
             <tfoot>
-              <tr style={styles.footerRow}>
-                <td style={{ ...styles.td, ...styles.footerLabel }}>Daily Total</td>
-                {dates.map((d) => (
-                  <td key={d} style={{ ...styles.td, ...styles.footerCell }}>
-                    £{Number(daily_totals[d] ?? 0).toFixed(2)}
-                  </td>
-                ))}
-                <td style={{ ...styles.td, ...styles.grandTotal }}>
-                  £{Number(week_total).toFixed(2)}
-                </td>
-                <td style={{ ...styles.td, ...styles.footerCell }}>100%</td>
+              <tr style={styles.printFooter}>
+                <td colSpan={3} style={styles.printTd}><strong>Period Total</strong></td>
+                <td style={styles.printTdRight}><strong>£{Number(period_total).toFixed(2)}</strong></td>
+                <td style={styles.printTdRight}>-</td>
+                <td style={styles.printTdRight}>-</td>
+                <td style={styles.printTdRight}>-</td>
               </tr>
             </tfoot>
           </table>
+        </div>
+      </>
+    )
+  }
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={styles.header}>
+        <h2 style={styles.title}>Purchases Report</h2>
+        <button onClick={handlePrint} style={styles.printBtn}>Print</button>
+      </div>
+
+      {/* Date Selection Controls */}
+      <div style={styles.dateControls}>
+        <div style={styles.dateRow}>
+          <div style={styles.dateField}>
+            <label style={styles.dateLabel}>From</label>
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => handleFromDateChange(e.target.value)}
+              style={styles.dateInput}
+            />
+          </div>
+          <div style={styles.dateField}>
+            <label style={styles.dateLabel}>To</label>
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => handleToDateChange(e.target.value)}
+              style={styles.dateInput}
+            />
+          </div>
+          <div style={styles.dateField}>
+            <label style={styles.dateLabel}>Month</label>
+            <select
+              value={selectedMonth}
+              onChange={(e) => handleMonthChange(e.target.value)}
+              style={styles.monthSelect}
+            >
+              <option value="">Custom Range</option>
+              {monthOptions.map((opt) => (
+                <option key={`${opt.year}-${opt.month}`} value={`${opt.year}-${opt.month}`}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div style={styles.presetRow}>
+          <button onClick={setLast4Weeks} style={styles.presetBtn}>Last 4 Weeks</button>
+          <button onClick={setThisMonth} style={styles.presetBtn}>This Month</button>
+          <button onClick={setLastMonth} style={styles.presetBtn}>Last Month</button>
+          <button
+            onClick={handleGenerate}
+            disabled={!hasUnsavedChanges}
+            style={{
+              ...styles.generateBtn,
+              ...(hasUnsavedChanges ? {} : styles.generateBtnDisabled),
+            }}
+          >
+            {hasUnsavedChanges ? 'Generate Report' : 'Report Generated'}
+          </button>
+        </div>
+      </div>
+
+      {/* Period Label */}
+      <div style={styles.periodLabel}>{getPeriodPrefix()}{period_label}</div>
+
+      {weeks.length === 0 ? (
+        <div style={styles.empty}>
+          <p>No purchases in this period.</p>
+        </div>
+      ) : (
+        <>
+          {/* Daily Spending by Supplier section */}
+          <div style={styles.sectionContainer}>
+            <h3 style={styles.sectionTitle}>Daily Spending by Supplier</h3>
+            {[...weeks].reverse().map((week, reversedIdx) => {
+            const weekIdx = weeks.length - 1 - reversedIdx // Original index for week number
+            // Check if week has any data in the selected range
+            const hasDataInRange = week.dates.some(d => {
+              const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+              if (!isInRange(dateStr)) return false
+              return week.suppliers.some(s => s.invoices_by_date[dateStr]?.length > 0)
+            })
+            if (!hasDataInRange && week.week_total === 0) return null
+
+            return (
+              <div key={weekIdx} style={styles.weekContainer}>
+                <div style={styles.weekHeader}>
+                  <span style={styles.weekTitle}>Week {weekIdx + 1}</span>
+                  <span style={styles.weekRange}>{formatWeekRange(week.week_start, week.week_end)}</span>
+                  <span style={styles.weekTotal}>Week Total: £{Number(week.week_total).toFixed(2)}</span>
+                </div>
+                <div style={styles.tableContainer}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...styles.th, ...styles.supplierHeader }}>Supplier</th>
+                        {week.dates.map((d) => {
+                          const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+                          const inRange = isInRange(dateStr)
+                          return (
+                            <th key={dateStr} style={{ ...styles.th, ...(inRange ? {} : styles.outOfMonth) }}>
+                              {formatDate(dateStr)}
+                            </th>
+                          )
+                        })}
+                        <th style={{ ...styles.th, ...styles.totalHeader }}>Total</th>
+                        <th style={{ ...styles.th, ...styles.percentHeader }}>%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {week.suppliers.map((supplier) => {
+                        // Only show suppliers with data in this week
+                        const hasWeekData = supplier.total_net_stock > 0
+                        if (!hasWeekData) return null
+
+                        return (
+                          <tr key={supplier.supplier_id ?? supplier.supplier_name} style={styles.tr}>
+                            <td style={{
+                              ...styles.td,
+                              ...styles.supplierCell,
+                              ...(supplier.is_unmatched ? styles.unmatchedSupplier : {})
+                            }}>
+                              {supplier.supplier_name}
+                              {supplier.is_unmatched && <span style={styles.unmatchedBadge}>!</span>}
+                            </td>
+                            {week.dates.map((d) => {
+                              const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+                              const invoices = supplier.invoices_by_date[dateStr] || []
+                              const inRange = isInRange(dateStr)
+                              return (
+                                <td key={dateStr} style={{ ...styles.td, ...(inRange ? {} : styles.outOfMonthCell) }}>
+                                  {invoices.length > 0 ? (
+                                    <div style={styles.invoicesCell}>
+                                      {invoices.map((inv) => (
+                                        <button
+                                          key={inv.id}
+                                          onClick={() => {
+                                            setSelectedInvoice(inv)
+                                            setSelectedSupplierName(supplier.supplier_name)
+                                          }}
+                                          style={{
+                                            ...styles.invoiceBtn,
+                                            ...(inv.supplier_match_type === 'fuzzy' ? styles.fuzzyInvoice : {}),
+                                            ...(inv.supplier_match_type === null && supplier.is_unmatched ? styles.unmatchedInvoice : {})
+                                          }}
+                                          title={inv.invoice_number || `Invoice #${inv.id}`}
+                                        >
+                                          £{Number(inv.net_stock ?? 0).toFixed(2)}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <span style={styles.emptyCell}>-</span>
+                                  )}
+                                </td>
+                              )
+                            })}
+                            <td style={{ ...styles.td, ...styles.totalCell }}>
+                              £{Number(supplier.total_net_stock).toFixed(2)}
+                            </td>
+                            <td style={{ ...styles.td, ...styles.percentCell }}>
+                              {Number(supplier.percentage).toFixed(1)}%
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr style={styles.footerRow}>
+                        <td style={{ ...styles.td, ...styles.footerLabel }}>Daily Total</td>
+                        {week.dates.map((d) => {
+                          const dateStr = typeof d === 'string' ? d : d.toISOString().split('T')[0]
+                          const inRange = isInRange(dateStr)
+                          return (
+                            <td key={dateStr} style={{ ...styles.td, ...styles.footerCell, ...(inRange ? {} : styles.outOfMonthCell) }}>
+                              £{Number(week.daily_totals[dateStr] ?? 0).toFixed(2)}
+                            </td>
+                          )
+                        })}
+                        <td style={{ ...styles.td, ...styles.grandTotal }}>
+                          £{Number(week.week_total).toFixed(2)}
+                        </td>
+                        <td style={{ ...styles.td, ...styles.footerCell }}>100%</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )
+          })}
+          </div>
+
+          {/* Period Total */}
+          <div style={styles.periodTotalContainer}>
+            <strong>Period Total: £{Number(period_total).toFixed(2)}</strong>
+          </div>
+        </>
+      )}
+
+      {/* Invoice Detail Modal */}
+      {selectedInvoice && (
+        <div style={styles.modal} onClick={() => setSelectedInvoice(null)}>
+          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>Invoice Details</h3>
+              <button onClick={() => setSelectedInvoice(null)} style={styles.modalClose}>×</button>
+            </div>
+
+            {/* PDF Preview */}
+            <div style={styles.previewContainer}>
+              <iframe
+                src={`/api/invoices/${selectedInvoice.id}/file?token=${encodeURIComponent(token || '')}#toolbar=0&navpanes=0&view=FitH`}
+                style={styles.previewFrame}
+                title="Invoice Preview"
+              />
+            </div>
+
+            {/* Invoice Breakdown */}
+            <div style={styles.invoiceBreakdown}>
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Supplier:</span>
+                <span style={styles.breakdownValue}>{selectedSupplierName}</span>
+              </div>
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Invoice #:</span>
+                <span style={styles.breakdownValue}>{selectedInvoice.invoice_number || '-'}</span>
+              </div>
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Date:</span>
+                <span style={styles.breakdownValue}>{selectedInvoice.invoice_date || '-'}</span>
+              </div>
+              <div style={styles.breakdownDivider} />
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Net Stock:</span>
+                <span style={styles.breakdownValue}>£{Number(selectedInvoice.net_stock ?? 0).toFixed(2)}</span>
+              </div>
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Gross Stock:</span>
+                <span style={styles.breakdownValue}>£{Number(selectedInvoice.gross_stock ?? 0).toFixed(2)}</span>
+              </div>
+              <div style={styles.breakdownDivider} />
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Net Total:</span>
+                <span style={styles.breakdownValue}>£{Number(selectedInvoice.net_total ?? 0).toFixed(2)}</span>
+              </div>
+              <div style={styles.breakdownRow}>
+                <span style={styles.breakdownLabel}>Gross Total:</span>
+                <span style={styles.breakdownValue}>£{Number(selectedInvoice.total ?? 0).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <div style={styles.modalActions}>
+              <a href={`/invoice/${selectedInvoice.id}`} style={styles.viewFullBtn}>
+                View Full Invoice →
+              </a>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -200,34 +626,96 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#1a1a2e',
     margin: 0,
   },
-  weekNav: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.75rem',
-  },
-  navBtn: {
+  printBtn: {
     padding: '0.5rem 1rem',
-    background: '#f0f0f0',
-    border: '1px solid #ddd',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '0.9rem',
-  },
-  todayBtn: {
-    padding: '0.5rem 1rem',
-    background: '#e94560',
+    background: '#6c757d',
     color: 'white',
     border: 'none',
     borderRadius: '6px',
     cursor: 'pointer',
     fontSize: '0.9rem',
-    fontWeight: 'bold',
   },
-  weekLabel: {
-    fontWeight: 'bold',
+  dateControls: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    marginBottom: '1rem',
+  },
+  dateRow: {
+    display: 'flex',
+    gap: '1.5rem',
+    flexWrap: 'wrap',
+    marginBottom: '1rem',
+  },
+  dateField: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+  },
+  dateLabel: {
+    fontSize: '0.85rem',
+    color: '#666',
+    fontWeight: 500,
+  },
+  dateInput: {
+    padding: '0.5rem 0.75rem',
+    border: '1px solid #ddd',
+    borderRadius: '6px',
     fontSize: '1rem',
-    minWidth: '140px',
+    minWidth: '150px',
+  },
+  monthSelect: {
+    padding: '0.5rem 0.75rem',
+    border: '1px solid #ddd',
+    borderRadius: '6px',
+    fontSize: '1rem',
+    minWidth: '180px',
+    background: 'white',
+  },
+  presetRow: {
+    display: 'flex',
+    gap: '0.5rem',
+    flexWrap: 'wrap',
+  },
+  presetBtn: {
+    padding: '0.4rem 0.75rem',
+    background: '#f0f0f0',
+    border: '1px solid #ddd',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+  },
+  generateBtn: {
+    padding: '0.4rem 1rem',
+    background: '#e94560',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    fontWeight: 'bold',
+    marginLeft: 'auto',
+  },
+  generateBtnDisabled: {
+    background: '#ccc',
+    cursor: 'default',
+  },
+  periodLabel: {
+    fontSize: '1.1rem',
+    fontWeight: 'bold',
+    color: '#1a1a2e',
+    marginBottom: '1rem',
     textAlign: 'center',
+  },
+  periodTotalContainer: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '1rem 1.5rem',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    textAlign: 'right',
+    fontSize: '1.1rem',
+    color: '#e94560',
   },
   empty: {
     background: 'white',
@@ -235,6 +723,41 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '12px',
     textAlign: 'center',
     color: '#666',
+  },
+  sectionContainer: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    marginBottom: '2rem',
+  },
+  sectionTitle: {
+    margin: '0 0 1rem 0',
+    color: '#1a1a2e',
+  },
+  weekContainer: {
+    marginBottom: '2rem',
+  },
+  weekHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '1rem',
+    marginBottom: '0.5rem',
+    flexWrap: 'wrap',
+  },
+  weekTitle: {
+    fontWeight: 'bold',
+    fontSize: '1rem',
+    color: '#1a1a2e',
+  },
+  weekRange: {
+    color: '#666',
+    fontSize: '0.9rem',
+  },
+  weekTotal: {
+    marginLeft: 'auto',
+    fontWeight: 'bold',
+    color: '#e94560',
   },
   tableContainer: {
     background: 'white',
@@ -266,6 +789,14 @@ const styles: Record<string, React.CSSProperties> = {
   percentHeader: {
     background: '#2d2d44',
     minWidth: '60px',
+  },
+  outOfMonth: {
+    background: '#3d3d54',
+    opacity: 0.7,
+  },
+  outOfMonthCell: {
+    background: '#f8f9fa',
+    opacity: 0.6,
   },
   tr: {
     borderBottom: '1px solid #eee',
@@ -304,7 +835,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '0.25rem',
     alignItems: 'center',
   },
-  invoiceLink: {
+  invoiceBtn: {
     display: 'inline-block',
     padding: '0.2rem 0.5rem',
     background: '#e8f4e8',
@@ -314,6 +845,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '0.85rem',
     fontWeight: '500',
     border: '1px solid #c3e6cb',
+    cursor: 'pointer',
   },
   fuzzyInvoice: {
     background: '#fff3cd',
@@ -353,5 +885,203 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     background: '#1a1a2e',
     color: 'white',
+  },
+
+  // Monthly spending calendar
+  calendarContainer: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    marginTop: '2rem',
+  },
+  calendarTitle: {
+    margin: '0 0 1rem 0',
+    color: '#1a1a2e',
+  },
+  calendarGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(7, 1fr)',
+    gap: '4px',
+  },
+  calendarDayHeader: {
+    textAlign: 'center',
+    fontWeight: 'bold',
+    padding: '0.5rem',
+    background: '#1a1a2e',
+    color: 'white',
+    fontSize: '0.8rem',
+  },
+  calendarCellEmpty: {
+    background: '#f8f9fa',
+    minHeight: '60px',
+  },
+  calendarCell: {
+    background: '#f8f9fa',
+    minHeight: '60px',
+    padding: '0.5rem',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '0.25rem',
+  },
+  calendarCellWithData: {
+    background: '#e8f4e8',
+    border: '1px solid #c3e6cb',
+  },
+  calendarDay: {
+    fontSize: '0.85rem',
+    fontWeight: '500',
+    color: '#333',
+  },
+  calendarAmount: {
+    fontSize: '0.75rem',
+    fontWeight: 'bold',
+    color: '#155724',
+  },
+  calendarFooter: {
+    textAlign: 'right',
+    marginTop: '1rem',
+    fontSize: '1.1rem',
+    color: '#e94560',
+  },
+
+  // Modal
+  modal: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  modalContent: {
+    background: 'white',
+    borderRadius: '12px',
+    width: '90%',
+    maxWidth: '800px',
+    maxHeight: '90vh',
+    overflow: 'auto',
+  },
+  modalHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '1rem 1.5rem',
+    borderBottom: '1px solid #eee',
+  },
+  modalTitle: {
+    margin: 0,
+    color: '#1a1a2e',
+  },
+  modalClose: {
+    background: 'none',
+    border: 'none',
+    fontSize: '2rem',
+    cursor: 'pointer',
+    color: '#666',
+    lineHeight: 1,
+  },
+  previewContainer: {
+    height: '400px',
+    background: '#f8f9fa',
+    borderBottom: '1px solid #eee',
+  },
+  previewFrame: {
+    width: '100%',
+    height: '100%',
+    border: 'none',
+  },
+  invoiceBreakdown: {
+    padding: '1.5rem',
+  },
+  breakdownRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    padding: '0.5rem 0',
+  },
+  breakdownLabel: {
+    color: '#666',
+  },
+  breakdownValue: {
+    fontWeight: '500',
+  },
+  breakdownDivider: {
+    borderTop: '1px solid #eee',
+    margin: '0.5rem 0',
+  },
+  modalActions: {
+    padding: '1rem 1.5rem',
+    borderTop: '1px solid #eee',
+    textAlign: 'right',
+  },
+  viewFullBtn: {
+    display: 'inline-block',
+    padding: '0.5rem 1rem',
+    background: '#e94560',
+    color: 'white',
+    borderRadius: '6px',
+    textDecoration: 'none',
+    fontWeight: '500',
+  },
+
+  // Print styles
+  printContainer: {
+    padding: '1rem',
+    background: 'white',
+  },
+  printTitle: {
+    marginBottom: '1rem',
+    color: '#1a1a2e',
+    fontSize: '1.2rem',
+  },
+  printTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '0.8rem',
+  },
+  printTh: {
+    padding: '0.3rem 0.4rem',
+    background: '#f8f9fa',
+    border: '1px solid #dee2e6',
+    textAlign: 'left',
+    fontWeight: 'bold',
+  },
+  printThDate: {
+    padding: '0.3rem 0.4rem',
+    background: '#f8f9fa',
+    border: '1px solid #dee2e6',
+    textAlign: 'left',
+    fontWeight: 'bold',
+    whiteSpace: 'nowrap',
+    minWidth: '80px',
+  },
+  printThRight: {
+    padding: '0.3rem 0.4rem',
+    background: '#f8f9fa',
+    border: '1px solid #dee2e6',
+    textAlign: 'right',
+    fontWeight: 'bold',
+  },
+  printTd: {
+    padding: '0.2rem 0.4rem',
+    border: '1px solid #dee2e6',
+  },
+  printTdDate: {
+    padding: '0.2rem 0.4rem',
+    border: '1px solid #dee2e6',
+    whiteSpace: 'nowrap',
+  },
+  printTdRight: {
+    padding: '0.2rem 0.4rem',
+    border: '1px solid #dee2e6',
+    textAlign: 'right',
+  },
+  printFooter: {
+    background: '#f8f9fa',
   },
 }

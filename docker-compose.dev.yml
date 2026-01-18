@@ -1,6 +1,7 @@
 services:
   backend:
     build: ./backend
+    restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql://kitchen:kitchen_secret@db:5432/kitchen_gp
       - JWT_SECRET=dev-secret-change-in-production
@@ -9,8 +10,8 @@ services:
     volumes:
       # Mount source code for development (allows code changes without rebuild)
       - ./backend:/app
-      # Local data directory for invoice files
-      - ./data/invoices:/app/data
+      # Local volume for invoice files
+      - invoice_files:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -21,6 +22,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
+    restart: unless-stopped
     ports:
       - "3080:5173"
     volumes:
@@ -34,12 +36,14 @@ services:
 
   db:
     image: postgres:15-alpine
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=kitchen
       - POSTGRES_PASSWORD=kitchen_secret
       - POSTGRES_DB=kitchen_gp
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      # Local Docker volume for dev database
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -47,3 +51,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+volumes:
+  postgres_data:
+  invoice_files:

@@ -1,0 +1,603 @@
+"""
+Price History Service for price change detection and history tracking.
+
+This service is used by:
+- Search pages for showing price change indicators
+- Invoice review for line item price status
+- History modal for viewing price trends
+"""
+import logging
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import Optional, Tuple, List
+from dataclasses import dataclass
+from sqlalchemy import select, func, and_, or_, desc
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.invoice import Invoice
+from models.line_item import LineItem
+from models.supplier import Supplier
+from models.settings import KitchenSettings
+from models.acknowledged_price import AcknowledgedPrice
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PriceHistoryPoint:
+    """Single point in price history."""
+    date: date
+    price: Decimal
+    invoice_id: int
+    invoice_number: Optional[str]
+    quantity: Optional[Decimal] = None
+
+
+@dataclass
+class PriceStatus:
+    """Price status result for a line item."""
+    status: str  # "consistent", "no_history", "amber", "red", "acknowledged"
+    previous_price: Optional[Decimal] = None
+    change_percent: Optional[float] = None
+    acknowledged_price: Optional[Decimal] = None
+
+
+@dataclass
+class LineItemHistory:
+    """Full history data for a line item."""
+    product_code: Optional[str]
+    description: Optional[str]
+    supplier_id: int
+    supplier_name: Optional[str]
+    # Price history for charting
+    price_history: List[PriceHistoryPoint]
+    # Stats
+    total_occurrences: int
+    total_quantity: Decimal
+    avg_qty_per_invoice: Decimal
+    avg_qty_per_week: Decimal
+    avg_qty_per_month: Decimal
+    # Current status
+    current_price: Optional[Decimal]
+    price_change_status: str
+
+
+class PriceHistoryService:
+    """Service for price history and change detection."""
+
+    def __init__(self, db: AsyncSession, kitchen_id: int):
+        self.db = db
+        self.kitchen_id = kitchen_id
+
+    async def _get_settings(self) -> Optional[KitchenSettings]:
+        """Get kitchen settings for price thresholds."""
+        result = await self.db.execute(
+            select(KitchenSettings).where(
+                KitchenSettings.kitchen_id == self.kitchen_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def _get_acknowledged_price(
+        self,
+        supplier_id: int,
+        product_code: Optional[str],
+        description: Optional[str]
+    ) -> Optional[AcknowledgedPrice]:
+        """Get acknowledged price for a product if it exists."""
+        # Build query - need to handle NULL values in comparison
+        conditions = [
+            AcknowledgedPrice.kitchen_id == self.kitchen_id,
+            AcknowledgedPrice.supplier_id == supplier_id,
+        ]
+
+        # Handle product_code - compare with IS NULL for None
+        if product_code:
+            conditions.append(AcknowledgedPrice.product_code == product_code)
+        else:
+            conditions.append(AcknowledgedPrice.product_code.is_(None))
+
+        # Handle description - compare with IS NULL for None
+        if description:
+            conditions.append(AcknowledgedPrice.description == description)
+        else:
+            conditions.append(AcknowledgedPrice.description.is_(None))
+
+        result = await self.db.execute(
+            select(AcknowledgedPrice).where(and_(*conditions))
+        )
+        return result.scalar_one_or_none()
+
+    async def _get_previous_prices(
+        self,
+        supplier_id: int,
+        product_code: Optional[str],
+        description: Optional[str],
+        lookback_days: int,
+        exclude_invoice_id: Optional[int] = None
+    ) -> List[Tuple[Decimal, date]]:
+        """Get previous prices for a product within lookback period."""
+        cutoff_date = date.today() - timedelta(days=lookback_days)
+
+        # Build conditions for matching product
+        conditions = [
+            Invoice.kitchen_id == self.kitchen_id,
+            LineItem.invoice_id == Invoice.id,
+            Invoice.supplier_id == supplier_id,
+            Invoice.invoice_date >= cutoff_date,
+            LineItem.unit_price.isnot(None),
+        ]
+
+        # Match by product_code if available, otherwise by description
+        if product_code:
+            conditions.append(LineItem.product_code == product_code)
+        else:
+            conditions.append(LineItem.product_code.is_(None))
+            if description:
+                conditions.append(LineItem.description == description)
+
+        # Exclude current invoice if provided
+        if exclude_invoice_id:
+            conditions.append(Invoice.id != exclude_invoice_id)
+
+        result = await self.db.execute(
+            select(LineItem.unit_price, Invoice.invoice_date)
+            .where(and_(*conditions))
+            .order_by(desc(Invoice.invoice_date))
+        )
+
+        return [(row[0], row[1]) for row in result.fetchall()]
+
+    async def get_price_status(
+        self,
+        supplier_id: int,
+        product_code: Optional[str],
+        description: Optional[str],
+        current_price: Decimal,
+        current_invoice_id: Optional[int] = None,
+        lookback_days: Optional[int] = None,
+        amber_threshold: Optional[int] = None,
+        red_threshold: Optional[int] = None,
+    ) -> PriceStatus:
+        """
+        Get price status for a line item.
+
+        Returns:
+            PriceStatus with:
+            - "consistent": Price matches history (green tick)
+            - "no_history": First time seeing this item (no icon)
+            - "amber": Small price change within threshold
+            - "red": Large price change above threshold
+            - "acknowledged": Price was flagged but user acknowledged it
+        """
+        # Get settings if thresholds not provided
+        if lookback_days is None or amber_threshold is None or red_threshold is None:
+            settings = await self._get_settings()
+            lookback_days = lookback_days or (settings.price_change_lookback_days if settings else 30)
+            amber_threshold = amber_threshold or (settings.price_change_amber_threshold if settings else 10)
+            red_threshold = red_threshold or (settings.price_change_red_threshold if settings else 20)
+
+        # Get previous prices
+        previous_prices = await self._get_previous_prices(
+            supplier_id, product_code, description, lookback_days, current_invoice_id
+        )
+
+        if not previous_prices:
+            return PriceStatus(status="no_history")
+
+        # Get most recent previous price
+        previous_price = previous_prices[0][0]
+
+        # Calculate change percentage
+        if previous_price and previous_price != 0:
+            change_percent = float((current_price - previous_price) / previous_price * 100)
+        else:
+            change_percent = 0.0
+
+        abs_change = abs(change_percent)
+
+        # Check if price is acknowledged
+        acknowledged = await self._get_acknowledged_price(
+            supplier_id, product_code, description
+        )
+
+        if acknowledged and acknowledged.acknowledged_price == current_price:
+            return PriceStatus(
+                status="acknowledged",
+                previous_price=previous_price,
+                change_percent=change_percent,
+                acknowledged_price=acknowledged.acknowledged_price
+            )
+
+        # Determine status based on change
+        if abs_change <= 0.01:  # Essentially no change (floating point tolerance)
+            return PriceStatus(
+                status="consistent",
+                previous_price=previous_price,
+                change_percent=0.0
+            )
+        elif abs_change <= red_threshold:
+            return PriceStatus(
+                status="amber",  # Any change > 0.01% up to red threshold shows amber
+                previous_price=previous_price,
+                change_percent=change_percent
+            )
+        else:
+            return PriceStatus(
+                status="red",
+                previous_price=previous_price,
+                change_percent=change_percent
+            )
+
+    async def get_history(
+        self,
+        supplier_id: int,
+        product_code: Optional[str],
+        description: Optional[str],
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> LineItemHistory:
+        """
+        Get full history for a product including price history and quantity stats.
+
+        Args:
+            supplier_id: Supplier ID
+            product_code: Product code (may be None)
+            description: Description (used if no product_code)
+            date_from: Start date (default: 12 months ago)
+            date_to: End date (default: today)
+
+        Returns:
+            LineItemHistory with price history and stats
+        """
+        # Default date range: 12 months
+        if date_to is None:
+            date_to = date.today()
+        if date_from is None:
+            date_from = date_to - timedelta(days=365)
+
+        # Build conditions for matching product
+        conditions = [
+            Invoice.kitchen_id == self.kitchen_id,
+            LineItem.invoice_id == Invoice.id,
+            Invoice.supplier_id == supplier_id,
+            Invoice.invoice_date >= date_from,
+            Invoice.invoice_date <= date_to,
+        ]
+
+        # Match by product_code if available, otherwise by description
+        if product_code:
+            conditions.append(LineItem.product_code == product_code)
+        else:
+            conditions.append(LineItem.product_code.is_(None))
+            if description:
+                conditions.append(LineItem.description == description)
+
+        # Get price history points
+        result = await self.db.execute(
+            select(
+                Invoice.invoice_date,
+                LineItem.unit_price,
+                LineItem.quantity,
+                Invoice.id,
+                Invoice.invoice_number
+            )
+            .where(and_(*conditions))
+            .order_by(Invoice.invoice_date)
+        )
+        rows = result.fetchall()
+
+        price_history = []
+        total_qty = Decimal(0)
+        total_occurrences = 0
+        current_price = None
+
+        for row in rows:
+            inv_date, unit_price, qty, inv_id, inv_num = row
+            if unit_price is not None:
+                price_history.append(PriceHistoryPoint(
+                    date=inv_date,
+                    price=unit_price,
+                    invoice_id=inv_id,
+                    invoice_number=inv_num,
+                    quantity=qty
+                ))
+                current_price = unit_price
+            if qty:
+                total_qty += qty
+            total_occurrences += 1
+
+        # Calculate averages
+        avg_qty_per_invoice = total_qty / total_occurrences if total_occurrences > 0 else Decimal(0)
+
+        # Calculate weeks and months in period
+        days_in_period = (date_to - date_from).days or 1
+        weeks_in_period = max(days_in_period / 7, 1)
+        months_in_period = max(days_in_period / 30, 1)
+
+        avg_qty_per_week = total_qty / Decimal(str(weeks_in_period))
+        avg_qty_per_month = total_qty / Decimal(str(months_in_period))
+
+        # Get supplier name
+        supplier_result = await self.db.execute(
+            select(Supplier.name).where(Supplier.id == supplier_id)
+        )
+        supplier_name = supplier_result.scalar_one_or_none()
+
+        # Determine price change status for current price
+        if current_price and len(price_history) > 1:
+            status = await self.get_price_status(
+                supplier_id, product_code, description, current_price
+            )
+            price_change_status = status.status
+        else:
+            price_change_status = "no_history" if not price_history else "consistent"
+
+        return LineItemHistory(
+            product_code=product_code,
+            description=description,
+            supplier_id=supplier_id,
+            supplier_name=supplier_name,
+            price_history=price_history,
+            total_occurrences=total_occurrences,
+            total_quantity=total_qty,
+            avg_qty_per_invoice=avg_qty_per_invoice,
+            avg_qty_per_week=avg_qty_per_week,
+            avg_qty_per_month=avg_qty_per_month,
+            current_price=current_price,
+            price_change_status=price_change_status
+        )
+
+    async def acknowledge_price(
+        self,
+        user_id: int,
+        supplier_id: int,
+        product_code: Optional[str],
+        description: Optional[str],
+        new_price: Decimal,
+        source_invoice_id: Optional[int] = None,
+        source_line_item_id: Optional[int] = None,
+    ) -> AcknowledgedPrice:
+        """
+        Acknowledge a price change for a product.
+
+        Creates or updates the AcknowledgedPrice record so the price
+        won't be flagged in future.
+        """
+        # Check if already exists
+        existing = await self._get_acknowledged_price(
+            supplier_id, product_code, description
+        )
+
+        if existing:
+            # Update existing record
+            existing.acknowledged_price = new_price
+            existing.acknowledged_at = datetime.utcnow()
+            existing.acknowledged_by_user_id = user_id
+            existing.source_invoice_id = source_invoice_id
+            existing.source_line_item_id = source_line_item_id
+            await self.db.commit()
+            return existing
+        else:
+            # Create new record
+            acknowledged = AcknowledgedPrice(
+                kitchen_id=self.kitchen_id,
+                supplier_id=supplier_id,
+                product_code=product_code,
+                description=description,
+                acknowledged_price=new_price,
+                acknowledged_by_user_id=user_id,
+                source_invoice_id=source_invoice_id,
+                source_line_item_id=source_line_item_id
+            )
+            self.db.add(acknowledged)
+            await self.db.commit()
+            await self.db.refresh(acknowledged)
+            return acknowledged
+
+    async def get_consolidated_line_items(
+        self,
+        search_query: Optional[str] = None,
+        supplier_id: Optional[int] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Tuple[List[dict], int]:
+        """
+        Get consolidated line items for search results.
+
+        Groups line items by (product_code OR description) + supplier,
+        returning most recent price, total quantity, occurrence count, etc.
+
+        Returns:
+            (list of consolidated items, total count)
+        """
+        # Default date range: 30 days
+        if date_to is None:
+            date_to = date.today()
+        if date_from is None:
+            date_from = date_to - timedelta(days=30)
+
+        # Build base conditions
+        conditions = [
+            Invoice.kitchen_id == self.kitchen_id,
+            LineItem.invoice_id == Invoice.id,
+            Invoice.invoice_date >= date_from,
+            Invoice.invoice_date <= date_to,
+        ]
+
+        if supplier_id:
+            conditions.append(Invoice.supplier_id == supplier_id)
+
+        if search_query:
+            search_pattern = f"%{search_query}%"
+            conditions.append(or_(
+                LineItem.product_code.ilike(search_pattern),
+                LineItem.description.ilike(search_pattern)
+            ))
+
+        # Build query for consolidated items using subquery
+        # We need to group by product identity and get aggregates
+
+        # First, get the consolidation key and aggregates
+        from sqlalchemy import case, literal_column
+
+        # Create a composite key for grouping
+        consolidation_key = func.concat(
+            func.coalesce(LineItem.product_code, ''),
+            '||',
+            func.coalesce(LineItem.description, ''),
+            '||',
+            func.cast(Invoice.supplier_id, String)
+        )
+
+        # Get aggregated data
+        # Note: We don't group by unit since the same product may have slightly different
+        # unit values across invoices. We'll pick the most recent unit in the detail query.
+        agg_query = (
+            select(
+                LineItem.product_code,
+                LineItem.description,
+                Invoice.supplier_id,
+                Supplier.name.label('supplier_name'),
+                func.sum(LineItem.quantity).label('total_quantity'),
+                func.count(LineItem.id).label('occurrence_count'),
+                func.max(Invoice.invoice_date).label('most_recent_date'),
+            )
+            .select_from(LineItem)
+            .join(Invoice, LineItem.invoice_id == Invoice.id)
+            .join(Supplier, Invoice.supplier_id == Supplier.id)
+            .where(and_(*conditions))
+            .group_by(
+                LineItem.product_code,
+                LineItem.description,
+                Invoice.supplier_id,
+                Supplier.name,
+            )
+        )
+
+        # Get total count
+        count_subquery = agg_query.subquery()
+        count_result = await self.db.execute(
+            select(func.count()).select_from(count_subquery)
+        )
+        total_count = count_result.scalar() or 0
+
+        # Get paginated results
+        agg_result = await self.db.execute(
+            agg_query.order_by(desc('most_recent_date')).limit(limit).offset(offset)
+        )
+        rows = agg_result.fetchall()
+
+        # Build result list with additional data
+        items = []
+        for row in rows:
+            product_code = row.product_code
+            description = row.description
+            supplier_id_val = row.supplier_id
+
+            # Get most recent price, invoice info, and unit
+            recent_query = (
+                select(
+                    LineItem.unit_price,
+                    Invoice.id,
+                    Invoice.invoice_number,
+                    LineItem.unit
+                )
+                .where(and_(
+                    Invoice.kitchen_id == self.kitchen_id,
+                    LineItem.invoice_id == Invoice.id,
+                    Invoice.supplier_id == supplier_id_val,
+                    LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
+                    LineItem.description == description if description else True,
+                ))
+                .order_by(desc(Invoice.invoice_date))
+                .limit(1)
+            )
+            recent_result = await self.db.execute(recent_query)
+            recent_row = recent_result.fetchone()
+
+            most_recent_price = recent_row[0] if recent_row else None
+            most_recent_invoice_id = recent_row[1] if recent_row else None
+            most_recent_invoice_number = recent_row[2] if recent_row else None
+            unit = recent_row[3] if recent_row else None
+
+            # Get earliest price in period for change detection
+            earliest_query = (
+                select(LineItem.unit_price)
+                .where(and_(
+                    Invoice.kitchen_id == self.kitchen_id,
+                    LineItem.invoice_id == Invoice.id,
+                    Invoice.supplier_id == supplier_id_val,
+                    Invoice.invoice_date >= date_from,
+                    Invoice.invoice_date <= date_to,
+                    LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
+                    LineItem.description == description if description else True,
+                ))
+                .order_by(Invoice.invoice_date)
+                .limit(1)
+            )
+            earliest_result = await self.db.execute(earliest_query)
+            earliest_row = earliest_result.fetchone()
+            earliest_price = earliest_row[0] if earliest_row else None
+
+            # Calculate price change
+            price_change_percent = None
+            price_change_status = "no_history"
+
+            if most_recent_price is not None and earliest_price is not None:
+                if earliest_price != 0:
+                    price_change_percent = float(
+                        (most_recent_price - earliest_price) / earliest_price * 100
+                    )
+
+                # Get price status
+                if most_recent_price:
+                    status = await self.get_price_status(
+                        supplier_id_val, product_code, description, most_recent_price
+                    )
+                    price_change_status = status.status
+
+            # Check if has definition
+            from models.product_definition import ProductDefinition
+            def_query = (
+                select(ProductDefinition.portions_per_unit, ProductDefinition.pack_quantity)
+                .where(and_(
+                    ProductDefinition.kitchen_id == self.kitchen_id,
+                    ProductDefinition.supplier_id == supplier_id_val,
+                    or_(
+                        ProductDefinition.product_code == product_code,
+                        ProductDefinition.description_pattern == description
+                    ) if product_code or description else False
+                ))
+                .limit(1)
+            )
+            def_result = await self.db.execute(def_query)
+            def_row = def_result.fetchone()
+
+            items.append({
+                'product_code': product_code,
+                'description': description,
+                'supplier_id': supplier_id_val,
+                'supplier_name': row.supplier_name,
+                'unit': unit,
+                'most_recent_price': most_recent_price,
+                'earliest_price_in_period': earliest_price,
+                'price_change_percent': price_change_percent,
+                'price_change_status': price_change_status,
+                'total_quantity': row.total_quantity,
+                'occurrence_count': row.occurrence_count,
+                'most_recent_invoice_id': most_recent_invoice_id,
+                'most_recent_invoice_number': most_recent_invoice_number,
+                'most_recent_date': row.most_recent_date,
+                'has_definition': def_row is not None,
+                'portions_per_unit': def_row[0] if def_row else None,
+                'pack_quantity': def_row[1] if def_row else None,
+            })
+
+        return items, total_count
+
+
+# Import String for cast
+from sqlalchemy import String

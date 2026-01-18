@@ -77,6 +77,24 @@ export default function InvoiceList() {
     },
   })
 
+  // Fetch completed invoices when showing pending confirmation and there are no pending invoices
+  const showCompletedInvoices = statusFilter === 'pending_confirmation' && data?.invoices.length === 0
+  const { data: completedData } = useQuery<InvoiceListResponse>({
+    queryKey: ['completed-invoices'],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      params.set('status', 'confirmed')
+      params.set('limit', '20')
+      params.set('sort', 'recent')
+      const res = await fetch(`/api/invoices/?${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch completed invoices')
+      return res.json()
+    },
+    enabled: showCompletedInvoices && !!token,
+  })
+
   if (isLoading) {
     return <div style={styles.loading}>Loading invoices...</div>
   }
@@ -86,6 +104,7 @@ export default function InvoiceList() {
   }
 
   const invoices = data?.invoices || []
+  const completedInvoices = completedData?.invoices || []
 
   return (
     <div>
@@ -155,9 +174,9 @@ export default function InvoiceList() {
 
       {invoices.length === 0 ? (
         <div style={styles.empty}>
-          <p>No invoices yet.</p>
+          <p>No invoices pending confirmation.</p>
           <a href="/upload" style={styles.link}>
-            Upload your first invoice
+            Upload one now
           </a>
         </div>
       ) : (
@@ -171,7 +190,10 @@ export default function InvoiceList() {
               <div style={styles.cardMain}>
                 <div style={styles.invoiceNumberRow}>
                   <span style={styles.invoiceNumber}>
-                    {invoice.invoice_number || 'Pending extraction...'}
+                    {invoice.invoice_number
+                      || (invoice.status === 'pending' ? 'Pending extraction...'
+                          : invoice.vendor_name ? `(${invoice.vendor_name})`
+                          : 'No invoice #')}
                   </span>
                   {invoice.document_type === 'delivery_note' && (
                     <span style={styles.dnBadge}>DN</span>
@@ -247,6 +269,105 @@ export default function InvoiceList() {
               )}
             </a>
           ))}
+        </div>
+      )}
+
+      {/* Show completed invoices section when no pending invoices */}
+      {showCompletedInvoices && completedInvoices.length > 0 && (
+        <div style={{ marginTop: '2rem' }}>
+          <h3 style={{ ...styles.title, fontSize: '1.2rem', marginBottom: '1rem' }}>
+            Recently Completed Invoices
+          </h3>
+          <div style={styles.list}>
+            {completedInvoices.map((invoice) => (
+              <a
+                key={invoice.id}
+                href={`/invoice/${invoice.id}`}
+                style={styles.card}
+              >
+                <div style={styles.cardMain}>
+                  <div style={styles.invoiceNumberRow}>
+                    <span style={styles.invoiceNumber}>
+                      {invoice.invoice_number
+                        || (invoice.status === 'pending' ? 'Pending extraction...'
+                            : invoice.vendor_name ? `(${invoice.vendor_name})`
+                            : 'No invoice #')}
+                    </span>
+                    {invoice.document_type === 'delivery_note' && (
+                      <span style={styles.dnBadge}>DN</span>
+                    )}
+                    {invoice.duplicate_status === 'firm_duplicate' && (
+                      <span style={styles.duplicateBadge}>DUPLICATE</span>
+                    )}
+                    {invoice.duplicate_status === 'possible_duplicate' && (
+                      <span style={styles.possibleDuplicateBadge}>POSSIBLE DUPLICATE</span>
+                    )}
+                  </div>
+                  <div style={styles.invoiceMeta}>
+                    {invoice.supplier_name ? (
+                      <span style={{
+                        ...styles.supplierName,
+                        ...(invoice.supplier_match_type === 'fuzzy' ? styles.fuzzySupplier : {})
+                      }}>
+                        {invoice.supplier_name}
+                        {invoice.supplier_match_type === 'fuzzy' && (
+                          <span style={styles.fuzzyBadge} title="Suggested match - please verify">?</span>
+                        )}
+                      </span>
+                    ) : invoice.vendor_name ? (
+                      <span style={styles.unmatchedSupplier} title="No matching supplier found - click to assign">
+                        {invoice.vendor_name}
+                        <span style={styles.unmatchedBadge}>!</span>
+                      </span>
+                    ) : null}
+                    <span style={styles.invoiceDate}>
+                      {invoice.invoice_date
+                        ? new Date(invoice.invoice_date).toLocaleDateString()
+                        : 'No date'}
+                    </span>
+                  </div>
+                </div>
+
+                <div style={styles.cardRight}>
+                  <div style={styles.total}>
+                    {invoice.stock_total != null && invoice.total != null && invoice.stock_total !== invoice.total ? (
+                      <>
+                        £{Number(invoice.stock_total).toFixed(2)}
+                        <span style={styles.fullTotal}>
+                          (£{Number(invoice.total).toFixed(2)})
+                        </span>
+                      </>
+                    ) : invoice.net_total != null ? (
+                      <>
+                        £{Number(invoice.net_total).toFixed(2)}
+                        {invoice.total != null && invoice.total !== invoice.net_total && (
+                          <span style={styles.fullTotal}>
+                            (£{Number(invoice.total).toFixed(2)})
+                          </span>
+                        )}
+                      </>
+                    ) : invoice.total != null ? (
+                      `£${Number(invoice.total).toFixed(2)}`
+                    ) : '—'}
+                  </div>
+                  <div
+                    style={{
+                      ...styles.status,
+                      background: statusColors[invoice.status] || '#999',
+                    }}
+                  >
+                    {invoice.status}
+                  </div>
+                </div>
+
+                {invoice.ocr_confidence != null && (
+                  <div style={styles.confidence}>
+                    {(Number(invoice.ocr_confidence) * 100).toFixed(0)}% confidence
+                  </div>
+                )}
+              </a>
+            ))}
+          </div>
         </div>
       )}
     </div>

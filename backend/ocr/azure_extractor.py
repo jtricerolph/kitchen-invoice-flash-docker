@@ -195,6 +195,24 @@ def serialize_azure_result(result: Any) -> dict:
     return output
 
 
+def _call_azure_sync(image_path: str, azure_endpoint: str, azure_key: str):
+    """
+    Synchronous Azure API call - runs in thread pool to avoid blocking event loop.
+    """
+    client = DocumentAnalysisClient(
+        endpoint=azure_endpoint,
+        credential=AzureKeyCredential(azure_key)
+    )
+
+    with open(image_path, "rb") as f:
+        poller = client.begin_analyze_document(
+            "prebuilt-invoice",
+            document=f
+        )
+
+    return poller.result()
+
+
 async def process_invoice_with_azure(
     image_path: str,
     azure_endpoint: str,
@@ -214,23 +232,20 @@ async def process_invoice_with_azure(
             - raw_text: str
             - confidence: float
     """
-    client = DocumentAnalysisClient(
-        endpoint=azure_endpoint,
-        credential=AzureKeyCredential(azure_key)
-    )
-
     # Retry loop for rate limiting (429 errors)
     last_error = None
+    loop = asyncio.get_event_loop()
+
     for attempt in range(MAX_RETRIES + 1):
         try:
-            # Read the image file
-            with open(image_path, "rb") as f:
-                poller = client.begin_analyze_document(
-                    "prebuilt-invoice",
-                    document=f
-                )
-
-            result = poller.result()
+            # Run blocking Azure SDK call in thread pool to avoid blocking event loop
+            result = await loop.run_in_executor(
+                None,  # Use default thread pool
+                _call_azure_sync,
+                image_path,
+                azure_endpoint,
+                azure_key
+            )
             break  # Success - exit retry loop
 
         except HttpResponseError as e:
@@ -253,8 +268,22 @@ async def process_invoice_with_azure(
                 else:
                     logger.error(f"Azure rate limit exceeded after {MAX_RETRIES} retries")
                     raise Exception(f"Azure rate limit exceeded. Please wait a moment and try again.") from e
+            elif e.status_code == 403:
+                # Quota exceeded or access denied
+                logger.error(f"Azure access denied (403): {str(e)}")
+                raise Exception(
+                    "Azure quota exceeded or access denied. "
+                    "Please check your Azure subscription and budget limits in the Azure portal."
+                ) from e
+            elif e.status_code == 401:
+                # Authentication failed
+                logger.error(f"Azure authentication failed (401): {str(e)}")
+                raise Exception(
+                    "Azure authentication failed. Please check your API credentials in Settings."
+                ) from e
             else:
                 # Other HTTP error - don't retry
+                logger.error(f"Azure HTTP error {e.status_code}: {str(e)}")
                 raise
         except Exception as e:
             logger.error(f"Azure OCR error: {e}")
@@ -418,6 +447,17 @@ async def process_invoice_with_azure(
                             except (ValueError, TypeError):
                                 pass
 
+                        # Fallback: parse quantity from leading number in raw_content
+                        # e.g., "2\nHovis Soft White..." -> quantity = 2
+                        if not line_item.get("quantity") and line_item.get("raw_content"):
+                            leading_qty_match = re.match(r'^(\d+)\s*[\n\r]', line_item["raw_content"])
+                            if leading_qty_match:
+                                try:
+                                    line_item["quantity"] = float(leading_qty_match.group(1))
+                                    logger.debug(f"Extracted quantity {line_item['quantity']} from raw_content leading number")
+                                except (ValueError, TypeError):
+                                    pass
+
                         # Extract order quantity (if available, e.g., Brakes invoices)
                         order_qty = safe_get_field(item_fields, "OrderQuantity")
                         if order_qty is not None:
@@ -456,7 +496,7 @@ async def process_invoice_with_azure(
                             except (ValueError, TypeError):
                                 pass
 
-                        # Extract amount (line net total)
+                        # Extract amount (line total - may be gross or net depending on supplier)
                         amt_val = safe_get_field(item_fields, "Amount")
                         if amt_val is not None:
                             try:
@@ -467,19 +507,99 @@ async def process_invoice_with_azure(
                             except (ValueError, TypeError):
                                 pass
 
+                        # Check if amount is gross (inc VAT) or net (exc VAT)
+                        # Compare against unit_price * quantity to determine
+                        if line_item.get("amount") and line_item.get("tax_amount") and line_item.get("unit_price") and line_item.get("quantity"):
+                            expected_net = line_item["unit_price"] * line_item["quantity"]
+                            current_amount = line_item["amount"]
+                            adjusted_amount = current_amount - line_item["tax_amount"]
+
+                            # Check which is closer to expected net: current amount or adjusted amount
+                            diff_current = abs(current_amount - expected_net)
+                            diff_adjusted = abs(adjusted_amount - expected_net)
+
+                            if diff_adjusted < diff_current and adjusted_amount > 0:
+                                # Amount appears to be gross, adjust to net
+                                line_item["amount"] = round(adjusted_amount, 2)
+                                logger.debug(f"Adjusted line amount from gross {current_amount} to net {adjusted_amount} (expected ~{expected_net:.2f})")
+
                         # Parse pack size from raw content (e.g., "120x15g")
                         pack_info = parse_pack_size(line_item["raw_content"])
                         line_item["pack_quantity"] = pack_info["pack_quantity"]
                         line_item["unit_size"] = pack_info["unit_size"]
                         line_item["unit_size_type"] = pack_info["unit_size_type"]
 
+                        # If unit_price is missing, try to extract from description/raw_content
+                        if not line_item.get("unit_price"):
+                            # Look for "£X.XX each" or "£X.XX/each" patterns
+                            price_each_pattern = r'£(\d+\.?\d*)\s*(?:each|/each|per\s*unit|ea\b)'
+                            text_to_search = f"{line_item.get('description', '')} {line_item.get('raw_content', '')}"
+                            price_match = re.search(price_each_pattern, text_to_search, re.IGNORECASE)
+                            if price_match:
+                                try:
+                                    line_item["unit_price"] = float(price_match.group(1))
+                                    logger.debug(f"Extracted unit_price £{line_item['unit_price']:.2f} from description/raw_content")
+                                except (ValueError, TypeError):
+                                    pass
+
+                        # If still no unit_price, back-calculate from amount and quantity
+                        if not line_item.get("unit_price") and line_item.get("amount") and line_item.get("quantity"):
+                            if line_item["quantity"] > 0:
+                                line_item["unit_price"] = round(line_item["amount"] / line_item["quantity"], 2)
+                                logger.debug(f"Back-calculated unit_price £{line_item['unit_price']:.2f} from amount/quantity")
+
+                        # If still no quantity, back-calculate from amount and unit_price
+                        if not line_item.get("quantity") and line_item.get("amount") and line_item.get("unit_price"):
+                            if line_item["unit_price"] > 0:
+                                calculated_qty = line_item["amount"] / line_item["unit_price"]
+                                # Only use if result is close to a whole number (receipts usually have integer quantities)
+                                if abs(calculated_qty - round(calculated_qty)) < 0.01:
+                                    line_item["quantity"] = round(calculated_qty)
+                                    logger.debug(f"Back-calculated quantity {line_item['quantity']} from amount/unit_price")
+
+                        # Validate numeric values to prevent database overflow
+                        # DECIMAL(10,3) allows up to 9,999,999.999 - cap at reasonable limits
+                        MAX_QUANTITY = 999999.0
+                        MAX_PRICE = 999999.0
+                        MAX_UNIT_SIZE = 99999.0  # 99kg in grams is plenty
+                        MAX_PACK_QTY = 9999
+
+                        # Collect warnings for values that need capping (OCR misreads)
+                        ocr_warnings = []
+
+                        if line_item.get("quantity") and line_item["quantity"] > MAX_QUANTITY:
+                            ocr_warnings.append(f"Quantity OCR error: {line_item['quantity']:.0f} → capped to {MAX_QUANTITY:.0f}")
+                            logger.warning(f"Capping quantity {line_item['quantity']} to {MAX_QUANTITY}")
+                            line_item["quantity"] = MAX_QUANTITY
+                        if line_item.get("unit_price") and line_item["unit_price"] > MAX_PRICE:
+                            ocr_warnings.append(f"Unit price OCR error: {line_item['unit_price']:.2f} → capped to {MAX_PRICE:.0f}")
+                            logger.warning(f"Capping unit_price {line_item['unit_price']} to {MAX_PRICE}")
+                            line_item["unit_price"] = MAX_PRICE
+                        if line_item.get("amount") and line_item["amount"] > MAX_PRICE:
+                            ocr_warnings.append(f"Amount OCR error: {line_item['amount']:.2f} → capped to {MAX_PRICE:.0f}")
+                            logger.warning(f"Capping amount {line_item['amount']} to {MAX_PRICE}")
+                            line_item["amount"] = MAX_PRICE
+                        if line_item.get("unit_size") and line_item["unit_size"] > MAX_UNIT_SIZE:
+                            ocr_warnings.append(f"Unit size OCR error: {line_item['unit_size']:.0f} → capped to {MAX_UNIT_SIZE:.0f}")
+                            logger.warning(f"Capping unit_size {line_item['unit_size']} to {MAX_UNIT_SIZE}")
+                            line_item["unit_size"] = MAX_UNIT_SIZE
+                        if line_item.get("pack_quantity") and line_item["pack_quantity"] > MAX_PACK_QTY:
+                            ocr_warnings.append(f"Pack qty OCR error: {line_item['pack_quantity']} → capped to {MAX_PACK_QTY}")
+                            logger.warning(f"Capping pack_quantity {line_item['pack_quantity']} to {MAX_PACK_QTY}")
+                            line_item["pack_quantity"] = MAX_PACK_QTY
+
+                        # Store warnings in line item
+                        if ocr_warnings:
+                            line_item["ocr_warnings"] = "; ".join(ocr_warnings)
+
                         # Calculate cost per item if we have pack_quantity and unit_price
                         if pack_info["pack_quantity"] and line_item.get("unit_price"):
                             line_item["cost_per_item"] = round(
                                 line_item["unit_price"] / pack_info["pack_quantity"], 4
                             )
-                            # cost_per_portion defaults to cost_per_item (portions_per_unit=1)
-                            line_item["cost_per_portion"] = line_item["cost_per_item"]
+                            # cost_per_portion NOT calculated here - requires portions_per_unit
+                            # which is defined via product_definitions or manual entry
+                            line_item["cost_per_portion"] = None
 
                         line_items.append(line_item)
                         desc_preview = (line_item.get('description') or 'N/A')[:30]

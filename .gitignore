@@ -42,3 +42,9 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+backups/
+nul
+debug_notes.txt
+temp_*.json
+check_*.py

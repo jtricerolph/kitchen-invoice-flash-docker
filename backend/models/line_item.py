@@ -39,11 +39,14 @@ class LineItem(Base):
     pack_quantity: Mapped[int] = mapped_column(Integer, nullable=True)  # e.g., 120 for "120x15g"
     unit_size: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=True)  # e.g., 15 for "120x15g"
     unit_size_type: Mapped[str] = mapped_column(String(10), nullable=True)  # e.g., "g", "kg", "ml", "ltr"
-    portions_per_unit: Mapped[int] = mapped_column(Integer, default=1)  # User-editable servings per unit
+    portions_per_unit: Mapped[int] = mapped_column(Integer, nullable=True)  # User-editable servings per unit (null = not defined)
 
     # Calculated cost fields
     cost_per_item: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=True)  # unit_price / pack_quantity
     cost_per_portion: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=True)  # unit_price / (pack_quantity * portions_per_unit)
+
+    # OCR warnings (e.g., "quantity capped from 11112121115 to 999999")
+    ocr_warnings: Mapped[str] = mapped_column(Text, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

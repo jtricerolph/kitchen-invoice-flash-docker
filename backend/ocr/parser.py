@@ -262,10 +262,9 @@ async def identify_supplier(
     """
     Try to identify the supplier from OCR text.
 
-    Matches against:
-    - Supplier name (exact and fuzzy)
-    - Supplier aliases
-    - identifier_config keywords
+    Match types:
+    - "exact": vendor_name exactly equals supplier name or alias (case-insensitive)
+    - "fuzzy": supplier name/alias is contained in text, or fuzzy word matching
 
     Returns:
         tuple of (supplier_id, match_type) where match_type is "exact", "fuzzy", or None
@@ -277,28 +276,43 @@ async def identify_supplier(
     )
     suppliers = result.scalars().all()
 
+    text_normalized = normalize_text(text)
     text_upper = text.upper()
 
-    # First pass: exact matches
+    # First pass: TRUE exact matches (text equals name/alias exactly)
     for supplier in suppliers:
-        # Check supplier name (exact - full name in text)
-        if supplier.name.upper() in text_upper:
+        supplier_norm = normalize_text(supplier.name)
+
+        # Check if text exactly equals supplier name
+        if text_normalized == supplier_norm:
             return (supplier.id, "exact")
 
-        # Check aliases (exact)
+        # Check if text exactly equals any alias
+        aliases = supplier.aliases or []
+        for alias in aliases:
+            if text_normalized == normalize_text(alias):
+                return (supplier.id, "exact")
+
+    # Second pass: "contains" matches - name/alias found IN text (fuzzy, not exact)
+    for supplier in suppliers:
+        # Check if supplier name is contained in text
+        if supplier.name.upper() in text_upper:
+            return (supplier.id, "fuzzy")
+
+        # Check aliases contained in text
         aliases = supplier.aliases or []
         for alias in aliases:
             if alias.upper() in text_upper:
-                return (supplier.id, "exact")
+                return (supplier.id, "fuzzy")
 
-        # Check identifier_config keywords (exact)
+        # Check identifier_config keywords
         identifier_config = supplier.identifier_config or {}
         keywords = identifier_config.get("keywords", [])
         for keyword in keywords:
             if keyword.upper() in text_upper:
-                return (supplier.id, "exact")
+                return (supplier.id, "fuzzy")
 
-    # Second pass: fuzzy matches
+    # Third pass: fuzzy word matching
     # Only do fuzzy matching on vendor name-like text (short text, not full OCR dump)
     # Full OCR text has too many words that could accidentally match
     if len(text) > 500:
@@ -307,7 +321,7 @@ async def identify_supplier(
 
     best_match = None
     best_score = 0.0
-    FUZZY_THRESHOLD = 0.6  # Minimum score to consider a fuzzy match (was 0.5)
+    FUZZY_THRESHOLD = 0.6  # Minimum score to consider a fuzzy match
 
     for supplier in suppliers:
         # Check supplier name fuzzy match

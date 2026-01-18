@@ -3,9 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import * as pdfjsLib from 'pdfjs-dist'
+import { getPriceStatusConfig, formatPercent } from '../utils/searchHelpers'
+import LineItemHistoryModal from './LineItemHistoryModal'
 
-// Use unpkg CDN for the worker (matches installed version 5.4.530)
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@5.4.530/build/pdf.worker.min.mjs'
+// Use local worker file from public directory
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
 // Simple Scale icon SVG component
 const ScaleIcon = ({ style }: { style?: React.CSSProperties }) => (
@@ -32,16 +34,22 @@ interface Invoice {
   status: string
   category: string | null
   ocr_confidence: number | null
+  ocr_raw_text: string | null  // OCR text or error message
   image_path: string
   document_type: string | null
   order_number: string | null
   duplicate_status: string | null
   duplicate_of_id: number | null
+  // Dext integration
+  notes: string | null
+  dext_sent_at: string | null
+  dext_sent_by_username: string | null
 }
 
 interface Supplier {
   id: number
   name: string
+  aliases?: string[]
 }
 
 interface LineItem {
@@ -62,9 +70,23 @@ interface LineItem {
   pack_quantity: number | null
   unit_size: number | null
   unit_size_type: string | null
-  portions_per_unit: number
+  portions_per_unit: number | null  // null = not defined yet
   cost_per_item: number | null
   cost_per_portion: number | null
+  // OCR warnings for values that needed correction
+  ocr_warnings: string | null
+  // Price change tracking
+  price_status: string | null  // "consistent", "amber", "red", "no_history", "acknowledged"
+  price_change_percent: number | null
+  previous_price: number | null
+}
+
+// Scale icon color based on data completeness
+const getScaleIconColor = (item: LineItem): string => {
+  if (!item.pack_quantity) return '#dc3545'  // Red - no pack data
+  if (item.portions_per_unit === null) return '#ffc107'  // Amber - portions not defined
+  if (item.cost_per_portion !== null) return '#28a745'  // Green - fully complete
+  return '#ffc107'  // Amber - fallback
 }
 
 interface DuplicateCompare {
@@ -74,7 +96,87 @@ interface DuplicateCompare {
   related_documents: Invoice[]
 }
 
+interface ProductDefinition {
+  id: number
+  kitchen_id: number
+  supplier_id: number | null
+  product_code: string | null
+  description_pattern: string | null
+  pack_quantity: number | null
+  unit_size: number | null
+  unit_size_type: string | null
+  portions_per_unit: number | null
+  portion_description: string | null
+  saved_by_user_id: number | null
+  saved_by_username: string | null
+  source_invoice_id: number | null
+  source_invoice_number: string | null
+  updated_at: string | null
+}
+
+interface Settings {
+  high_quantity_threshold: number
+  dext_manual_send_enabled: boolean
+}
+
+interface SearchResultItem {
+  description: string
+  unit_price: number | null
+  unit: string | null
+  pack_info: string | null
+  last_invoice_date: string | null
+  invoice_id: number
+  similarity: number
+}
+
+interface SupplierSearchGroup {
+  supplier_id: number | null
+  supplier_name: string
+  items: SearchResultItem[]
+}
+
+interface SearchResponse {
+  query: string
+  extracted_keywords: string
+  results: SupplierSearchGroup[]
+  total_matches: number
+}
+
 const TOLERANCE = 0.02; // 2p tolerance for rounding
+
+// Date warning levels for unconfirmed invoices
+type DateWarning = 'none' | 'amber' | 'red';
+function getDateWarning(dateStr: string | null, status: string): DateWarning {
+  // Only warn for unconfirmed invoices
+  if (status === 'confirmed') return 'none';
+
+  // No date = red
+  if (!dateStr) return 'red';
+
+  const invoiceDate = new Date(dateStr);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  invoiceDate.setHours(0, 0, 0, 0);
+
+  const diffMs = Math.abs(today.getTime() - invoiceDate.getTime());
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  // More than 7 days AND different month/year = red
+  if (diffDays > 7) {
+    const sameMonth = invoiceDate.getMonth() === today.getMonth();
+    const sameYear = invoiceDate.getFullYear() === today.getFullYear();
+    if (!sameMonth || !sameYear) return 'red';
+    return 'amber'; // More than 7 days but same month/year = amber
+  }
+
+  return 'none';
+}
+
+const dateWarningStyles: Record<DateWarning, React.CSSProperties> = {
+  none: {},
+  amber: { backgroundColor: '#fff3cd', borderColor: '#ffc107' },
+  red: { backgroundColor: '#f8d7da', borderColor: '#dc3545' },
+};
 
 function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems: LineItem[]; invoiceTotal: number; netTotal: number | null }) {
   const lineItemsTotal = lineItems.reduce((sum, item) => sum + (item.amount || 0), 0);
@@ -85,7 +187,9 @@ function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems:
     .filter(item => item.is_non_stock)
     .reduce((sum, item) => sum + (item.amount || 0), 0);
 
-  const difference = Math.abs(invoiceTotal - lineItemsTotal);
+  // Line item amounts are net values, so compare against netTotal (if available)
+  const compareTotal = netTotal ?? invoiceTotal;
+  const difference = Math.abs(compareTotal - lineItemsTotal);
   const exactMatch = difference <= TOLERANCE;
   const isValid = exactMatch;
   const hasNonStock = nonStockItemsTotal > 0;
@@ -103,8 +207,8 @@ function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems:
           Line Items Total: <strong>£{lineItemsTotal.toFixed(2)}</strong>
         </span>
         <span style={{ fontWeight: '500' }}>
-          Invoice Total: <strong>£{invoiceTotal.toFixed(2)}</strong>
-          {netTotal && <span style={{ fontSize: '0.85rem', color: '#666' }}> (Net: £{netTotal.toFixed(2)})</span>}
+          Invoice Net: <strong>£{(netTotal ?? invoiceTotal).toFixed(2)}</strong>
+          {netTotal && <span style={{ fontSize: '0.85rem', color: '#666' }}> (Gross: £{invoiceTotal.toFixed(2)})</span>}
         </span>
       </div>
       {hasNonStock && (
@@ -149,6 +253,11 @@ export default function Review() {
   const [showDuplicateModal, setShowDuplicateModal] = useState(false)
   const [showCreateSupplierModal, setShowCreateSupplierModal] = useState(false)
   const [showRawOcrModal, setShowRawOcrModal] = useState(false)
+  const [showSearchModal, setShowSearchModal] = useState(false)
+  const [searchingLineItem, setSearchingLineItem] = useState<LineItem | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResponse | null>(null)
+  const [searchLoading, setSearchLoading] = useState(false)
   const [newSupplierName, setNewSupplierName] = useState('')
   const [editingLineItem, setEditingLineItem] = useState<number | null>(null)
   const [lineItemEdits, setLineItemEdits] = useState<Partial<LineItem>>({})
@@ -156,13 +265,32 @@ export default function Review() {
   const [expandedLineItem, setExpandedLineItem] = useState<number | null>(null)
   const [expandedCostBreakdown, setExpandedCostBreakdown] = useState<number | null>(null)
   const [costBreakdownEdits, setCostBreakdownEdits] = useState<Partial<LineItem>>({})
+  const [portionDescription, setPortionDescription] = useState<string>('')
+  const [saveAsDefault, setSaveAsDefault] = useState(false)
+  const [currentDefinition, setCurrentDefinition] = useState<ProductDefinition | null>(null)
+  const [definitionLoading, setDefinitionLoading] = useState(false)
   const [pdfPages, setPdfPages] = useState<{ width: number; height: number; displayWidth: number; displayHeight: number; canvas: HTMLCanvasElement }[]>([])
   const [zoomLevel, setZoomLevel] = useState<number>(1)
-  const [zoomTranslate, setZoomTranslate] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const [zoomPageNum, setZoomPageNum] = useState<number>(0) // Which page the zoom applies to
+  const [imageZoom, setImageZoom] = useState<number>(1) // Zoom level for non-PDF images
   const pdfContainerRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const imageContainerRef = useRef<HTMLDivElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
+  // Dext integration state
+  const [invoiceNotes, setInvoiceNotes] = useState('')
+  const [showDextSendConfirm, setShowDextSendConfirm] = useState(false)
+  // Price history modal state
+  const [historyModal, setHistoryModal] = useState<{
+    isOpen: boolean
+    productCode: string | null
+    description: string | null
+    supplierId: number
+    supplierName: string
+    currentPrice?: number
+    sourceInvoiceId?: number
+    sourceLineItemId?: number
+  } | null>(null)
 
   const { data: invoice, isLoading } = useQuery<Invoice>({
     queryKey: ['invoice', id],
@@ -214,6 +342,19 @@ export default function Review() {
       if (!res.ok) throw new Error('Failed to fetch OCR data')
       return res.json()
     },
+  })
+
+  // Fetch settings for high quantity threshold
+  const { data: settings } = useQuery<Settings>({
+    queryKey: ['settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch settings')
+      return res.json()
+    },
+    staleTime: 60000, // Cache for 1 minute
   })
 
   // Helper to get bounding box for a field from raw OCR data
@@ -311,51 +452,94 @@ export default function Review() {
     const pageData = pdfPages[bbox.pageNumber - 1]
     if (!pageData) return
 
-    // Calculate bbox center position in display pixels (relative to page top-left)
-    const bboxCenterX = ((bbox.x + bbox.width / 2) / 100) * pageData.displayWidth
-    const bboxCenterY = ((bbox.y + bbox.height / 2) / 100) * pageData.displayHeight
-
-    // Container visible area center
-    const containerCenterX = pageData.displayWidth / 2
-    const containerCenterY = pageData.displayHeight / 2
-
-    // Calculate translate needed to move bbox center to container center after scaling
-    // When we scale by zoom from top-left, a point at (x, y) moves to (x*zoom, y*zoom)
-    // We want the bbox center (after scaling) to appear at container center
-    // So translate = containerCenter - bboxCenter * zoom
-    const translateX = containerCenterX - bboxCenterX * zoom
-    const translateY = containerCenterY - bboxCenterY * zoom
-
-    // Set zoom and translate
+    // Set zoom level for target page directly
     setZoomLevel(zoom)
-    setZoomTranslate({ x: translateX, y: translateY })
     setZoomPageNum(bbox.pageNumber)
 
-    // Scroll to the correct page
+    // Wait for DOM update, then scroll to centered position
     setTimeout(() => {
-      if (!pdfContainerRef.current) return
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!pdfContainerRef.current) return
 
-      // Calculate the Y offset to the target page
-      let yOffset = 0
-      for (let i = 0; i < bbox.pageNumber - 1 && i < pdfPages.length; i++) {
-        yOffset += (pdfPages[i].displayHeight || pdfPages[i].height) + 24
-      }
+          const container = pdfContainerRef.current
 
-      // Scroll to show the page
-      pdfContainerRef.current.scrollTo({
-        top: yOffset,
-        behavior: 'smooth'
+          // Force layout recalculation
+          void container.offsetHeight
+
+          // Find the actual page element to get its real position
+          const pageElements = container.querySelectorAll('[data-page-container]')
+          const targetPageElement = pageElements[bbox.pageNumber - 1] as HTMLElement
+
+          if (!targetPageElement) {
+            console.warn('Could not find page element for scrolling', {
+              totalPages: pdfPages.length,
+              targetPage: bbox.pageNumber,
+              foundElements: pageElements.length
+            })
+            return
+          }
+
+          // Use getBoundingClientRect for accurate positioning
+          const containerRect = container.getBoundingClientRect()
+          const pageRect = targetPageElement.getBoundingClientRect()
+
+          // Get the actual dimensions of the zoomed page
+          const pageActualWidth = pageRect.width
+          const pageActualHeight = pageRect.height
+
+          // Calculate bbox center position in pixels (bbox coords are percentages of the page)
+          const bboxCenterX = ((bbox.x + bbox.width / 2) / 100) * pageActualWidth
+          const bboxCenterY = ((bbox.y + bbox.height / 2) / 100) * pageActualHeight
+
+          // Calculate bbox center position relative to the container
+          // pageRect.left/top are relative to viewport, containerRect.left/top are container position
+          // Add current scroll position to get absolute position within scrollable content
+          const pageLeftInContainer = pageRect.left - containerRect.left + container.scrollLeft
+          const pageTopInContainer = pageRect.top - containerRect.top + container.scrollTop
+
+          const bboxAbsoluteX = pageLeftInContainer + bboxCenterX
+          const bboxAbsoluteY = pageTopInContainer + bboxCenterY
+
+          // Container viewport dimensions (clientWidth/Height excludes scrollbars but includes padding)
+          const containerWidth = container.clientWidth
+          const containerHeight = container.clientHeight
+
+          // Calculate scroll position to center the bbox in the viewport
+          const scrollLeft = Math.max(0, bboxAbsoluteX - containerWidth / 2)
+          const scrollTop = Math.max(0, bboxAbsoluteY - containerHeight / 2)
+
+          console.log('Zoom scroll debug:', {
+            bboxPageNum: bbox.pageNumber,
+            zoom,
+            pageActualSize: { w: pageActualWidth, h: pageActualHeight },
+            pageRectInViewport: { left: pageRect.left, top: pageRect.top },
+            containerRectInViewport: { left: containerRect.left, top: containerRect.top },
+            currentScroll: { left: container.scrollLeft, top: container.scrollTop },
+            pageInContainer: { left: pageLeftInContainer, top: pageTopInContainer },
+            bboxCenter: { x: bboxCenterX, y: bboxCenterY },
+            bboxAbsolute: { x: bboxAbsoluteX, y: bboxAbsoluteY },
+            scrollTarget: { left: scrollLeft, top: scrollTop },
+            containerSize: { w: containerWidth, h: containerHeight }
+          })
+
+          // Scroll instantly to show the highlighted area centered
+          container.scrollTo({
+            left: scrollLeft,
+            top: scrollTop,
+            behavior: 'auto' // Instant scroll instead of smooth
+          })
+        })
       })
-    }, 50)
+    }, 100) // Wait for zoom to apply and DOM to update
   }
 
   // Reset zoom
   const resetZoom = () => {
     setZoomLevel(1)
-    setZoomTranslate({ x: 0, y: 0 })
     setZoomPageNum(0)
     if (pdfContainerRef.current) {
-      pdfContainerRef.current.scrollTo({ left: 0, behavior: 'smooth' })
+      pdfContainerRef.current.scrollTo({ left: 0, top: 0, behavior: 'smooth' })
     }
   }
 
@@ -405,6 +589,7 @@ export default function Review() {
       setOrderNumber(invoice.order_number || '')
       setDocumentType(invoice.document_type || 'invoice')
       setSupplierId(invoice.supplier_id?.toString() || '')
+      setInvoiceNotes(invoice.notes || '')
     }
   }, [invoice])
 
@@ -426,7 +611,8 @@ export default function Review() {
         const numPages = pdf.numPages
 
         // Get container width for display scaling
-        const containerWidth = containerRef.current.clientWidth - 48 // padding
+        // Account for: imageSection padding (48px) + pdfScrollContainer padding (32px) + extra margin (32px) = 112px total
+        const containerWidth = containerRef.current.clientWidth - 112
 
         // Render at high fixed resolution for quality (matches upload max of 2000px)
         const targetRenderWidth = 1500 // High quality render width
@@ -534,6 +720,24 @@ export default function Review() {
     },
   })
 
+  const saveDefinitionMutation = useMutation({
+    mutationFn: async ({ itemId, portionDesc }: { itemId: number; portionDesc?: string }) => {
+      const res = await fetch(`/api/invoices/${id}/line-items/${itemId}/save-definition`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ portion_description: portionDesc || null }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to save definition')
+      }
+      return res.json()
+    },
+  })
+
   const createSupplierMutation = useMutation({
     mutationFn: async (name: string) => {
       const res = await fetch('/api/suppliers/', {
@@ -626,10 +830,113 @@ export default function Review() {
     updateLineItemMutation.mutate({ itemId, data: lineItemEdits })
   }
 
-  const toggleCostBreakdown = (item: LineItem) => {
+  // Build dynamic list of supplier words from loaded suppliers
+  const getSupplierWords = (): string[] => {
+    if (!suppliers) return []
+    const words: string[] = []
+    for (const supplier of suppliers) {
+      // Add each word from supplier name
+      if (supplier.name) {
+        words.push(...supplier.name.toLowerCase().split(/\s+/))
+      }
+      // Add each alias and its words
+      if (supplier.aliases) {
+        for (const alias of supplier.aliases) {
+          if (alias) {
+            words.push(...alias.toLowerCase().split(/\s+/))
+          }
+        }
+      }
+    }
+    // Remove duplicates and filter short words
+    return [...new Set(words)].filter(w => w.length > 1)
+  }
+
+  // Extract meaningful keywords from description for search
+  const extractKeywords = (description: string): string => {
+    if (!description) return ''
+    let text = description
+    // Remove pack sizes (12x1L, 120x15g)
+    text = text.replace(/\b\d+\s*x\s*\d+(\.\d+)?\s*(g|kg|ml|ltr|l|oz|cl)?\b/gi, '')
+    // Remove quantity patterns
+    text = text.replace(/\b(qty|quantity)\s*:?\s*\d+\b/gi, '')
+    text = text.replace(/\bcase\s*(of\s*)?\d+\b/gi, '')
+    // Remove product codes like (L-AG)
+    text = text.replace(/\([A-Z]{1,3}-?[A-Z0-9]{1,5}\)/gi, '')
+    text = text.replace(/\[[A-Z0-9-]+\]/gi, '')
+    // Remove generic packaging terms
+    text = text.replace(/\b(case|qty|un|pack|box|each|per|unit|pkt|bag|bottle|tin|can|carton|tray|portion|portions)\b/gi, '')
+    // Remove standalone numbers and weights
+    text = text.replace(/\b\d+(\.\d+)?\s*(g|kg|ml|ltr|l|oz|cl|lb)?\b/gi, '')
+    // Clean up special characters
+    text = text.replace(/[^\w\s]/g, ' ')
+    // Remove common English stop words
+    text = text.replace(/\b(the|a|an|in|on|at|by|for|with|to|of|and|or|is|it|as|be|are|was|been|being|have|has|had|do|does|did|will|would|could|should|may|might|this|that|these|those|from|into|through|during|before|after|above|below|between|under|over)\b/gi, '')
+    // Remove supplier names dynamically from loaded suppliers
+    const supplierWords = getSupplierWords()
+    if (supplierWords.length > 0) {
+      const supplierPattern = new RegExp(`\\b(${supplierWords.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'gi')
+      text = text.replace(supplierPattern, '')
+    }
+    return text.split(/\s+/).filter(w => w.length > 1).join(' ').trim()
+  }
+
+  const openSearchModal = (item: LineItem) => {
+    setSearchingLineItem(item)
+    const keywords = extractKeywords(item.description || '')
+    setSearchQuery(keywords)
+    setSearchResults(null)
+    setShowSearchModal(true)
+    // Auto-search if we have keywords
+    if (keywords) {
+      performSearch(keywords)
+    }
+  }
+
+  const openPriceHistoryModal = (item: LineItem) => {
+    if (!invoice?.supplier_id) return
+    setHistoryModal({
+      isOpen: true,
+      productCode: item.product_code,
+      description: item.description,
+      supplierId: invoice.supplier_id,
+      supplierName: invoice.supplier_name || 'Unknown',
+      currentPrice: item.unit_price || undefined,
+      sourceInvoiceId: invoice.id,
+      sourceLineItemId: item.id,
+    })
+  }
+
+  const performSearch = async (query: string) => {
+    if (!query || query.length < 2) return
+    setSearchLoading(true)
+    try {
+      const res = await fetch('/api/invoices/line-items/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          query,
+          exclude_invoice_id: id ? parseInt(id) : null
+        })
+      })
+      if (res.ok) {
+        setSearchResults(await res.json())
+      }
+    } finally {
+      setSearchLoading(false)
+    }
+  }
+
+  const toggleCostBreakdown = async (item: LineItem) => {
     if (expandedCostBreakdown === item.id) {
       setExpandedCostBreakdown(null)
       setCostBreakdownEdits({})
+      setPortionDescription('')
+      setSaveAsDefault(false)
+      setCurrentDefinition(null)
     } else {
       setExpandedCostBreakdown(item.id)
       setCostBreakdownEdits({
@@ -639,13 +946,50 @@ export default function Review() {
         portions_per_unit: item.portions_per_unit,
         unit_price: item.unit_price,
       })
+      setPortionDescription('')
+      setSaveAsDefault(false)
+      setCurrentDefinition(null)
+
+      // Fetch the saved definition for this line item
+      setDefinitionLoading(true)
+      try {
+        const res = await fetch(`/api/invoices/${id}/line-items/${item.id}/definition`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const def = await res.json()
+          setCurrentDefinition(def)
+          // Load portion description from saved definition
+          setPortionDescription(def?.portion_description || '')
+        } else {
+          setCurrentDefinition(null)
+        }
+      } catch {
+        setCurrentDefinition(null)
+      } finally {
+        setDefinitionLoading(false)
+      }
     }
   }
 
-  const saveCostBreakdown = (itemId: number) => {
-    updateLineItemMutation.mutate({ itemId, data: costBreakdownEdits })
+  const saveCostBreakdown = async (itemId: number) => {
+    // First update the line item
+    await updateLineItemMutation.mutateAsync({ itemId, data: costBreakdownEdits })
+
+    // If "save as default" is checked, save the definition (works with or without product code)
+    if (saveAsDefault) {
+      try {
+        await saveDefinitionMutation.mutateAsync({ itemId, portionDesc: portionDescription })
+      } catch (err) {
+        console.error('Failed to save definition:', err)
+        // Don't block the main save operation
+      }
+    }
+
     setExpandedCostBreakdown(null)
     setCostBreakdownEdits({})
+    setPortionDescription('')
+    setSaveAsDefault(false)
   }
 
   if (isLoading) {
@@ -665,6 +1009,28 @@ export default function Review() {
 
   return (
     <div style={styles.pageContainer}>
+      {/* Error banner for Azure OCR failures */}
+      {invoice?.ocr_raw_text && invoice.ocr_raw_text.startsWith('Error:') && (
+        <div style={styles.errorBanner}>
+          <div style={styles.errorBannerIcon}>⚠️</div>
+          <div style={styles.errorBannerContent}>
+            <strong>OCR Processing Error</strong>
+            <p>{invoice.ocr_raw_text.replace('Error: ', '')}</p>
+            {invoice.ocr_raw_text.includes('quota exceeded') && (
+              <p style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>
+                <strong>Next steps:</strong> Check your Azure subscription budget limits in the Azure portal.
+                Once resolved, use the "Reprocess" button below to retry OCR extraction.
+              </p>
+            )}
+            {invoice.ocr_raw_text.includes('authentication failed') && (
+              <p style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>
+                <strong>Next steps:</strong> Verify your Azure API credentials in Settings → Azure Configuration.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Top row: Image and Form side by side */}
       <div style={styles.topRow}>
         <div style={styles.imageSection} ref={containerRef}>
@@ -685,71 +1051,63 @@ export default function Review() {
 
                     return (
                       <div key={pageIndex} style={styles.pdfPageWrapper}>
-                        <div style={{
-                          ...styles.pdfPageContainer,
-                          width: page.displayWidth,
-                          height: page.displayHeight,
-                          overflow: 'hidden',
-                        }}>
-                          {/* Wrapper for image + highlights that transforms together */}
-                          <div style={{
+                        {/* Wrapper for image + highlights with actual size scaling for scrollable zoom */}
+                        <div
+                          data-page-container
+                          style={{
+                            ...styles.pdfPageContainer,
                             position: 'relative',
-                            width: page.displayWidth,
-                            height: page.displayHeight,
-                            transformOrigin: '0 0',
-                            transform: zoomLevel > 1 && zoomPageNum === pageNum
-                              ? `translate(${zoomTranslate.x}px, ${zoomTranslate.y}px) scale(${zoomLevel})`
-                              : 'scale(1)',
-                            transition: 'transform 0.3s ease',
+                            width: page.displayWidth * (zoomPageNum === pageNum ? zoomLevel : 1),
+                            height: page.displayHeight * (zoomPageNum === pageNum ? zoomLevel : 1),
+                            margin: '0 auto',
                           }}>
-                            <img
-                              src={page.canvas.toDataURL()}
-                              alt={`Page ${pageNum}`}
-                              style={{
-                                width: '100%',
-                                height: '100%',
-                                display: 'block',
-                              }}
-                            />
-                            {/* Highlight for header fields on this page */}
-                            {fieldBbox && fieldBbox.pageNumber === pageNum && (() => {
-                              // Add padding (0.5% ≈ 5px at typical sizes) and scale border inversely to zoom
-                              const padding = 0.5
-                              const borderWidth = Math.max(1, 2 / zoomLevel)
-                              return (
-                                <div
-                                  ref={highlightRef}
-                                  style={{
-                                    ...styles.highlightOverlay,
-                                    left: `${fieldBbox.x - padding}%`,
-                                    top: `${fieldBbox.y - padding}%`,
-                                    width: `${fieldBbox.width + padding * 2}%`,
-                                    height: `${fieldBbox.height + padding * 2}%`,
-                                    border: `${borderWidth}px solid #ffc107`,
-                                  }}
-                                  onClick={() => { setHighlightedField(null); resetZoom(); }}
-                                />
-                              )
-                            })()}
-                            {/* Highlight for line items on this page */}
-                            {lineItemBbox && lineItemBbox.pageNumber === pageNum && (() => {
-                              const padding = 0.5
-                              const borderWidth = Math.max(1, 2 / zoomLevel)
-                              return (
-                                <div
-                                  style={{
-                                    ...styles.highlightOverlay,
-                                    left: `${lineItemBbox.x - padding}%`,
-                                    top: `${lineItemBbox.y - padding}%`,
-                                    width: `${lineItemBbox.width + padding * 2}%`,
-                                    height: `${lineItemBbox.height + padding * 2}%`,
-                                    border: `${borderWidth}px solid #ffc107`,
-                                  }}
-                                  onClick={() => { setExpandedLineItem(null); resetZoom(); }}
-                                />
-                              )
-                            })()}
-                          </div>
+                          <img
+                            src={page.canvas.toDataURL()}
+                            alt={`Page ${pageNum}`}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              display: 'block',
+                            }}
+                          />
+                          {/* Highlight for header fields on this page */}
+                          {fieldBbox && fieldBbox.pageNumber === pageNum && (() => {
+                            // Add padding (0.5% ≈ 5px at typical sizes) and scale border inversely to zoom
+                            const padding = 0.5
+                            const borderWidth = Math.max(1, 2 / zoomLevel)
+                            return (
+                              <div
+                                ref={highlightRef}
+                                style={{
+                                  ...styles.highlightOverlay,
+                                  left: `${fieldBbox.x - padding}%`,
+                                  top: `${fieldBbox.y - padding}%`,
+                                  width: `${fieldBbox.width + padding * 2}%`,
+                                  height: `${fieldBbox.height + padding * 2}%`,
+                                  border: `${borderWidth}px solid #ffc107`,
+                                }}
+                                onClick={() => { setHighlightedField(null); resetZoom(); }}
+                              />
+                            )
+                          })()}
+                          {/* Highlight for line items on this page */}
+                          {lineItemBbox && lineItemBbox.pageNumber === pageNum && (() => {
+                            const padding = 0.5
+                            const borderWidth = Math.max(1, 2 / zoomLevel)
+                            return (
+                              <div
+                                style={{
+                                  ...styles.highlightOverlay,
+                                  left: `${lineItemBbox.x - padding}%`,
+                                  top: `${lineItemBbox.y - padding}%`,
+                                  width: `${lineItemBbox.width + padding * 2}%`,
+                                  height: `${lineItemBbox.height + padding * 2}%`,
+                                  border: `${borderWidth}px solid #ffc107`,
+                                }}
+                                onClick={() => { setExpandedLineItem(null); resetZoom(); }}
+                              />
+                            )
+                          })()}
                         </div>
                         {pdfPages.length > 1 && (
                           <div style={styles.pageLabel}>Page {pageNum} of {pdfPages.length}</div>
@@ -762,26 +1120,69 @@ export default function Review() {
                 )}
               </div>
             ) : (
-              <div style={styles.imageContainer}>
-                <img src={imageUrl} alt="Invoice" style={styles.image} />
-                {highlightedField && getFieldBoundingBox(highlightedField) && (() => {
-                  const bbox = getFieldBoundingBox(highlightedField)!
-                  const padding = 0.5
-                  return (
-                    <div
+              <>
+                <div style={styles.imageZoomControls}>
+                  <button onClick={() => setImageZoom(Math.min(imageZoom + 0.5, 5))} style={styles.zoomBtn} title="Zoom In">
+                    +
+                  </button>
+                  <span style={styles.zoomLabel}>{Math.round(imageZoom * 100)}%</span>
+                  <button onClick={() => setImageZoom(Math.max(imageZoom - 0.5, 1))} style={styles.zoomBtn} title="Zoom Out">
+                    −
+                  </button>
+                  {imageZoom > 1 && (
+                    <button onClick={() => setImageZoom(1)} style={styles.zoomResetBtnSmall} title="Reset Zoom">
+                      Reset
+                    </button>
+                  )}
+                </div>
+                <div
+                  style={{
+                    ...styles.imageScrollContainer,
+                    cursor: imageZoom > 1 ? 'grab' : 'default'
+                  }}
+                  ref={imageContainerRef}
+                  onWheel={(e) => {
+                    if (e.ctrlKey || e.metaKey) {
+                      e.preventDefault()
+                      const delta = e.deltaY > 0 ? -0.1 : 0.1
+                      setImageZoom(Math.max(1, Math.min(5, imageZoom + delta)))
+                    }
+                  }}
+                >
+                  <div style={{
+                    ...styles.imageContainer,
+                    width: `${imageZoom * 100}%`,
+                    height: 'auto'
+                  }}>
+                    <img
+                      src={imageUrl}
+                      alt="Invoice"
                       style={{
-                        ...styles.highlightOverlay,
-                        left: `${bbox.x - padding}%`,
-                        top: `${bbox.y - padding}%`,
-                        width: `${bbox.width + padding * 2}%`,
-                        height: `${bbox.height + padding * 2}%`,
-                        border: '2px solid #ffc107',
+                        ...styles.image,
+                        width: '100%',
+                        height: 'auto'
                       }}
-                      onClick={() => setHighlightedField(null)}
                     />
-                  )
-                })()}
-              </div>
+                    {highlightedField && getFieldBoundingBox(highlightedField) && (() => {
+                      const bbox = getFieldBoundingBox(highlightedField)!
+                      const padding = 0.5
+                      return (
+                        <div
+                          style={{
+                            ...styles.highlightOverlay,
+                            left: `${bbox.x - padding}%`,
+                            top: `${bbox.y - padding}%`,
+                            width: `${bbox.width + padding * 2}%`,
+                            height: `${bbox.height + padding * 2}%`,
+                            border: '2px solid #ffc107',
+                          }}
+                          onClick={() => setHighlightedField(null)}
+                        />
+                      )
+                    })()}
+                  </div>
+                </div>
+              </>
             )
           ) : (
             <div style={styles.imagePlaceholder}>Loading {isPDF ? 'document' : 'image'}...</div>
@@ -861,27 +1262,39 @@ export default function Review() {
 
               <label style={{ ...styles.label, flex: 1 }}>
                 Invoice Date
-                <div style={styles.inputWithEye}>
-                  <input
-                    type="date"
-                    value={invoiceDate}
-                    onChange={(e) => setInvoiceDate(e.target.value)}
-                    style={styles.input}
-                  />
-                  {getFieldBoundingBox('InvoiceDate') && (
-                    <button
-                      type="button"
-                      onClick={() => handleHighlightField('InvoiceDate')}
-                      style={{
-                        ...styles.eyeBtn,
-                        ...(highlightedField === 'InvoiceDate' ? styles.eyeBtnActive : {})
-                      }}
-                      title="Show on document"
-                    >
-                      👁
-                    </button>
-                  )}
-                </div>
+                {(() => {
+                  const dateWarning = getDateWarning(invoiceDate || null, invoice?.status || '');
+                  return (
+                    <>
+                      <div style={styles.inputWithEye}>
+                        <input
+                          type="date"
+                          value={invoiceDate}
+                          onChange={(e) => setInvoiceDate(e.target.value)}
+                          style={{ ...styles.input, ...dateWarningStyles[dateWarning] }}
+                        />
+                        {getFieldBoundingBox('InvoiceDate') && (
+                          <button
+                            type="button"
+                            onClick={() => handleHighlightField('InvoiceDate')}
+                            style={{
+                              ...styles.eyeBtn,
+                              ...(highlightedField === 'InvoiceDate' ? styles.eyeBtnActive : {})
+                            }}
+                            title="Show on document"
+                          >
+                            👁
+                          </button>
+                        )}
+                      </div>
+                      {dateWarning !== 'none' && (
+                        <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
+                          {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
               </label>
             </div>
 
@@ -1070,6 +1483,38 @@ export default function Review() {
                 <option value="delivery_note">Delivery Note</option>
               </select>
             </label>
+
+            <label style={styles.label}>
+              Invoice Notes
+              <small style={{ marginLeft: '0.5rem', color: '#666', fontSize: '0.85em' }}>
+                (Optional - included in Dext email if configured)
+              </small>
+              <textarea
+                value={invoiceNotes}
+                onChange={(e) => setInvoiceNotes(e.target.value)}
+                onBlur={async () => {
+                  try {
+                    await fetch(`/api/invoices/${id}`, {
+                      method: 'PATCH',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`
+                      },
+                      body: JSON.stringify({ notes: invoiceNotes })
+                    })
+                  } catch (error) {
+                    console.error('Failed to save notes:', error)
+                  }
+                }}
+                placeholder="Add notes about this invoice..."
+                rows={3}
+                style={{
+                  ...styles.input,
+                  resize: 'vertical',
+                  fontFamily: 'inherit'
+                }}
+              />
+            </label>
           </div>
 
           <div style={styles.status}>
@@ -1092,8 +1537,85 @@ export default function Review() {
               style={styles.confirmBtn}
               disabled={updateMutation.isPending}
             >
-              Confirm & Include in GP
+              Confirm & DEXT
             </button>
+            {invoice.status === 'confirmed' && (
+              <>
+                {invoice.dext_sent_at ? (
+                  // Show sent status always, resend button only if manual send is enabled
+                  settings?.dext_manual_send_enabled ? (
+                    <button
+                      onClick={() => setShowDextSendConfirm(true)}
+                      style={{
+                        padding: '0.75rem 1.5rem',
+                        background: '#d4edda',
+                        borderRadius: '4px',
+                        border: '1px solid #c3e6cb',
+                        color: '#155724',
+                        fontSize: '0.95rem',
+                        cursor: 'pointer',
+                        fontWeight: '500',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-start',
+                        gap: '0.25rem'
+                      }}
+                    >
+                      <span>✓ Sent to Dext - Click to Resend</span>
+                      <small style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>
+                        {new Date(invoice.dext_sent_at).toLocaleString()}
+                        {invoice.dext_sent_by_username && ` by ${invoice.dext_sent_by_username}`}
+                      </small>
+                    </button>
+                  ) : (
+                    <div style={{
+                      padding: '0.75rem 1.5rem',
+                      background: '#d4edda',
+                      borderRadius: '4px',
+                      border: '1px solid #c3e6cb',
+                      color: '#155724',
+                      fontSize: '0.95rem',
+                      fontWeight: '500',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'flex-start',
+                      gap: '0.25rem'
+                    }}>
+                      <span>✓ Sent to Dext</span>
+                      <small style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>
+                        {new Date(invoice.dext_sent_at).toLocaleString()}
+                        {invoice.dext_sent_by_username && ` by ${invoice.dext_sent_by_username}`}
+                      </small>
+                    </div>
+                  )
+                ) : (
+                  // Not sent yet
+                  settings?.dext_manual_send_enabled ? (
+                    <button
+                      onClick={() => setShowDextSendConfirm(true)}
+                      style={{
+                        ...styles.confirmBtn,
+                        background: '#17a2b8'
+                      }}
+                    >
+                      Send to Dext
+                    </button>
+                  ) : (
+                    <div style={{
+                      padding: '0.75rem 1.5rem',
+                      background: '#fff3cd',
+                      borderRadius: '4px',
+                      border: '1px solid #ffc107',
+                      color: '#856404',
+                      fontSize: '0.95rem',
+                      fontWeight: '500'
+                    }}>
+                      Not submitted to Dext
+                    </div>
+                  )
+                )}
+              </>
+            )}
           </div>
 
           <div style={styles.secondaryActions}>
@@ -1126,7 +1648,7 @@ export default function Review() {
               <tr>
                 <th style={{ ...styles.th, width: '30px' }}></th>
                 <th style={{ ...styles.th, width: '80px' }}>Code</th>
-                <th style={styles.th}>Description</th>
+                <th style={{ ...styles.th, minWidth: '280px' }}>Description</th>
                 <th style={{ ...styles.th, width: '50px' }}>Unit</th>
                 <th style={{ ...styles.th, width: '50px' }}>Qty</th>
                 <th style={{ ...styles.th, width: '70px' }}>Unit Price</th>
@@ -1140,9 +1662,14 @@ export default function Review() {
             <tbody>
               {lineItems.map((item, idx) => {
                 const bbox = getLineItemBoundingBox(idx)
+                const hasOcrWarning = !!item.ocr_warnings
+                const highQtyThreshold = settings?.high_quantity_threshold ?? 100
+                const isHighQuantity = item.quantity !== null && item.quantity > highQtyThreshold
+                // OCR warning takes priority (darker amber), high quantity is lighter
+                const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : undefined
                 return (
                   <React.Fragment key={item.id}>
-                    <tr>
+                    <tr style={rowBackground ? { backgroundColor: rowBackground } : undefined}>
                       <td style={styles.td}>
                         {bbox && (
                           <button
@@ -1243,11 +1770,45 @@ export default function Review() {
                             {item.product_code || '—'}
                           </td>
                           <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
+                            {item.ocr_warnings && (
+                              <span
+                                title={item.ocr_warnings}
+                                style={{
+                                  display: 'inline-block',
+                                  marginRight: '6px',
+                                  color: '#856404',
+                                  cursor: 'help',
+                                  fontWeight: 'bold',
+                                  fontSize: '1.1rem'
+                                }}
+                              >
+                                ⚠️
+                              </span>
+                            )}
                             {item.description || '—'}
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
                           <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
-                          <td style={styles.td}>{item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}</td>
+                          <td style={styles.td}>
+                            {item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}
+                            {item.price_status && item.price_status !== 'no_history' && (() => {
+                              const config = getPriceStatusConfig(item.price_status)
+                              return config.icon ? (
+                                <span
+                                  onClick={() => openPriceHistoryModal(item)}
+                                  title={`${config.label}${item.price_change_percent ? ` (${formatPercent(item.price_change_percent)})` : ''}`}
+                                  style={{
+                                    marginLeft: '6px',
+                                    color: config.color,
+                                    fontWeight: 'bold',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {config.icon}
+                                </span>
+                              ) : null
+                            })()}
+                          </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.tax_rate || '—'}</td>
                           <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
@@ -1271,15 +1832,24 @@ export default function Review() {
                               style={{
                                 ...styles.scaleBtn,
                                 ...(expandedCostBreakdown === item.id ? styles.scaleBtnActive : {}),
-                                ...(item.cost_per_item ? { color: '#28a745' } : {})
+                                color: getScaleIconColor(item)
                               }}
-                              title="Cost breakdown"
+                              title={
+                                !item.pack_quantity
+                                  ? 'No pack data - click to define'
+                                  : item.portions_per_unit === null
+                                    ? 'Pack data extracted - portions not defined'
+                                    : 'Complete - cost per portion calculated'
+                              }
                             >
                               <ScaleIcon />
                             </button>
                           </td>
                           <td style={styles.td}>
                             <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
+                            <button onClick={() => openSearchModal(item)} style={styles.searchBtn} title="Search similar items">
+                              🔍
+                            </button>
                           </td>
                         </>
                       )}
@@ -1303,6 +1873,7 @@ export default function Review() {
                                   type="number"
                                   value={costBreakdownEdits.pack_quantity || ''}
                                   onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, pack_quantity: parseInt(e.target.value) || null })}
+                                  onFocus={(e) => e.target.select()}
                                   style={styles.costBreakdownInput}
                                   placeholder="e.g., 120"
                                 />
@@ -1315,6 +1886,7 @@ export default function Review() {
                                     step="0.1"
                                     value={costBreakdownEdits.unit_size || ''}
                                     onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, unit_size: parseFloat(e.target.value) || null })}
+                                    onFocus={(e) => e.target.select()}
                                     style={{ ...styles.costBreakdownInput, width: '60px' }}
                                     placeholder="e.g., 15"
                                   />
@@ -1324,6 +1896,7 @@ export default function Review() {
                                     style={{ ...styles.costBreakdownInput, width: '55px' }}
                                   >
                                     <option value="">—</option>
+                                    <option value="each">each</option>
                                     <option value="g">g</option>
                                     <option value="kg">kg</option>
                                     <option value="ml">ml</option>
@@ -1337,11 +1910,23 @@ export default function Review() {
                                 <label>Portions/Unit</label>
                                 <input
                                   type="number"
-                                  value={costBreakdownEdits.portions_per_unit || 1}
-                                  onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, portions_per_unit: parseInt(e.target.value) || 1 })}
+                                  value={costBreakdownEdits.portions_per_unit ?? ''}
+                                  onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, portions_per_unit: e.target.value ? parseInt(e.target.value) : null })}
+                                  onFocus={(e) => e.target.select()}
                                   style={styles.costBreakdownInput}
                                   min="1"
-                                  placeholder="1"
+                                  placeholder="—"
+                                />
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Portion Desc</label>
+                                <input
+                                  type="text"
+                                  value={portionDescription}
+                                  onChange={(e) => setPortionDescription(e.target.value)}
+                                  style={{ ...styles.costBreakdownInput, width: '80px' }}
+                                  placeholder="e.g., 250ml"
+                                  title="Describe what a portion is, e.g., '250ml glass', '1 slice'"
                                 />
                               </div>
                               <div style={styles.costBreakdownField}>
@@ -1361,17 +1946,90 @@ export default function Review() {
                               <div style={styles.costBreakdownField}>
                                 <label>Cost/Portion</label>
                                 <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600' }}>
-                                  {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price
-                                    ? `£${(costBreakdownEdits.unit_price / (costBreakdownEdits.pack_quantity * (costBreakdownEdits.portions_per_unit || 1))).toFixed(4)}`
+                                  {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price && costBreakdownEdits.portions_per_unit
+                                    ? `£${(costBreakdownEdits.unit_price / (costBreakdownEdits.pack_quantity * costBreakdownEdits.portions_per_unit)).toFixed(4)}`
                                     : '—'}
                                 </span>
                               </div>
                             </div>
+                            {/* Show saved definition info OR update checkbox */}
+                            {(item.product_code || item.description) && (
+                              <>
+                                {definitionLoading ? (
+                                  <div style={styles.saveAsDefaultRow}>
+                                    <span style={{ fontSize: '0.85rem', color: '#666' }}>Loading saved default...</span>
+                                  </div>
+                                ) : currentDefinition ? (
+                                  <>
+                                    {/* Show saved by info */}
+                                    <div style={styles.savedByInfo}>
+                                      <span>
+                                        Definition saved by <strong>{currentDefinition.saved_by_username || 'Unknown'}</strong>
+                                        {currentDefinition.updated_at && (
+                                          <> on {new Date(currentDefinition.updated_at).toLocaleDateString()}</>
+                                        )}
+                                        {currentDefinition.source_invoice_number && (
+                                          <> from invoice{' '}
+                                            <a
+                                              href={`/invoice/${currentDefinition.source_invoice_id}`}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              style={{ color: '#007bff', textDecoration: 'underline' }}
+                                            >
+                                              {currentDefinition.source_invoice_number}
+                                            </a>
+                                          </>
+                                        )}
+                                      </span>
+                                    </div>
+                                    {/* Only show update checkbox if values have changed */}
+                                    {(
+                                      costBreakdownEdits.pack_quantity !== currentDefinition.pack_quantity ||
+                                      costBreakdownEdits.unit_size !== currentDefinition.unit_size ||
+                                      costBreakdownEdits.unit_size_type !== currentDefinition.unit_size_type ||
+                                      costBreakdownEdits.portions_per_unit !== currentDefinition.portions_per_unit ||
+                                      portionDescription !== (currentDefinition.portion_description || '')
+                                    ) && (
+                                      <div style={styles.saveAsDefaultRow}>
+                                        <label style={styles.saveAsDefaultLabel}>
+                                          <input
+                                            type="checkbox"
+                                            checked={saveAsDefault}
+                                            onChange={(e) => setSaveAsDefault(e.target.checked)}
+                                            style={{ marginRight: '0.5rem' }}
+                                          />
+                                          Update saved default
+                                        </label>
+                                        <span style={styles.saveAsDefaultHint}>
+                                          Values have changed from saved default
+                                        </span>
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  /* No saved definition - show save as default option */
+                                  <div style={styles.saveAsDefaultRow}>
+                                    <label style={styles.saveAsDefaultLabel}>
+                                      <input
+                                        type="checkbox"
+                                        checked={saveAsDefault}
+                                        onChange={(e) => setSaveAsDefault(e.target.checked)}
+                                        style={{ marginRight: '0.5rem' }}
+                                      />
+                                      Save as default for "{item.product_code || item.description?.substring(0, 30)}"
+                                    </label>
+                                    <span style={styles.saveAsDefaultHint}>
+                                      Future invoices will auto-apply these settings
+                                    </span>
+                                  </div>
+                                )}
+                              </>
+                            )}
                             <div style={styles.costBreakdownActions}>
                               <button onClick={() => saveCostBreakdown(item.id)} style={styles.smallBtn}>
-                                Save
+                                {saveAsDefault ? 'Save & Update Default' : 'Save'}
                               </button>
-                              <button onClick={() => { setExpandedCostBreakdown(null); setCostBreakdownEdits({}); }} style={styles.smallBtnCancel}>
+                              <button onClick={() => { setExpandedCostBreakdown(null); setCostBreakdownEdits({}); setPortionDescription(''); setSaveAsDefault(false); setCurrentDefinition(null); }} style={styles.smallBtnCancel}>
                                 Cancel
                               </button>
                             </div>
@@ -1506,6 +2164,58 @@ export default function Review() {
             <div style={styles.modalActions}>
               <button onClick={() => setShowDeleteModal(false)} style={styles.cancelBtn}>Cancel</button>
               <button onClick={handleDelete} style={styles.confirmDeleteBtn}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dext Send Confirmation Modal */}
+      {showDextSendConfirm && (
+        <div style={styles.modalOverlay} onClick={() => setShowDextSendConfirm(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <h3>Send Invoice to Dext?</h3>
+            <p style={{ marginBottom: '1rem' }}>
+              This will email the invoice PDF to your configured Dext address.
+            </p>
+            {invoiceNotes && (
+              <p style={{ fontSize: '0.9rem', color: '#666' }}>
+                <strong>Note:</strong> Invoice notes will be included in the email.
+              </p>
+            )}
+            {lineItems && lineItems.some(item => item.is_non_stock) && (
+              <p style={{ fontSize: '0.9rem', color: '#666' }}>
+                <strong>Note:</strong> Non-stock items table will be included in the email.
+              </p>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setShowDextSendConfirm(false)} style={styles.cancelBtn}>
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/invoices/${id}/send-to-dext`, {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` }
+                    })
+                    if (res.ok) {
+                      const result = await res.json()
+                      alert(`Invoice sent to Dext successfully at ${new Date(result.sent_at).toLocaleString()}`)
+                      setShowDextSendConfirm(false)
+                      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+                    } else {
+                      const error = await res.json()
+                      alert(`Failed to send: ${error.detail}`)
+                    }
+                  } catch (error) {
+                    console.error('Failed to send to Dext:', error)
+                    alert('Failed to send invoice to Dext')
+                  }
+                }}
+                style={styles.confirmBtn}
+              >
+                Send to Dext
+              </button>
             </div>
           </div>
         </div>
@@ -1659,6 +2369,144 @@ export default function Review() {
           </div>
         </div>
       )}
+
+      {/* Line Item Search Modal */}
+      {showSearchModal && searchingLineItem && (
+        <div style={styles.modalOverlay} onClick={() => setShowSearchModal(false)}>
+          <div style={styles.searchModal} onClick={(e) => e.stopPropagation()}>
+            <h3>Compare Similar Items</h3>
+
+            {/* Current Item - shown at top for comparison */}
+            <div style={styles.currentItemSection}>
+              <h4 style={styles.currentItemHeader}>Current Item ({suppliers?.find(s => s.id === invoice?.supplier_id)?.name || 'Unknown Supplier'})</h4>
+              <table style={styles.searchResultsTable}>
+                <thead>
+                  <tr>
+                    <th style={styles.searchTh}>Description</th>
+                    <th style={styles.searchThRight}>Unit Price</th>
+                    <th style={styles.searchTh}>Unit</th>
+                    <th style={styles.searchTh}>Pack Info</th>
+                    <th style={styles.searchTh}>Invoice Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr style={styles.currentItemRow}>
+                    <td style={styles.searchTd}>{searchingLineItem.description}</td>
+                    <td style={styles.searchTdRight}>
+                      {searchingLineItem.unit_price ? `£${searchingLineItem.unit_price.toFixed(2)}` : '—'}
+                    </td>
+                    <td style={styles.searchTd}>{searchingLineItem.unit || '—'}</td>
+                    <td style={styles.searchTd}>
+                      {searchingLineItem.pack_quantity && searchingLineItem.unit_size && searchingLineItem.unit_size_type
+                        ? `${searchingLineItem.pack_quantity}x${searchingLineItem.unit_size}${searchingLineItem.unit_size_type}`
+                        : searchingLineItem.pack_quantity
+                          ? `${searchingLineItem.pack_quantity} pack`
+                          : '—'}
+                    </td>
+                    <td style={styles.searchTd}>{invoice?.invoice_date || '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div style={styles.searchInputRow}>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && performSearch(searchQuery)}
+                style={styles.searchInput}
+                placeholder="Enter search keywords..."
+                autoFocus
+              />
+              <button
+                onClick={() => performSearch(searchQuery)}
+                style={styles.searchButton}
+                disabled={searchLoading}
+              >
+                {searchLoading ? 'Searching...' : 'Search'}
+              </button>
+            </div>
+
+            {searchResults && (
+              <div style={styles.searchResultsContainer}>
+                <p style={styles.resultsInfo}>
+                  Found {searchResults.total_matches} matches
+                  {searchResults.extracted_keywords && (
+                    <span style={{ color: '#666' }}> (searched: "{searchResults.extracted_keywords}")</span>
+                  )}
+                </p>
+
+                {searchResults.results.length === 0 ? (
+                  <p style={{ color: '#999', fontStyle: 'italic' }}>No matching items found.</p>
+                ) : (
+                  searchResults.results.map((group) => (
+                    <div key={group.supplier_id || 'unknown'} style={styles.supplierGroup}>
+                      <h4 style={styles.supplierHeader}>{group.supplier_name}</h4>
+                      <table style={styles.searchResultsTable}>
+                        <thead>
+                          <tr>
+                            <th style={styles.searchTh}>Description</th>
+                            <th style={styles.searchThRight}>Unit Price</th>
+                            <th style={styles.searchTh}>Unit</th>
+                            <th style={styles.searchTh}>Pack Info</th>
+                            <th style={styles.searchTh}>Last Invoice</th>
+                            <th style={styles.searchTh}></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.items.map((item, idx) => (
+                            <tr key={idx}>
+                              <td style={styles.searchTd}>{item.description}</td>
+                              <td style={styles.searchTdRight}>
+                                {item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}
+                              </td>
+                              <td style={styles.searchTd}>{item.unit || '—'}</td>
+                              <td style={styles.searchTd}>{item.pack_info || '—'}</td>
+                              <td style={styles.searchTd}>{item.last_invoice_date || '—'}</td>
+                              <td style={styles.searchTd}>
+                                <a
+                                  href={`/review/${item.invoice_id}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  style={styles.invoiceLink}
+                                  title="Open invoice in new tab"
+                                >
+                                  View
+                                </a>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+
+            <button onClick={() => setShowSearchModal(false)} style={styles.closeBtn}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Price History Modal */}
+      {historyModal && (
+        <LineItemHistoryModal
+          isOpen={historyModal.isOpen}
+          onClose={() => setHistoryModal(null)}
+          productCode={historyModal.productCode}
+          description={historyModal.description}
+          supplierId={historyModal.supplierId}
+          supplierName={historyModal.supplierName}
+          currentPrice={historyModal.currentPrice}
+          sourceInvoiceId={historyModal.sourceInvoiceId}
+          sourceLineItemId={historyModal.sourceLineItemId}
+          onAcknowledge={() => {
+            refetchLineItems()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1668,10 +2516,15 @@ const styles: Record<string, React.CSSProperties> = {
   error: { padding: '2rem', textAlign: 'center', color: '#c00' },
   pageContainer: { display: 'flex', flexDirection: 'column', gap: '1.5rem' },
   topRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' },
-  imageSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
-  imageContainer: { position: 'relative', marginTop: '1rem' },
+  imageSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', overflow: 'hidden', minWidth: 0 },
+  imageZoomControls: { display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', justifyContent: 'center' },
+  zoomBtn: { padding: '0.5rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '1rem', fontWeight: 'bold', minWidth: '36px' },
+  zoomLabel: { fontSize: '0.9rem', color: '#666', minWidth: '50px', textAlign: 'center' },
+  zoomResetBtnSmall: { padding: '0.4rem 0.75rem', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '500' },
+  imageScrollContainer: { marginTop: '0.5rem', maxHeight: '70vh', maxWidth: '100%', overflow: 'auto', background: '#f5f5f5', borderRadius: '8px', padding: '8px' },
+  imageContainer: { position: 'relative' },
   image: { width: '100%', borderRadius: '8px', display: 'block' },
-  pdfScrollContainer: { marginTop: '1rem', maxHeight: '70vh', overflowY: 'auto', overflowX: 'hidden', background: '#e5e5e5', borderRadius: '8px', padding: '16px' },
+  pdfScrollContainer: { marginTop: '1rem', maxHeight: '70vh', overflow: 'auto', background: '#e5e5e5', borderRadius: '8px', padding: '16px' },
   pdfPageWrapper: { marginBottom: '16px' },
   pdfPageContainer: { position: 'relative', margin: '0 auto', boxShadow: '0 2px 8px rgba(0,0,0,0.15)' },
   pdfPageImage: { width: '100%', height: '100%', display: 'block' },
@@ -1684,14 +2537,14 @@ const styles: Record<string, React.CSSProperties> = {
   zoomResetBtn: { display: 'block', margin: '0.5rem auto', padding: '0.4rem 1rem', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem', fontWeight: '500' },
   confidenceBadge: { marginTop: '1rem', padding: '0.5rem 1rem', background: '#f0f0f0', borderRadius: '20px', textAlign: 'center', fontSize: '0.9rem', color: '#666' },
   formSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
-  duplicateWarning: { padding: '1rem', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer', border: '1px solid', fontWeight: '500' },
+  duplicateWarning: { padding: '1rem', borderRadius: '8px', marginBottom: '1rem', cursor: 'pointer', borderWidth: '1px', borderStyle: 'solid', fontWeight: '500' },
   form: { display: 'flex', flexDirection: 'column', gap: '0.75rem' },
   row: { display: 'flex', gap: '1rem' },
   label: { display: 'flex', flexDirection: 'column', gap: '0.25rem', color: '#333', fontWeight: '500', fontSize: '0.9rem' },
   input: { padding: '0.5rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.95rem', flex: 1 },
   inputWithEye: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
   eyeBtn: { padding: '0.4rem 0.5rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '6px', cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1, flexShrink: 0 },
-  eyeBtnActive: { background: '#fff3cd', borderColor: '#ffc107' },
+  eyeBtnActive: { background: '#fff3cd', border: '1px solid #ffc107' },
   extractedHint: { fontSize: '0.8rem', color: '#666', fontWeight: 'normal', fontStyle: 'italic' },
   extractedHintRow: { display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.25rem', flexWrap: 'wrap' },
   fuzzyMatchWarning: { fontSize: '0.8rem', color: '#856404', background: '#fff3cd', padding: '0.35rem 0.5rem', borderRadius: '4px', marginTop: '0.25rem', border: '1px solid #ffc107', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' },
@@ -1740,15 +2593,43 @@ const styles: Record<string, React.CSSProperties> = {
   lineItemPreviewCell: { padding: '0.5rem', background: '#f8f9fa', borderBottom: '1px solid #eee' },
   lineItemPreviewContainer: { maxWidth: '100%', overflow: 'hidden', borderRadius: '4px', border: '2px solid #ffc107', background: '#fff' },
   lineItemPreviewCrop: { width: '100%', backgroundRepeat: 'no-repeat' },
-  scaleBtn: { padding: '0.25rem', background: 'transparent', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' },
+  scaleBtn: { padding: '0.25rem', background: 'transparent', borderWidth: '1px', borderStyle: 'solid', borderColor: '#ddd', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' },
   scaleBtnActive: { background: '#e8f5e9', borderColor: '#28a745' },
   costBreakdownCell: { padding: '0', background: '#f8f9fa', borderBottom: '1px solid #ddd' },
   costBreakdownContainer: { padding: '1rem', margin: '0.5rem', background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' },
   costBreakdownHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '0.5rem', borderBottom: '1px solid #eee' },
   rawContentHint: { fontSize: '0.75rem', color: '#999', fontStyle: 'italic', maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  costBreakdownGrid: { display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '1rem', marginBottom: '1rem' },
-  costBreakdownField: { display: 'flex', flexDirection: 'column', gap: '0.25rem' },
-  costBreakdownInput: { padding: '0.4rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.9rem', width: '80px' },
+  costBreakdownGrid: { display: 'flex', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem' },
+  costBreakdownField: { display: 'flex', flexDirection: 'column', gap: '0.25rem', minWidth: '70px' },
+  costBreakdownInput: { padding: '0.4rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.9rem', width: '70px', MozAppearance: 'textfield', appearance: 'textfield' } as React.CSSProperties,
   costBreakdownValue: { fontSize: '0.95rem', padding: '0.4rem 0' },
   costBreakdownActions: { display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', paddingTop: '0.5rem', borderTop: '1px solid #eee' },
+  saveAsDefaultRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', marginBottom: '0.5rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #e0e0e0' },
+  saveAsDefaultLabel: { display: 'flex', alignItems: 'center', fontSize: '0.9rem', cursor: 'pointer', fontWeight: '500' },
+  saveAsDefaultHint: { fontSize: '0.75rem', color: '#666', fontStyle: 'italic' },
+  savedByInfo: { display: 'flex', alignItems: 'center', padding: '0.6rem 0.75rem', marginBottom: '0.5rem', background: '#e8f4fd', borderRadius: '6px', border: '1px solid #b8daff', fontSize: '0.85rem', color: '#004085' },
+  // Search modal styles
+  searchBtn: { padding: '0.25rem 0.5rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem', marginRight: '0.25rem' },
+  searchModal: { background: 'white', padding: '2rem', borderRadius: '12px', maxWidth: '900px', width: '95%', maxHeight: '85vh', overflowY: 'auto' },
+  searchContext: { color: '#666', marginBottom: '1rem', fontSize: '0.9rem' },
+  searchInputRow: { display: 'flex', gap: '0.5rem', marginBottom: '1rem' },
+  searchInput: { flex: 1, padding: '0.75rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '1rem' },
+  searchButton: { padding: '0.75rem 1.5rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '500' },
+  searchResultsContainer: { marginTop: '1rem', maxHeight: '50vh', overflowY: 'auto' },
+  resultsInfo: { color: '#333', fontSize: '0.9rem', marginBottom: '1rem' },
+  supplierGroup: { marginBottom: '1.5rem', padding: '1rem', background: '#f8f9fa', borderRadius: '8px' },
+  supplierHeader: { margin: '0 0 0.75rem', color: '#1a1a2e', fontSize: '1rem' },
+  searchResultsTable: { width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' },
+  searchTh: { textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#e9ecef' },
+  searchThRight: { textAlign: 'right', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#e9ecef' },
+  searchTd: { padding: '0.5rem', borderBottom: '1px solid #eee' },
+  searchTdRight: { padding: '0.5rem', borderBottom: '1px solid #eee', textAlign: 'right' },
+  currentItemSection: { marginBottom: '1.5rem', padding: '1rem', background: '#e8f4f8', borderRadius: '8px', border: '2px solid #2196f3' },
+  currentItemHeader: { margin: '0 0 0.75rem', color: '#1565c0', fontSize: '1rem', fontWeight: '600' },
+  currentItemRow: { background: '#fff' },
+  invoiceLink: { color: '#1976d2', textDecoration: 'none', fontSize: '0.8rem', padding: '0.2rem 0.5rem', background: '#e3f2fd', borderRadius: '4px' },
+  // Error banner styles
+  errorBanner: { display: 'flex', gap: '1rem', padding: '1rem 1.5rem', marginBottom: '1.5rem', background: '#fff3cd', border: '2px solid #ffc107', borderRadius: '8px', color: '#856404' },
+  errorBannerIcon: { fontSize: '2rem', flexShrink: 0 },
+  errorBannerContent: { flex: 1 },
 }

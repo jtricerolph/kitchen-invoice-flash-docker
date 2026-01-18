@@ -7,18 +7,25 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /mnt/user/appdata/hnf-kitchen-gp/invoices:/app/data
+      # Use Docker volume for invoice storage (disk space issue with Unraid mount)
+      - invoice_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
     ports:
-      - "3080:80"
+      - "3080:5173"
     depends_on:
       - backend
+    environment:
+      - VITE_API_URL=http://backend:8000
     restart: unless-stopped
 
   db:
@@ -28,10 +35,16 @@ services:
       - POSTGRES_PASSWORD=kitchen_secret
       - POSTGRES_DB=kitchen_gp
     volumes:
-      - /mnt/user/appdata/hnf-kitchen-gp/database:/var/lib/postgresql/data
+      # Temporarily use Docker volume for dev (Unraid disk is full)
+      # Change back to: /mnt/user/appdata/hnf-kitchen-gp/database:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kitchen -d kitchen_gp"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+  invoice_data:

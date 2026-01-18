@@ -328,6 +328,97 @@ async def run_migration():
         else:
             logger.warning(f"cost_per_portion column: {e}")
 
+    # Create product_definitions table for persistent portion/pack data
+    create_product_definitions = """
+    CREATE TABLE IF NOT EXISTS product_definitions (
+        id SERIAL PRIMARY KEY,
+        kitchen_id INTEGER NOT NULL REFERENCES kitchens(id),
+        supplier_id INTEGER REFERENCES suppliers(id),
+        product_code VARCHAR(100),
+        description_pattern VARCHAR(255),
+        pack_quantity INTEGER,
+        unit_size NUMERIC(10, 3),
+        unit_size_type VARCHAR(10),
+        portions_per_unit INTEGER,
+        portion_description VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(kitchen_id, supplier_id, product_code)
+    )
+    """
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(create_product_definitions))
+            logger.info("Created product_definitions table")
+    except Exception as e:
+        logger.warning(f"product_definitions table: {e}")
+
+    # Create indexes on product_definitions
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_product_definitions_kitchen_id ON product_definitions(kitchen_id)"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_product_definitions_supplier_id ON product_definitions(supplier_id)"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_product_definitions_product_code ON product_definitions(product_code)"
+            ))
+            logger.info("Created indexes on product_definitions")
+    except Exception as e:
+        logger.warning(f"product_definitions indexes: {e}")
+
+    # Remove default from portions_per_unit column (make it truly nullable)
+    # PostgreSQL doesn't have a simple ALTER COLUMN DROP DEFAULT, but we can change the default to NULL
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE line_items ALTER COLUMN portions_per_unit DROP DEFAULT"
+            ))
+            logger.info("Removed default from portions_per_unit column")
+    except Exception as e:
+        logger.warning(f"portions_per_unit default removal: {e}")
+
+    # Add saved_by_user_id column to product_definitions table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE product_definitions ADD COLUMN saved_by_user_id INTEGER REFERENCES users(id)"
+            ))
+            logger.info("Added saved_by_user_id column to product_definitions")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("saved_by_user_id column already exists")
+        else:
+            logger.warning(f"saved_by_user_id column: {e}")
+
+    # Add source_invoice_id column to product_definitions table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE product_definitions ADD COLUMN source_invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL"
+            ))
+            logger.info("Added source_invoice_id column to product_definitions")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("source_invoice_id column already exists")
+        else:
+            logger.warning(f"source_invoice_id column: {e}")
+
+    # Add source_invoice_number column to product_definitions table
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE product_definitions ADD COLUMN source_invoice_number VARCHAR(100)"
+            ))
+            logger.info("Added source_invoice_number column to product_definitions")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("source_invoice_number column already exists")
+        else:
+            logger.warning(f"source_invoice_number column: {e}")
+
     logger.info("Migration completed successfully!")
 
 

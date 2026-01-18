@@ -19,6 +19,23 @@ class Kitchen(Base):
     gp_periods: Mapped[list["GPPeriod"]] = relationship("GPPeriod", back_populates="kitchen")
     settings: Mapped["KitchenSettings"] = relationship("KitchenSettings", back_populates="kitchen", uselist=False)
 
+    # Newbook relationships
+    newbook_gl_accounts: Mapped[list["NewbookGLAccount"]] = relationship(
+        "NewbookGLAccount", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    newbook_daily_revenue: Mapped[list["NewbookDailyRevenue"]] = relationship(
+        "NewbookDailyRevenue", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    newbook_daily_occupancy: Mapped[list["NewbookDailyOccupancy"]] = relationship(
+        "NewbookDailyOccupancy", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    newbook_sync_logs: Mapped[list["NewbookSyncLog"]] = relationship(
+        "NewbookSyncLog", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    newbook_room_categories: Mapped[list["NewbookRoomCategory"]] = relationship(
+        "NewbookRoomCategory", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -41,3 +58,4 @@ from .supplier import Supplier
 from .invoice import Invoice
 from .gp import RevenueEntry, GPPeriod
 from .settings import KitchenSettings
+from .newbook import NewbookGLAccount, NewbookDailyRevenue, NewbookDailyOccupancy, NewbookSyncLog, NewbookRoomCategory
