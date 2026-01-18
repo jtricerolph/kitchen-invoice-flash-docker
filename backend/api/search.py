@@ -464,6 +464,7 @@ async def get_line_item_history(
     supplier_id: int,
     product_code: Optional[str] = None,
     description: Optional[str] = None,
+    unit: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     current_user: User = Depends(get_current_user),
@@ -485,6 +486,7 @@ async def get_line_item_history(
         supplier_id=supplier_id,
         product_code=product_code,
         description=description,
+        unit=unit,
         date_from=date_from,
         date_to=date_to
     )

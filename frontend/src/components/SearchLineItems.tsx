@@ -77,6 +77,7 @@ export default function SearchLineItems() {
     isOpen: boolean
     productCode: string | null
     description: string | null
+    unit: string | null
     supplierId: number
     supplierName: string
   } | null>(null)
@@ -123,6 +124,7 @@ export default function SearchLineItems() {
       isOpen: true,
       productCode: item.product_code,
       description: item.description,
+      unit: item.unit,
       supplierId: item.supplier_id,
       supplierName: item.supplier_name || 'Unknown',
     })
@@ -498,6 +500,7 @@ export default function SearchLineItems() {
           onClose={() => setHistoryModal(null)}
           productCode={historyModal.productCode}
           description={historyModal.description}
+          unit={historyModal.unit}
           supplierId={historyModal.supplierId}
           supplierName={historyModal.supplierName}
         />

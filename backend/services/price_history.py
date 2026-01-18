@@ -113,6 +113,7 @@ class PriceHistoryService:
         supplier_id: int,
         product_code: Optional[str],
         description: Optional[str],
+        unit: Optional[str],
         lookback_days: int,
         exclude_invoice_id: Optional[int] = None
     ) -> List[Tuple[Decimal, date]]:
@@ -136,6 +137,12 @@ class PriceHistoryService:
             if description:
                 conditions.append(LineItem.description == description)
 
+        # Match by unit - critical for products sold in different units (Box, Each, Kg, etc.)
+        if unit:
+            conditions.append(LineItem.unit == unit)
+        else:
+            conditions.append(LineItem.unit.is_(None))
+
         # Exclude current invoice if provided
         if exclude_invoice_id:
             conditions.append(Invoice.id != exclude_invoice_id)
@@ -154,6 +161,7 @@ class PriceHistoryService:
         product_code: Optional[str],
         description: Optional[str],
         current_price: Decimal,
+        unit: Optional[str] = None,
         current_invoice_id: Optional[int] = None,
         lookback_days: Optional[int] = None,
         amber_threshold: Optional[int] = None,
@@ -179,7 +187,7 @@ class PriceHistoryService:
 
         # Get previous prices
         previous_prices = await self._get_previous_prices(
-            supplier_id, product_code, description, lookback_days, current_invoice_id
+            supplier_id, product_code, description, unit, lookback_days, current_invoice_id
         )
 
         if not previous_prices:
@@ -234,6 +242,7 @@ class PriceHistoryService:
         supplier_id: int,
         product_code: Optional[str],
         description: Optional[str],
+        unit: Optional[str] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
     ) -> LineItemHistory:
@@ -244,6 +253,7 @@ class PriceHistoryService:
             supplier_id: Supplier ID
             product_code: Product code (may be None)
             description: Description (used if no product_code)
+            unit: Unit (Box, Each, Kg, etc.)
             date_from: Start date (default: 12 months ago)
             date_to: End date (default: today)
 
@@ -272,6 +282,12 @@ class PriceHistoryService:
             conditions.append(LineItem.product_code.is_(None))
             if description:
                 conditions.append(LineItem.description == description)
+
+        # Match by unit - critical for products sold in different units
+        if unit:
+            conditions.append(LineItem.unit == unit)
+        else:
+            conditions.append(LineItem.unit.is_(None))
 
         # Get price history points
         result = await self.db.execute(
@@ -327,7 +343,7 @@ class PriceHistoryService:
         # Determine price change status for current price
         if current_price and len(price_history) > 1:
             status = await self.get_price_status(
-                supplier_id, product_code, description, current_price
+                supplier_id, product_code, description, current_price, unit
             )
             price_change_status = status.status
         else:
@@ -561,6 +577,7 @@ class PriceHistoryService:
 
                     status = await self.get_price_status(
                         supplier_id_val, product_code, description, most_recent_price,
+                        unit=unit,
                         lookback_days=extended_lookback
                     )
                     price_change_status = status.status

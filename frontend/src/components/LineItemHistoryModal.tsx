@@ -36,6 +36,7 @@ interface Props {
   onClose: () => void
   productCode: string | null
   description: string | null
+  unit: string | null
   supplierId: number
   supplierName: string
   currentPrice?: number
@@ -49,6 +50,7 @@ export default function LineItemHistoryModal({
   onClose,
   productCode,
   description,
+  unit,
   supplierId,
   supplierName,
   currentPrice,
@@ -75,12 +77,13 @@ export default function LineItemHistoryModal({
 
   // Fetch history
   const { data, isLoading, error } = useQuery<HistoryResponse>({
-    queryKey: ['line-item-history', supplierId, productCode, description, dateFrom, dateTo],
+    queryKey: ['line-item-history', supplierId, productCode, description, unit, dateFrom, dateTo],
     queryFn: async () => {
       const params = new URLSearchParams()
       params.set('supplier_id', supplierId.toString())
       if (productCode) params.set('product_code', productCode)
       if (description) params.set('description', description)
+      if (unit) params.set('unit', unit)
       if (dateFrom) params.set('date_from', dateFrom)
       if (dateTo) params.set('date_to', dateTo)
 

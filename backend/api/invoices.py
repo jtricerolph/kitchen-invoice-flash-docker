@@ -1318,6 +1318,7 @@ async def get_line_items(
                     product_code=item.product_code,
                     description=item.description,
                     current_price=item.unit_price,
+                    unit=item.unit,
                     current_invoice_id=invoice_id
                 )
                 price_status = status.status

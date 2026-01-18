@@ -285,6 +285,7 @@ export default function Review() {
     isOpen: boolean
     productCode: string | null
     description: string | null
+    unit: string | null
     supplierId: number
     supplierName: string
     currentPrice?: number
@@ -899,6 +900,7 @@ export default function Review() {
       isOpen: true,
       productCode: item.product_code,
       description: item.description,
+      unit: item.unit,
       supplierId: invoice.supplier_id,
       supplierName: invoice.supplier_name || 'Unknown',
       currentPrice: item.unit_price || undefined,
@@ -2508,6 +2510,7 @@ export default function Review() {
           onClose={() => setHistoryModal(null)}
           productCode={historyModal.productCode}
           description={historyModal.description}
+          unit={historyModal.unit}
           supplierId={historyModal.supplierId}
           supplierName={historyModal.supplierName}
           currentPrice={historyModal.currentPrice}
