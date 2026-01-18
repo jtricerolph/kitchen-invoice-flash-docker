@@ -56,6 +56,12 @@ interface Supplier {
   name: string
 }
 
+interface SearchSettings {
+  price_change_lookback_days: number
+  price_change_amber_threshold: number
+  price_change_red_threshold: number
+}
+
 const keys = SEARCH_STORAGE_KEYS.lineItems
 
 export default function SearchLineItems() {
@@ -95,6 +101,19 @@ export default function SearchLineItems() {
       if (!res.ok) throw new Error('Failed to fetch suppliers')
       return res.json()
     },
+  })
+
+  // Fetch search settings (for price change thresholds)
+  const { data: searchSettings } = useQuery<SearchSettings>({
+    queryKey: ['search-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/search/settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch search settings')
+      return res.json()
+    },
+    staleTime: 60000, // Cache for 1 minute
   })
 
   // Search line items
@@ -371,7 +390,7 @@ export default function SearchLineItems() {
           <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>?</span> Price changed
         </span>
         <span>
-          <span style={{ color: '#ef4444', fontWeight: 'bold' }}>!</span> Large change (&gt;20%)
+          <span style={{ color: '#ef4444', fontWeight: 'bold' }}>!</span> Large change {searchSettings && `(>${searchSettings.price_change_red_threshold}%)`}
         </span>
         <span>
           <span style={{ color: '#8b5cf6' }}>📦</span> Has portions defined

@@ -578,7 +578,8 @@ class PriceHistoryService:
                     status = await self.get_price_status(
                         supplier_id_val, product_code, description, most_recent_price,
                         unit=unit,
-                        lookback_days=extended_lookback
+                        lookback_days=extended_lookback,
+                        current_invoice_id=most_recent_invoice_id  # Exclude most recent invoice from comparison
                     )
                     price_change_status = status.status
 

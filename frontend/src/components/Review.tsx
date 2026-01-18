@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
@@ -280,6 +280,11 @@ export default function Review() {
   // Dext integration state
   const [invoiceNotes, setInvoiceNotes] = useState('')
   const [showDextSendConfirm, setShowDextSendConfirm] = useState(false)
+  // Line items sorting and filtering
+  const [lineItemSortColumn, setLineItemSortColumn] = useState<string>('')
+  const [lineItemSortDirection, setLineItemSortDirection] = useState<'asc' | 'desc'>('asc')
+  const [lineItemPriceFilter, setLineItemPriceFilter] = useState<string>('')
+
   // Price history modal state
   const [historyModal, setHistoryModal] = useState<{
     isOpen: boolean
@@ -1009,6 +1014,83 @@ export default function Review() {
   // Check if the file is a PDF
   const isPDF = invoice?.image_path?.toLowerCase().endsWith('.pdf')
 
+  // Sort and filter line items
+  const handleLineItemSort = (column: string) => {
+    if (lineItemSortColumn === column) {
+      setLineItemSortDirection(lineItemSortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      setLineItemSortColumn(column)
+      setLineItemSortDirection('asc')
+    }
+  }
+
+  const filteredAndSortedLineItems = useMemo(() => {
+    if (!lineItems) return []
+
+    // Add original index to each item so we can look up bounding boxes correctly
+    let filtered = lineItems.map((item, originalIndex) => ({ ...item, _originalIndex: originalIndex }))
+
+    // Filter by price change status
+    if (lineItemPriceFilter) {
+      filtered = filtered.filter(item => {
+        if (lineItemPriceFilter === 'consistent') return item.price_status === 'consistent'
+        if (lineItemPriceFilter === 'amber') return item.price_status === 'amber'
+        if (lineItemPriceFilter === 'red') return item.price_status === 'red'
+        if (lineItemPriceFilter === 'no_history') return item.price_status === 'no_history'
+        return true
+      })
+    }
+
+    // Sort
+    if (lineItemSortColumn) {
+      filtered.sort((a, b) => {
+        let aVal: any = null
+        let bVal: any = null
+
+        switch (lineItemSortColumn) {
+          case 'code':
+            aVal = a.product_code || ''
+            bVal = b.product_code || ''
+            break
+          case 'description':
+            aVal = a.description || ''
+            bVal = b.description || ''
+            break
+          case 'unit':
+            aVal = a.unit || ''
+            bVal = b.unit || ''
+            break
+          case 'quantity':
+            aVal = a.quantity || 0
+            bVal = b.quantity || 0
+            break
+          case 'unit_price':
+            aVal = a.unit_price || 0
+            bVal = b.unit_price || 0
+            break
+          case 'price_change':
+            aVal = a.price_change_percent || 0
+            bVal = b.price_change_percent || 0
+            break
+          case 'amount':
+            aVal = a.amount || 0
+            bVal = b.amount || 0
+            break
+        }
+
+        if (typeof aVal === 'string') {
+          return lineItemSortDirection === 'asc'
+            ? aVal.localeCompare(bVal)
+            : bVal.localeCompare(aVal)
+        } else {
+          return lineItemSortDirection === 'asc' ? aVal - bVal : bVal - aVal
+        }
+      })
+    }
+
+    return filtered
+  }, [lineItems, lineItemSortColumn, lineItemSortDirection, lineItemPriceFilter])
+
   return (
     <div style={styles.pageContainer}>
       {/* Error banner for Azure OCR failures */}
@@ -1643,27 +1725,96 @@ export default function Review() {
 
       {/* Full-width Line Items Section */}
       <div style={styles.lineItemsSection}>
-        <h3>Line Items</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+          <h3 style={{ margin: 0 }}>Line Items</h3>
+          {lineItems && lineItems.length > 0 && (
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
+                Filter by price:
+                <select
+                  value={lineItemPriceFilter}
+                  onChange={(e) => setLineItemPriceFilter(e.target.value)}
+                  style={{ marginLeft: '5px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                >
+                  <option value="">All</option>
+                  <option value="consistent">✓ Consistent</option>
+                  <option value="amber">? Changed</option>
+                  <option value="red">! Large change</option>
+                  <option value="no_history">No history</option>
+                </select>
+              </label>
+              {(lineItemSortColumn || lineItemPriceFilter) && (
+                <button
+                  onClick={() => {
+                    setLineItemSortColumn('')
+                    setLineItemPriceFilter('')
+                  }}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '0.85rem',
+                    color: '#6b7280',
+                    background: '#f3f4f6',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '4px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         {lineItems && lineItems.length > 0 ? (
           <table style={styles.lineItemsTable}>
             <thead>
               <tr>
                 <th style={{ ...styles.th, width: '30px' }}></th>
-                <th style={{ ...styles.th, width: '80px' }}>Code</th>
-                <th style={{ ...styles.th, minWidth: '280px' }}>Description</th>
-                <th style={{ ...styles.th, width: '50px' }}>Unit</th>
-                <th style={{ ...styles.th, width: '50px' }}>Qty</th>
-                <th style={{ ...styles.th, width: '70px' }}>Unit Price</th>
+                <th
+                  style={{ ...styles.th, width: '80px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => handleLineItemSort('code')}
+                >
+                  Code {lineItemSortColumn === 'code' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                </th>
+                <th
+                  style={{ ...styles.th, minWidth: '280px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => handleLineItemSort('description')}
+                >
+                  Description {lineItemSortColumn === 'description' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                </th>
+                <th
+                  style={{ ...styles.th, width: '50px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => handleLineItemSort('unit')}
+                >
+                  Unit {lineItemSortColumn === 'unit' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                </th>
+                <th
+                  style={{ ...styles.th, width: '50px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => handleLineItemSort('quantity')}
+                >
+                  Qty {lineItemSortColumn === 'quantity' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                </th>
+                <th
+                  style={{ ...styles.th, width: '70px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => handleLineItemSort('unit_price')}
+                >
+                  Unit Price {lineItemSortColumn === 'unit_price' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                </th>
                 <th style={{ ...styles.th, width: '50px' }}>VAT %</th>
-                <th style={{ ...styles.th, width: '70px' }}>Net Total</th>
+                <th
+                  style={{ ...styles.th, width: '70px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => handleLineItemSort('amount')}
+                >
+                  Net Total {lineItemSortColumn === 'amount' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                </th>
                 <th style={{ ...styles.th, textAlign: 'center', width: '60px' }}>Non-Stock</th>
                 <th style={{ ...styles.th, textAlign: 'center', width: '40px' }} title="Cost Breakdown"></th>
                 <th style={{ ...styles.th, width: '70px' }}></th>
               </tr>
             </thead>
             <tbody>
-              {lineItems.map((item, idx) => {
-                const bbox = getLineItemBoundingBox(idx)
+              {filteredAndSortedLineItems.map((item) => {
+                const bbox = getLineItemBoundingBox(item._originalIndex)
                 const hasOcrWarning = !!item.ocr_warnings
                 const highQtyThreshold = settings?.high_quantity_threshold ?? 100
                 const isHighQuantity = item.quantity !== null && item.quantity > highQtyThreshold
@@ -1676,7 +1827,7 @@ export default function Review() {
                         {bbox && (
                           <button
                             type="button"
-                            onClick={() => handleHighlightLineItem(item.id, idx)}
+                            onClick={() => handleHighlightLineItem(item.id, item._originalIndex)}
                             style={{
                               ...styles.eyeBtn,
                               padding: '0.25rem 0.4rem',
