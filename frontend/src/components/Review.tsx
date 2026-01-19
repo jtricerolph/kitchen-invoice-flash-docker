@@ -1102,7 +1102,15 @@ export default function Review() {
 
   // Calculate line item statistics for checks section
   const lineItemStats = useMemo(() => {
-    if (!lineItems) return { total: 0, withPortions: 0, withoutPortions: 0, missingData: 0 }
+    if (!lineItems) return {
+      total: 0,
+      withPortions: 0,
+      withoutPortions: 0,
+      missingData: 0,
+      nonStock: 0,
+      totalsMatch: true,
+      totalDifference: 0
+    }
 
     const withPortions = lineItems.filter(item =>
       item.portions_per_unit != null && item.portions_per_unit > 0
@@ -1115,13 +1123,25 @@ export default function Review() {
       return missingQty || missingPrice || missingAmount
     }).length
 
+    const nonStock = lineItems.filter(item => item.is_non_stock).length
+
+    // Check if line items total matches invoice total
+    const lineItemsTotal = lineItems.reduce((sum, item) => sum + (item.amount || 0), 0)
+    const invoiceTotal = parseFloat(total) || 0
+    const compareTotal = netTotal ? parseFloat(netTotal) : invoiceTotal
+    const difference = Math.abs(compareTotal - lineItemsTotal)
+    const totalsMatch = difference <= TOLERANCE
+
     return {
       total: lineItems.length,
       withPortions,
       withoutPortions: lineItems.length - withPortions,
-      missingData
+      missingData,
+      nonStock,
+      totalsMatch,
+      totalDifference: difference
     }
-  }, [lineItems])
+  }, [lineItems, total, netTotal])
 
   // Calculate filter option counts for disabling
   const filterOptionCounts = useMemo(() => {
@@ -1785,15 +1805,101 @@ export default function Review() {
 
           {/* Checks Section */}
           {lineItems && lineItems.length > 0 && (
-            <div style={{ marginTop: '15px', padding: '12px', background: '#f8f9fa', borderRadius: '4px', display: 'flex', gap: '20px', fontSize: '0.85rem' }}>
-              <div>
-                <strong>Line Items:</strong> {lineItemStats.total}
+            <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
+              {/* Line Items Total Check */}
+              <div style={{
+                flex: 1,
+                padding: '10px',
+                borderRadius: '4px',
+                border: `1px solid ${lineItemStats.totalsMatch ? '#c3e6cb' : '#ffc107'}`,
+                background: lineItemStats.totalsMatch ? '#d4edda' : '#fff3cd',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.85rem'
+              }}>
+                <span style={{ fontSize: '1.2rem' }}>
+                  {lineItemStats.totalsMatch ? '✓' : '⚠'}
+                </span>
+                <div>
+                  <div style={{ fontWeight: '600', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
+                    Line Items Total
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
+                    {lineItemStats.totalsMatch ? 'Matches invoice' : `Off by £${lineItemStats.totalDifference.toFixed(2)}`}
+                  </div>
+                </div>
               </div>
-              <div>
-                <strong>Portions:</strong> {lineItemStats.withPortions} yes / {lineItemStats.withoutPortions} none
+
+              {/* Portions Check */}
+              <div style={{
+                flex: 1,
+                padding: '10px',
+                borderRadius: '4px',
+                border: `1px solid ${lineItemStats.withoutPortions === 0 ? '#c3e6cb' : '#ffc107'}`,
+                background: lineItemStats.withoutPortions === 0 ? '#d4edda' : '#fff3cd',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.85rem'
+              }}>
+                <span style={{ fontSize: '1.2rem' }}>📦</span>
+                <div>
+                  <div style={{ fontWeight: '600', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
+                    Portions
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
+                    {lineItemStats.withPortions} / {lineItemStats.total}
+                  </div>
+                </div>
               </div>
-              <div>
-                <strong>Missing Key Data:</strong> {lineItemStats.missingData}
+
+              {/* Missing Data Check */}
+              <div style={{
+                flex: 1,
+                padding: '10px',
+                borderRadius: '4px',
+                border: `1px solid ${lineItemStats.missingData === 0 ? '#c3e6cb' : '#f8d7da'}`,
+                background: lineItemStats.missingData === 0 ? '#d4edda' : '#f8d7da',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.85rem'
+              }}>
+                <span style={{ fontSize: '1.2rem' }}>
+                  {lineItemStats.missingData === 0 ? '✓' : '❌'}
+                </span>
+                <div>
+                  <div style={{ fontWeight: '600', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
+                    Missing Data
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
+                    {lineItemStats.missingData} item{lineItemStats.missingData !== 1 ? 's' : ''}
+                  </div>
+                </div>
+              </div>
+
+              {/* Non-Stock Check */}
+              <div style={{
+                flex: 1,
+                padding: '10px',
+                borderRadius: '4px',
+                border: `1px solid ${lineItemStats.nonStock === 0 ? '#c3e6cb' : '#ffc107'}`,
+                background: lineItemStats.nonStock === 0 ? '#d4edda' : '#fff3cd',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.85rem'
+              }}>
+                <span style={{ fontSize: '1.2rem' }}>🚫</span>
+                <div>
+                  <div style={{ fontWeight: '600', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
+                    Non-Stock
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
+                    {lineItemStats.nonStock} item{lineItemStats.nonStock !== 1 ? 's' : ''}
+                  </div>
+                </div>
               </div>
             </div>
           )}
