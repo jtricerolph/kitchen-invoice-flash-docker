@@ -127,10 +127,13 @@ class PriceHistoryService:
         description: Optional[str],
         unit: Optional[str],
         lookback_days: int,
-        exclude_invoice_id: Optional[int] = None
+        exclude_invoice_id: Optional[int] = None,
+        reference_date: Optional[date] = None
     ) -> List[Tuple[Decimal, date]]:
         """Get previous prices for a product within lookback period."""
-        cutoff_date = date.today() - timedelta(days=lookback_days)
+        # Use reference_date if provided (invoice date), otherwise use today
+        ref_date = reference_date or date.today()
+        cutoff_date = ref_date - timedelta(days=lookback_days)
 
         # Build conditions for matching product
         conditions = [
@@ -180,6 +183,7 @@ class PriceHistoryService:
         current_price: Decimal,
         unit: Optional[str] = None,
         current_invoice_id: Optional[int] = None,
+        reference_date: Optional[date] = None,
         lookback_days: Optional[int] = None,
         amber_threshold: Optional[int] = None,
         red_threshold: Optional[int] = None,
@@ -204,7 +208,7 @@ class PriceHistoryService:
 
         # Get previous prices
         previous_prices = await self._get_previous_prices(
-            supplier_id, product_code, description, unit, lookback_days, current_invoice_id
+            supplier_id, product_code, description, unit, lookback_days, current_invoice_id, reference_date
         )
 
         if not previous_prices:
