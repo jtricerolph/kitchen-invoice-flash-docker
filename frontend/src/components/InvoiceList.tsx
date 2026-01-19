@@ -191,7 +191,7 @@ export default function InvoiceList() {
                 <div style={styles.invoiceNumberRow}>
                   <span style={styles.invoiceNumber}>
                     {invoice.invoice_number
-                      || (invoice.status === 'pending' ? 'Pending extraction...'
+                      || (invoice.status === 'PENDING' ? 'Pending extraction...'
                           : invoice.vendor_name ? `(${invoice.vendor_name})`
                           : 'No invoice #')}
                   </span>
@@ -289,7 +289,7 @@ export default function InvoiceList() {
                   <div style={styles.invoiceNumberRow}>
                     <span style={styles.invoiceNumber}>
                       {invoice.invoice_number
-                        || (invoice.status === 'pending' ? 'Pending extraction...'
+                        || (invoice.status === 'PENDING' ? 'Pending extraction...'
                             : invoice.vendor_name ? `(${invoice.vendor_name})`
                             : 'No invoice #')}
                     </span>

@@ -584,6 +584,14 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
                 import json
                 invoice.ocr_raw_json = json.dumps(raw_json)
 
+            # Delete existing line items before creating new ones
+            from sqlalchemy import text
+            await db.execute(
+                text("DELETE FROM line_items WHERE invoice_id = :invoice_id"),
+                {"invoice_id": invoice_id}
+            )
+            await db.flush()
+
             # Save line items (apply product definitions for auto-population)
             line_items = result.get("line_items", [])
             supplier_id = result.get("supplier_id")
@@ -2071,6 +2079,41 @@ async def get_line_item_definition(
     )
 
 
+# ============ Stock History Endpoint ============
+
+@router.get("/{invoice_id}/stock-history")
+async def get_invoice_stock_history(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get stock status history for all line items in an invoice.
+
+    Returns a mapping of line_item_id to stock history info,
+    indicating if items were previously marked as non-stock.
+    """
+    from services.stock_history import StockHistoryService
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    stock_service = StockHistoryService(db, current_user.kitchen_id)
+    history_map = await stock_service.check_all_line_items(invoice_id)
+
+    # Convert to JSON-serializable format
+    result = {}
+    for item_id, history in history_map.items():
+        result[str(item_id)] = {
+            'has_history': history.has_history,
+            'previously_non_stock': history.previously_non_stock,
+            'total_occurrences': history.total_occurrences,
+            'non_stock_occurrences': history.non_stock_occurrences,
+            'most_recent_status': history.most_recent_status
+        }
+
+    return result
+
+
 # ============ Dext Integration Endpoint ============
 
 @router.post("/{invoice_id}/send-to-dext")
@@ -2190,4 +2233,299 @@ async def send_invoice_to_dext(
         "message": "Invoice sent to Dext successfully",
         "sent_at": invoice.dext_sent_at.isoformat(),
         "sent_to": settings.dext_email
+    }
+
+
+# ============ Admin Manual Control Endpoints ============
+
+@router.post("/{invoice_id}/mark-dext-sent")
+async def mark_dext_sent(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Admin only: Mark invoice as sent to Dext without actually sending.
+    Also triggers Nextcloud archival if configured.
+
+    For edge cases where invoice was uploaded directly to Dext.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from datetime import datetime
+    from sqlalchemy.orm import selectinload
+
+    # Load invoice
+    result = await db.execute(
+        select(Invoice).options(
+            selectinload(Invoice.supplier)
+        ).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Mark as sent
+    invoice.dext_sent_at = datetime.utcnow()
+    invoice.dext_sent_by_user_id = current_user.id
+    await db.commit()
+    await db.refresh(invoice)
+
+    # Try to archive to Nextcloud if enabled
+    archival_message = None
+    try:
+        from services.file_archival_service import FileArchivalService
+        archival_service = FileArchivalService(db, current_user.kitchen_id)
+
+        if await archival_service.is_ready_for_archival(invoice):
+            success, result_msg = await archival_service.archive_invoice_file(invoice)
+            if success:
+                archival_message = f"Archived to Nextcloud: {result_msg}"
+                await db.commit()
+            else:
+                archival_message = f"Archival skipped: {result_msg}"
+        else:
+            archival_message = "Not ready for archival (Nextcloud may not be enabled or configured)"
+    except Exception as e:
+        logger.error(f"Archival failed after marking Dext sent: {e}")
+        archival_message = f"Archival error: {str(e)}"
+
+    return {
+        "message": "Invoice marked as sent to Dext",
+        "sent_at": invoice.dext_sent_at.isoformat(),
+        "archival_status": archival_message
+    }
+
+
+@router.post("/{invoice_id}/reprocess")
+async def reprocess_invoice(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Admin only: Reprocess existing OCR data without re-sending to Azure.
+
+    Re-runs:
+    - Supplier identification
+    - Document type detection
+    - Line item creation (with product definitions)
+    - Duplicate detection
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Load invoice
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Check if we have OCR data
+    if not invoice.ocr_raw_json:
+        raise HTTPException(
+            status_code=400,
+            detail="No OCR data available. Use 'Resend to Azure' instead."
+        )
+
+    try:
+        import json
+        from ocr.parser import identify_supplier
+        from services.duplicate_detector import detect_document_type, DuplicateDetector
+
+        # Parse stored OCR data
+        raw_json = json.loads(invoice.ocr_raw_json)
+
+        # Re-identify supplier
+        supplier_id = None
+        supplier_match_type = None
+        if invoice.vendor_name:
+            supplier_id, supplier_match_type = await identify_supplier(invoice.vendor_name, current_user.kitchen_id, db)
+        if not supplier_id and invoice.ocr_raw_text:
+            supplier_id, supplier_match_type = await identify_supplier(invoice.ocr_raw_text, current_user.kitchen_id, db)
+
+        # Re-detect document type
+        document_type = detect_document_type(
+            invoice.ocr_raw_text or "",
+            raw_json
+        )
+
+        # Update invoice fields
+        invoice.supplier_id = supplier_id
+        invoice.supplier_match_type = supplier_match_type
+        invoice.document_type = document_type
+
+        # Delete existing line items
+        await db.execute(
+            text("DELETE FROM line_items WHERE invoice_id = :invoice_id"),
+            {"invoice_id": invoice_id}
+        )
+        await db.flush()
+
+        # Re-create line items from stored OCR data
+        # The stored raw_json is the Azure response, which has Items in Azure format
+        # We need to extract line_items like the Azure extractor does
+        line_items_data = []
+
+        # Check if we have the processed line_items (newer format)
+        if "line_items" in raw_json:
+            line_items_data = raw_json["line_items"]
+        # Otherwise parse from Azure raw format (older invoices)
+        elif "documents" in raw_json:
+            # Helper to extract numeric value from Azure field (handles currency objects)
+            def get_numeric_value(field_data):
+                if not field_data:
+                    return None
+                value = field_data.get("value")
+                if value is None:
+                    return None
+                # Currency fields have {"code": "GBP", "amount": 54.2, "symbol": null}
+                if isinstance(value, dict) and "amount" in value:
+                    return value["amount"]
+                return value
+
+            # Extract from Azure format - simplified extraction
+            for doc in raw_json.get("documents", []):
+                fields = doc.get("fields", {})
+                if "Items" in fields:
+                    items = fields["Items"].get("value", [])
+                    for item in items:
+                        item_fields = item.get("value", {})
+                        line_items_data.append({
+                            "product_code": item_fields.get("ProductCode", {}).get("value"),
+                            "description": item_fields.get("Description", {}).get("value"),
+                            "unit": item_fields.get("Unit", {}).get("value"),
+                            "quantity": get_numeric_value(item_fields.get("Quantity", {})),
+                            "unit_price": get_numeric_value(item_fields.get("UnitPrice", {})),
+                            "amount": get_numeric_value(item_fields.get("Amount", {})),
+                            "tax_rate": get_numeric_value(item_fields.get("TaxRate", {})),
+                        })
+
+        # Apply product definitions
+        line_items_data = await apply_product_definitions(
+            line_items_data, current_user.kitchen_id, supplier_id, db
+        )
+
+        # Create line items
+        for idx, item_data in enumerate(line_items_data):
+            line_item = LineItem(
+                invoice_id=invoice.id,
+                product_code=item_data.get("product_code"),
+                description=item_data.get("description"),
+                unit=item_data.get("unit"),
+                quantity=Decimal(str(item_data["quantity"])) if item_data.get("quantity") else None,
+                order_quantity=Decimal(str(item_data["order_quantity"])) if item_data.get("order_quantity") else None,
+                unit_price=Decimal(str(item_data["unit_price"])) if item_data.get("unit_price") else None,
+                tax_rate=item_data.get("tax_rate"),
+                tax_amount=Decimal(str(item_data["tax_amount"])) if item_data.get("tax_amount") else None,
+                amount=Decimal(str(item_data["amount"])) if item_data.get("amount") else None,
+                line_number=idx,
+                raw_content=item_data.get("raw_content"),
+                pack_quantity=item_data.get("pack_quantity"),
+                unit_size=Decimal(str(item_data["unit_size"])) if item_data.get("unit_size") else None,
+                unit_size_type=item_data.get("unit_size_type"),
+                portions_per_unit=item_data.get("portions_per_unit"),
+                cost_per_item=Decimal(str(item_data["cost_per_item"])) if item_data.get("cost_per_item") else None,
+                cost_per_portion=Decimal(str(item_data["cost_per_portion"])) if item_data.get("cost_per_portion") else None,
+                ocr_warnings=item_data.get("ocr_warnings")
+            )
+            db.add(line_item)
+
+        await db.flush()
+
+        # Re-run duplicate detection
+        detector = DuplicateDetector(db, current_user.kitchen_id)
+        duplicates = await detector.check_duplicates(invoice)
+
+        if duplicates["firm_duplicate"]:
+            invoice.duplicate_status = "firm_duplicate"
+            invoice.duplicate_of_id = duplicates["firm_duplicate"].id
+        elif duplicates["possible_duplicates"]:
+            invoice.duplicate_status = "possible_duplicate"
+            invoice.duplicate_of_id = duplicates["possible_duplicates"][0].id
+        else:
+            invoice.duplicate_status = None
+            invoice.duplicate_of_id = None
+
+        if duplicates["related_documents"]:
+            invoice.related_document_id = duplicates["related_documents"][0].id
+
+        await db.commit()
+
+        logger.info(f"Invoice {invoice_id} reprocessed by admin {current_user.id}")
+
+        return {
+            "message": "Invoice reprocessed successfully",
+            "supplier_id": supplier_id,
+            "document_type": document_type,
+            "line_items_count": len(line_items_data),
+            "duplicate_status": invoice.duplicate_status
+        }
+
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Reprocessing failed for invoice {invoice_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")
+
+
+@router.post("/{invoice_id}/resend-to-azure")
+async def resend_to_azure(
+    invoice_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Admin only: Re-send invoice to Azure for OCR extraction.
+
+    Fully re-processes the invoice:
+    - Re-extracts from Azure Document Intelligence
+    - Updates all invoice fields
+    - Re-creates line items (with product definitions)
+    - Re-runs duplicate detection
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Load invoice
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Check if file exists
+    if not os.path.exists(invoice.image_path):
+        raise HTTPException(status_code=404, detail="Invoice file not found")
+
+    # Reset status to processing
+    invoice.status = InvoiceStatus.PENDING
+    await db.commit()
+
+    # Run background processing
+    background_tasks.add_task(
+        process_invoice_background,
+        invoice_id,
+        invoice.image_path,
+        current_user.kitchen_id
+    )
+
+    logger.info(f"Invoice {invoice_id} re-sent to Azure by admin {current_user.id}")
+
+    return {
+        "message": "Invoice re-sent to Azure for processing",
+        "status": "pending"
     }

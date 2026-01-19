@@ -153,11 +153,11 @@ const getFirstLineOfDescription = (description: string | null): string => {
 // Date warning levels for unconfirmed invoices
 type DateWarning = 'none' | 'amber' | 'red';
 function getDateWarning(dateStr: string | null, status: string): DateWarning {
-  // Only warn for unconfirmed invoices
-  if (status === 'confirmed') return 'none';
-
-  // No date = red
+  // No date = always red (regardless of status)
   if (!dateStr) return 'red';
+
+  // Only warn for unconfirmed invoices (confirmed invoices can have any date)
+  if (status === 'CONFIRMED') return 'none';
 
   const invoiceDate = new Date(dateStr);
   const today = new Date();
@@ -243,7 +243,7 @@ function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems:
 
 export default function Review() {
   const { id } = useParams()
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -258,8 +258,11 @@ export default function Review() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDuplicateModal, setShowDuplicateModal] = useState(false)
   const [showCreateSupplierModal, setShowCreateSupplierModal] = useState(false)
+  const [adminOperationInProgress, setAdminOperationInProgress] = useState(false)
+  const [adminOperationResult, setAdminOperationResult] = useState<{type: 'success' | 'error', message: string} | null>(null)
   const [showRawOcrModal, setShowRawOcrModal] = useState(false)
   const [showSearchModal, setShowSearchModal] = useState(false)
+  const [showBulkStockModal, setShowBulkStockModal] = useState(false)
   const [searchingLineItem, setSearchingLineItem] = useState<LineItem | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResponse | null>(null)
@@ -334,6 +337,24 @@ export default function Review() {
       if (!res.ok) throw new Error('Failed to fetch line items')
       return res.json()
     },
+  })
+
+  const { data: stockHistory } = useQuery<Record<string, {
+    has_history: boolean
+    previously_non_stock: boolean
+    total_occurrences: number
+    non_stock_occurrences: number
+    most_recent_status: boolean | null
+  }>>({
+    queryKey: ['invoice-stock-history', id],
+    queryFn: async () => {
+      const res = await fetch(`/api/invoices/${id}/stock-history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch stock history')
+      return res.json()
+    },
+    enabled: !!id,
   })
 
   const { data: duplicateInfo } = useQuery<DuplicateCompare>({
@@ -804,7 +825,7 @@ export default function Review() {
     setShowCreateSupplierModal(true)
   }
 
-  const handleSave = async (status: string = 'reviewed') => {
+  const handleSave = async (status: string = 'REVIEWED') => {
     await updateMutation.mutateAsync({
       invoice_number: invoiceNumber || null,
       invoice_date: invoiceDate || null,
@@ -819,12 +840,144 @@ export default function Review() {
   }
 
   const handleConfirm = async () => {
-    await handleSave('confirmed')
+    await handleSave('CONFIRMED')
     navigate('/invoices')
   }
 
   const handleDelete = () => {
     deleteMutation.mutate()
+  }
+
+  const handleMarkDextSent = async () => {
+    if (!window.confirm('Mark this invoice as sent to Dext without actually sending?\n\nThis will also trigger Nextcloud archival if configured.')) {
+      return
+    }
+
+    setAdminOperationInProgress(true)
+    setAdminOperationResult(null)
+
+    try {
+      const res = await fetch(`/api/invoices/${id}/mark-dext-sent`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to mark as sent')
+      }
+
+      const result = await res.json()
+      setAdminOperationResult({
+        type: 'success',
+        message: result.message + (result.archival_status ? `\n\n${result.archival_status}` : '')
+      })
+
+      // Refresh invoice data
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+    } catch (error) {
+      setAdminOperationResult({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Operation failed'
+      })
+    } finally {
+      setAdminOperationInProgress(false)
+    }
+  }
+
+  const handleReprocessOCR = async () => {
+    if (!window.confirm('Reprocess existing OCR data?\n\nThis will:\n- Re-identify supplier\n- Re-detect document type\n- Re-create line items with product definitions\n- Re-run duplicate detection\n\nExisting line items will be replaced.')) {
+      return
+    }
+
+    setAdminOperationInProgress(true)
+    setAdminOperationResult(null)
+
+    try {
+      const res = await fetch(`/api/invoices/${id}/reprocess`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to reprocess')
+      }
+
+      const result = await res.json()
+      setAdminOperationResult({
+        type: 'success',
+        message: `${result.message}\n\nSupplier ID: ${result.supplier_id || 'None'}\nDocument Type: ${result.document_type}\nLine Items: ${result.line_items_count}\nDuplicate Status: ${result.duplicate_status || 'None'}`
+      })
+
+      // Refresh all data
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+      queryClient.invalidateQueries({ queryKey: ['line-items', id] })
+    } catch (error) {
+      setAdminOperationResult({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Operation failed'
+      })
+    } finally {
+      setAdminOperationInProgress(false)
+    }
+  }
+
+  const handleResendToAzure = async () => {
+    if (!window.confirm('Re-send invoice to Azure for OCR extraction?\n\nThis will:\n- Fully re-extract data from Azure\n- Update all invoice fields\n- Re-create line items with product definitions\n- Re-run duplicate detection\n\nExisting data will be replaced.')) {
+      return
+    }
+
+    setAdminOperationInProgress(true)
+    setAdminOperationResult(null)
+
+    try {
+      const res = await fetch(`/api/invoices/${id}/resend-to-azure`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to resend to Azure')
+      }
+
+      const result = await res.json()
+      setAdminOperationResult({
+        type: 'success',
+        message: `${result.message}\n\nThe page will refresh automatically when processing completes.`
+      })
+
+      // Poll for completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const checkRes = await fetch(`/api/invoices/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          if (checkRes.ok) {
+            const inv = await checkRes.json()
+            if (inv.status !== 'pending') {
+              clearInterval(pollInterval)
+              queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+              queryClient.invalidateQueries({ queryKey: ['line-items', id] })
+              window.location.reload()
+            }
+          }
+        } catch (e) {
+          // Ignore polling errors
+        }
+      }, 2000)
+
+      // Stop polling after 2 minutes
+      setTimeout(() => clearInterval(pollInterval), 120000)
+    } catch (error) {
+      setAdminOperationResult({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Operation failed'
+      })
+    } finally {
+      setAdminOperationInProgress(false)
+    }
   }
 
   const startEditLineItem = (item: LineItem) => {
@@ -946,6 +1099,31 @@ export default function Review() {
     }
   }
 
+  const handleBulkStockUpdate = async (markAsStock: boolean) => {
+    if (!lineItems) return
+
+    try {
+      // Update all line items
+      const promises = lineItems.map(item =>
+        fetch(`/api/invoices/${id}/line-items/${item.id}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ is_non_stock: !markAsStock }),
+        })
+      )
+
+      await Promise.all(promises)
+      await refetchLineItems()
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+      setShowBulkStockModal(false)
+    } catch (error) {
+      console.error('Failed to bulk update stock status:', error)
+    }
+  }
+
   const toggleCostBreakdown = async (item: LineItem) => {
     if (expandedCostBreakdown === item.id) {
       setExpandedCostBreakdown(null)
@@ -953,6 +1131,8 @@ export default function Review() {
       setPortionDescription('')
       setSaveAsDefault(false)
       setCurrentDefinition(null)
+      // Close line item preview when closing cost breakdown
+      setExpandedLineItem(null)
     } else {
       setExpandedCostBreakdown(item.id)
       setCostBreakdownEdits({
@@ -965,6 +1145,10 @@ export default function Review() {
       setPortionDescription('')
       setSaveAsDefault(false)
       setCurrentDefinition(null)
+      // Automatically open line item preview when opening cost breakdown
+      setExpandedLineItem(item.id)
+      setHighlightedField(null)
+      resetZoom()
 
       // Fetch the saved definition for this line item
       setDefinitionLoading(true)
@@ -1114,8 +1298,13 @@ export default function Review() {
       withoutPortions: 0,
       missingData: 0,
       nonStock: 0,
+      priceCalcErrors: 0,
       totalsMatch: true,
-      totalDifference: 0
+      totalDifference: 0,
+      lineItemsTotal: 0,
+      stockItemsTotal: 0,
+      nonStockItemsTotal: 0,
+      stockItemsGross: 0
     }
 
     const withPortions = lineItems.filter(item =>
@@ -1131,10 +1320,34 @@ export default function Review() {
 
     const nonStock = lineItems.filter(item => item.is_non_stock).length
 
-    // Check if line items total matches invoice total
+    // Count items with price calculation errors (qty × price ≠ total)
+    const priceCalcErrors = lineItems.filter(item => {
+      if (item.quantity == null || item.unit_price == null || item.amount == null) return false
+      return Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02
+    }).length
+
+    // Calculate totals (line items are NET values)
     const lineItemsTotal = lineItems.reduce((sum, item) => sum + (item.amount || 0), 0)
-    const invoiceTotal = parseFloat(total) || 0
-    const compareTotal = netTotal ? parseFloat(netTotal) : invoiceTotal
+    const stockItemsTotal = lineItems
+      .filter(item => !item.is_non_stock)
+      .reduce((sum, item) => sum + (item.amount || 0), 0)
+    const nonStockItemsTotal = lineItems
+      .filter(item => item.is_non_stock)
+      .reduce((sum, item) => sum + (item.amount || 0), 0)
+
+    // Calculate VAT ratio from invoice totals
+    const invoiceGross = parseFloat(total) || 0
+    const invoiceNet = parseFloat(netTotal) || invoiceGross
+    const vatRatio = invoiceNet > 0 ? invoiceGross / invoiceNet : 1
+
+    // Line item amounts are NET values
+    // Calculate GROSS for stock items by multiplying by VAT ratio
+    const stockItemsNet = stockItemsTotal
+    const stockItemsGross = stockItemsTotal * vatRatio
+
+    // Check if line items total matches invoice total
+    // Line items are NET, so compare against invoice NET (or gross if no net available)
+    const compareTotal = invoiceNet
     const difference = Math.abs(compareTotal - lineItemsTotal)
     const totalsMatch = difference <= TOLERANCE
 
@@ -1144,8 +1357,14 @@ export default function Review() {
       withoutPortions: lineItems.length - withPortions,
       missingData,
       nonStock,
+      priceCalcErrors,
       totalsMatch,
-      totalDifference: difference
+      totalDifference: difference,
+      lineItemsTotal,
+      stockItemsTotal,
+      stockItemsNet,
+      nonStockItemsTotal,
+      stockItemsGross
     }
   }, [lineItems, total, netTotal])
 
@@ -1432,7 +1651,7 @@ export default function Review() {
               borderRadius: '4px',
               fontSize: '0.85rem',
               fontWeight: '600',
-              background: invoice.status === 'confirmed' ? '#22c55e' : invoice.status === 'reviewed' ? '#8b5cf6' : invoice.status === 'processed' ? '#3b82f6' : '#f59e0b',
+              background: invoice.status === 'CONFIRMED' ? '#22c55e' : invoice.status === 'REVIEWED' ? '#8b5cf6' : invoice.status === 'PROCESSED' ? '#3b82f6' : '#f59e0b',
               color: 'white'
             }}>
               {invoice.status.toUpperCase()}
@@ -1452,8 +1671,7 @@ export default function Review() {
                     ...styles.input,
                     flex: 1,
                     ...(invoice?.supplier_match_type === 'fuzzy' && supplierId ? {
-                      borderColor: '#f0ad4e',
-                      borderWidth: '2px',
+                      border: '2px solid #f0ad4e',
                       background: '#fff8e6'
                     } : {})
                   }}
@@ -1717,84 +1935,10 @@ export default function Review() {
             </label>
           </div>
 
-          {/* Dext Status Block | Dext Button */}
-          {invoice.status === 'confirmed' && (
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '15px' }}>
-              {invoice.dext_sent_at ? (
-                <>
-                  <div style={{
-                    flex: 1,
-                    padding: '0.75rem 1rem',
-                    background: '#d4edda',
-                    borderRadius: '4px',
-                    border: '1px solid #c3e6cb',
-                    color: '#155724',
-                    fontSize: '0.9rem'
-                  }}>
-                    <div style={{ fontWeight: '500' }}>✓ Sent to Dext</div>
-                    <small style={{ fontSize: '0.75rem' }}>
-                      {new Date(invoice.dext_sent_at).toLocaleString()}
-                      {invoice.dext_sent_by_username && ` by ${invoice.dext_sent_by_username}`}
-                    </small>
-                  </div>
-                  {settings?.dext_manual_send_enabled && (
-                    <button
-                      onClick={() => setShowDextSendConfirm(true)}
-                      style={{
-                        padding: '0.75rem 1.5rem',
-                        background: '#17a2b8',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        fontWeight: '500'
-                      }}
-                    >
-                      Resend to Dext
-                    </button>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div style={{
-                    flex: 1,
-                    padding: '0.75rem 1rem',
-                    background: '#fff3cd',
-                    borderRadius: '4px',
-                    border: '1px solid #ffc107',
-                    color: '#856404',
-                    fontSize: '0.9rem',
-                    fontWeight: '500'
-                  }}>
-                    Not submitted to Dext
-                  </div>
-                  {settings?.dext_manual_send_enabled && (
-                    <button
-                      onClick={() => setShowDextSendConfirm(true)}
-                      style={{
-                        padding: '0.75rem 1.5rem',
-                        background: '#17a2b8',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        fontWeight: '500'
-                      }}
-                    >
-                      Send to Dext
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
           {/* Save | Confirm & Dext */}
           <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
             <button
-              onClick={() => handleSave('reviewed')}
+              onClick={() => handleSave('REVIEWED')}
               style={{ ...styles.saveBtn, flex: 1 }}
               disabled={updateMutation.isPending}
             >
@@ -1805,17 +1949,17 @@ export default function Review() {
               style={{ ...styles.confirmBtn, flex: 1 }}
               disabled={updateMutation.isPending}
             >
-              CONFIRM & DEXT
+              {invoice?.dext_sent_at ? 'CONFIRM' : 'CONFIRM & DEXT'}
             </button>
           </div>
 
           {/* Checks Section */}
           {lineItems && lineItems.length > 0 && (
-            <div style={{ margin: '20px 0', display: 'flex', gap: '10px' }}>
+            <div style={{ margin: '20px 0', display: 'flex', gap: '8px' }}>
               {/* Items Total Check */}
               <div style={{
                 flex: 1,
-                padding: '12px',
+                padding: '8px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.totalsMatch ? '#c3e6cb' : '#ffc107'}`,
                 background: lineItemStats.totalsMatch ? '#d4edda' : '#fff3cd',
@@ -1823,25 +1967,47 @@ export default function Review() {
                 flexDirection: 'column',
                 alignItems: 'center',
                 textAlign: 'center',
-                fontSize: '0.85rem'
+                fontSize: '0.8rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '1.1rem' }}>
-                    {lineItemStats.totalsMatch ? '✓' : '⚠'}
-                  </span>
-                  <div style={{ fontWeight: '600', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
-                    Items Total
-                  </div>
+                <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
+                  {lineItemStats.totalsMatch ? '✓' : '⚠'}
                 </div>
-                <div style={{ fontSize: '0.75rem', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
-                  {lineItemStats.totalsMatch ? 'Matches invoice' : `Off by £${lineItemStats.totalDifference.toFixed(2)}`}
+                <div style={{ fontWeight: '600', color: lineItemStats.totalsMatch ? '#155724' : '#856404', marginBottom: '2px' }}>
+                  Items Total
+                </div>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
+                  {lineItemStats.totalsMatch ? 'Matches' : "Doesn't match"}
+                </div>
+              </div>
+
+              {/* QTY/Price Check */}
+              <div style={{
+                flex: 1,
+                padding: '8px',
+                borderRadius: '4px',
+                border: `1px solid ${lineItemStats.priceCalcErrors === 0 ? '#c3e6cb' : '#f8d7da'}`,
+                background: lineItemStats.priceCalcErrors === 0 ? '#d4edda' : '#f8d7da',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                textAlign: 'center',
+                fontSize: '0.8rem'
+              }}>
+                <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
+                  {lineItemStats.priceCalcErrors === 0 ? '✓' : '💷'}
+                </div>
+                <div style={{ fontWeight: '600', color: lineItemStats.priceCalcErrors === 0 ? '#155724' : '#721c24', marginBottom: '2px' }}>
+                  QTY/Price
+                </div>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.priceCalcErrors === 0 ? '#155724' : '#721c24' }}>
+                  {lineItemStats.priceCalcErrors === 0 ? 'All OK' : `${lineItemStats.priceCalcErrors} error${lineItemStats.priceCalcErrors !== 1 ? 's' : ''}`}
                 </div>
               </div>
 
               {/* Portions Check */}
               <div style={{
                 flex: 1,
-                padding: '12px',
+                padding: '8px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.withoutPortions === 0 ? '#c3e6cb' : '#ffc107'}`,
                 background: lineItemStats.withoutPortions === 0 ? '#d4edda' : '#fff3cd',
@@ -1849,15 +2015,13 @@ export default function Review() {
                 flexDirection: 'column',
                 alignItems: 'center',
                 textAlign: 'center',
-                fontSize: '0.85rem'
+                fontSize: '0.8rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '1.1rem' }}>📦</span>
-                  <div style={{ fontWeight: '600', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
-                    Portions
-                  </div>
+                <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>📦</div>
+                <div style={{ fontWeight: '600', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404', marginBottom: '2px' }}>
+                  Portions
                 </div>
-                <div style={{ fontSize: '0.75rem', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
                   {lineItemStats.withPortions} / {lineItemStats.total}
                 </div>
               </div>
@@ -1865,7 +2029,7 @@ export default function Review() {
               {/* Missing Data Check */}
               <div style={{
                 flex: 1,
-                padding: '12px',
+                padding: '8px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.missingData === 0 ? '#c3e6cb' : '#f8d7da'}`,
                 background: lineItemStats.missingData === 0 ? '#d4edda' : '#f8d7da',
@@ -1873,17 +2037,15 @@ export default function Review() {
                 flexDirection: 'column',
                 alignItems: 'center',
                 textAlign: 'center',
-                fontSize: '0.85rem'
+                fontSize: '0.8rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '1.1rem' }}>
-                    {lineItemStats.missingData === 0 ? '✓' : '❌'}
-                  </span>
-                  <div style={{ fontWeight: '600', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
-                    Missing Data
-                  </div>
+                <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
+                  {lineItemStats.missingData === 0 ? '✓' : '❌'}
                 </div>
-                <div style={{ fontSize: '0.75rem', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
+                <div style={{ fontWeight: '600', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24', marginBottom: '2px' }}>
+                  Missing Data
+                </div>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
                   {lineItemStats.missingData} item{lineItemStats.missingData !== 1 ? 's' : ''}
                 </div>
               </div>
@@ -1891,7 +2053,7 @@ export default function Review() {
               {/* Non-Stock Check */}
               <div style={{
                 flex: 1,
-                padding: '12px',
+                padding: '8px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.nonStock === 0 ? '#c3e6cb' : '#ffc107'}`,
                 background: lineItemStats.nonStock === 0 ? '#d4edda' : '#fff3cd',
@@ -1899,27 +2061,65 @@ export default function Review() {
                 flexDirection: 'column',
                 alignItems: 'center',
                 textAlign: 'center',
-                fontSize: '0.85rem'
+                fontSize: '0.8rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '1.1rem' }}>🚫</span>
-                  <div style={{ fontWeight: '600', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
-                    Non-Stock
-                  </div>
+                <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>🚫</div>
+                <div style={{ fontWeight: '600', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404', marginBottom: '2px' }}>
+                  Non-Stock
                 </div>
-                <div style={{ fontSize: '0.75rem', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
                   {lineItemStats.nonStock} item{lineItemStats.nonStock !== 1 ? 's' : ''}
+                </div>
+              </div>
+
+              {/* Dext Status Check - Always visible */}
+              <div style={{
+                flex: 1,
+                padding: '8px',
+                borderRadius: '4px',
+                border: `1px solid ${invoice.dext_sent_at ? '#c3e6cb' : '#ffc107'}`,
+                background: invoice.dext_sent_at ? '#d4edda' : '#fff3cd',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                textAlign: 'center',
+                fontSize: '0.8rem'
+              }}>
+                <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
+                  {invoice.dext_sent_at ? '✓' : '⚠'}
+                </div>
+                <div style={{ fontWeight: '600', color: invoice.dext_sent_at ? '#155724' : '#856404', marginBottom: '2px' }}>
+                  Dext Status
+                </div>
+                <div style={{ fontSize: '0.7rem', color: invoice.dext_sent_at ? '#155724' : '#856404' }}>
+                  {invoice.dext_sent_at ? new Date(invoice.dext_sent_at).toLocaleDateString() : 'Not sent'}
                 </div>
               </div>
             </div>
           )}
 
-          {/* Back to Invoices | Delete | OCR */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '15px' }}>
-            <button onClick={() => navigate('/invoices')} style={styles.backBtn}>
-              ← Back to Invoices
-            </button>
+          {/* Button Rows - Centered */}
+          <div style={{ marginTop: '15px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+            {/* Row 1: Resend to Dext | Delete | View OCR */}
             <div style={{ display: 'flex', gap: '10px' }}>
+              {(invoice.status === 'CONFIRMED' || invoice.status === 'REVIEWED') && settings?.dext_manual_send_enabled && (
+                <button
+                  onClick={() => setShowDextSendConfirm(true)}
+                  style={{
+                    padding: '0.4rem 1.2rem',
+                    fontSize: '0.8rem',
+                    background: '#17a2b8',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    minWidth: '130px',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {invoice.dext_sent_at ? 'Resend to Dext' : 'Send to Dext'}
+                </button>
+              )}
               <button
                 onClick={() => setShowDeleteModal(true)}
                 style={{
@@ -1953,6 +2153,95 @@ export default function Review() {
                 View OCR Data
               </button>
             </div>
+
+            {/* Row 2: Admin Only Manual Control Buttons */}
+            {user?.is_admin && (
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={handleMarkDextSent}
+                  disabled={adminOperationInProgress}
+                  style={{
+                    padding: '0.4rem 1.2rem',
+                    fontSize: '0.8rem',
+                    background: adminOperationInProgress ? '#ccc' : '#17a2b8',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: adminOperationInProgress ? 'not-allowed' : 'pointer',
+                    minWidth: '140px',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {adminOperationInProgress ? 'Processing...' : 'Mark Dext Sent'}
+                </button>
+                <button
+                  onClick={handleReprocessOCR}
+                  disabled={adminOperationInProgress}
+                  style={{
+                    padding: '0.4rem 1.2rem',
+                    fontSize: '0.8rem',
+                    background: adminOperationInProgress ? '#ccc' : '#ffc107',
+                    color: '#000',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: adminOperationInProgress ? 'not-allowed' : 'pointer',
+                    minWidth: '130px',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {adminOperationInProgress ? 'Processing...' : 'Reprocess OCR'}
+                </button>
+                <button
+                  onClick={handleResendToAzure}
+                  disabled={adminOperationInProgress}
+                  style={{
+                    padding: '0.4rem 1.2rem',
+                    fontSize: '0.8rem',
+                    background: adminOperationInProgress ? '#ccc' : '#fd7e14',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: adminOperationInProgress ? 'not-allowed' : 'pointer',
+                    minWidth: '150px',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {adminOperationInProgress ? 'Processing...' : 'Resend to Azure'}
+                </button>
+              </div>
+            )}
+
+            {/* Admin Operation Result Alert */}
+            {adminOperationResult && (
+              <div style={{
+                marginTop: '10px',
+                padding: '12px',
+                borderRadius: '4px',
+                background: adminOperationResult.type === 'success' ? '#d4edda' : '#f8d7da',
+                color: adminOperationResult.type === 'success' ? '#155724' : '#721c24',
+                border: `1px solid ${adminOperationResult.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`,
+                fontSize: '0.85rem',
+                whiteSpace: 'pre-wrap',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'flex-start'
+              }}>
+                <span>{adminOperationResult.message}</span>
+                <button
+                  onClick={() => setAdminOperationResult(null)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    fontSize: '1.2rem',
+                    cursor: 'pointer',
+                    marginLeft: '10px',
+                    color: 'inherit'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2071,16 +2360,22 @@ export default function Review() {
                   style={{ ...styles.th, width: '70px', cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => handleLineItemSort('unit_price')}
                 >
-                  Unit Price {lineItemSortColumn === 'unit_price' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                  Price {lineItemSortColumn === 'unit_price' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
                 </th>
-                <th style={{ ...styles.th, width: '50px' }}>VAT %</th>
+                <th style={{ ...styles.th, width: '50px' }}>Tax</th>
                 <th
                   style={{ ...styles.th, width: '70px', cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => handleLineItemSort('amount')}
                 >
-                  Net Total {lineItemSortColumn === 'amount' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
+                  Total {lineItemSortColumn === 'amount' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
                 </th>
-                <th style={{ ...styles.th, textAlign: 'center', width: '60px' }}>Non-Stock</th>
+                <th
+                  style={{ ...styles.th, textAlign: 'center', width: '60px', cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => setShowBulkStockModal(true)}
+                  title="Click to mark all items as stock or non-stock"
+                >
+                  Stock
+                </th>
                 <th style={{ ...styles.th, textAlign: 'center', width: '40px' }} title="Cost Breakdown"></th>
                 <th style={{ ...styles.th, width: '70px' }}></th>
               </tr>
@@ -2091,11 +2386,41 @@ export default function Review() {
                 const hasOcrWarning = !!item.ocr_warnings
                 const highQtyThreshold = settings?.high_quantity_threshold ?? 100
                 const isHighQuantity = item.quantity !== null && item.quantity > highQtyThreshold
+
+                // Check for stock status conflict
+                const itemStockHistory = stockHistory?.[item.id.toString()]
+                const hasStockConflict = itemStockHistory?.has_history &&
+                  itemStockHistory.previously_non_stock &&
+                  !item.is_non_stock // Current item is marked as stock, but was previously non-stock
+
+                // Check for price calculation mismatch: qty × unit_price should equal amount
+                const hasPriceCalcError = item.quantity != null &&
+                  item.unit_price != null &&
+                  item.amount != null &&
+                  Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02 // Allow 2p tolerance for rounding
+
                 // OCR warning takes priority (darker amber), high quantity is lighter
                 const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : undefined
+                const rowStyle = rowBackground ? { backgroundColor: rowBackground } : undefined
+                // Add amber border for stock conflicts
+                const rowStyleWithBorder = hasStockConflict
+                  ? { ...rowStyle, border: '2px solid #ffc107' }
+                  : rowStyle
+
+                // Style for cells with price calculation errors - create a single box spanning qty to total
+                const errorCellStyleLeft = hasPriceCalcError
+                  ? { borderLeft: '2px solid #dc3545', borderTop: '2px solid #dc3545', borderBottom: '2px solid #dc3545', backgroundColor: '#ffe6e6' }
+                  : {}
+                const errorCellStyleMiddle = hasPriceCalcError
+                  ? { borderTop: '2px solid #dc3545', borderBottom: '2px solid #dc3545', backgroundColor: '#ffe6e6' }
+                  : {}
+                const errorCellStyleRight = hasPriceCalcError
+                  ? { borderRight: '2px solid #dc3545', borderTop: '2px solid #dc3545', borderBottom: '2px solid #dc3545', backgroundColor: '#ffe6e6' }
+                  : {}
+
                 return (
                   <React.Fragment key={item.id}>
-                    <tr style={rowBackground ? { backgroundColor: rowBackground } : undefined}>
+                    <tr style={rowStyleWithBorder}>
                       <td style={styles.td}>
                         {bbox && (
                           <button
@@ -2177,8 +2502,8 @@ export default function Review() {
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
                               type="checkbox"
-                              checked={lineItemEdits.is_non_stock || false}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: e.target.checked })}
+                              checked={!lineItemEdits.is_non_stock}
+                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: !e.target.checked })}
                               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                             />
                           </td>
@@ -2196,49 +2521,78 @@ export default function Review() {
                             {item.product_code || '—'}
                           </td>
                           <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
-                            {item.ocr_warnings && (
-                              <span
-                                title={item.ocr_warnings}
-                                style={{
-                                  display: 'inline-block',
-                                  marginRight: '6px',
-                                  color: '#856404',
-                                  cursor: 'help',
-                                  fontWeight: 'bold',
-                                  fontSize: '1.1rem'
-                                }}
-                              >
-                                ⚠️
-                              </span>
+                            <div>
+                              {item.ocr_warnings && (
+                                <span
+                                  title={item.ocr_warnings}
+                                  style={{
+                                    display: 'inline-block',
+                                    marginRight: '6px',
+                                    color: '#856404',
+                                    cursor: 'help',
+                                    fontWeight: 'bold',
+                                    fontSize: '1.1rem'
+                                  }}
+                                >
+                                  ⚠️
+                                </span>
+                              )}
+                              {getFirstLineOfDescription(item.description) || '—'}
+                            </div>
+                            {hasStockConflict && (
+                              <div style={{
+                                fontSize: '0.75rem',
+                                color: '#856404',
+                                fontStyle: 'italic',
+                                marginTop: '4px',
+                                lineHeight: '1.2'
+                              }}>
+                                ⚠️ This item has previously been marked as not a stock item
+                              </div>
                             )}
-                            {getFirstLineOfDescription(item.description) || '—'}
+                            {hasPriceCalcError && (
+                              <div style={{
+                                fontSize: '0.75rem',
+                                color: '#dc3545',
+                                fontWeight: 'bold',
+                                marginTop: '4px',
+                                lineHeight: '1.3'
+                              }}>
+                                ! QTY x Price = Total Check Failed<br />
+                                {item.quantity?.toFixed(2)} × £{item.unit_price?.toFixed(2)} ≠ £{item.amount?.toFixed(2)}
+                              </div>
+                            )}
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
-                          <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
-                          <td style={styles.td}>
+                          <td style={{ ...styles.td, ...errorCellStyleLeft }}>{item.quantity?.toFixed(2) || '—'}</td>
+                          <td style={{ ...styles.td, ...errorCellStyleMiddle }}>
                             <div>
                               <div>
-                                {item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}
-                                {item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null && (
-                                  <span
-                                    onClick={() => openPriceHistoryModal(item)}
-                                    style={{
-                                      marginLeft: '6px',
-                                      cursor: 'pointer',
-                                      color: '#6b7280',
-                                    }}
-                                    title="View price history"
-                                  >
-                                    📊
+                                {item.unit_price != null ? `£${item.unit_price.toFixed(2)}` : '—'}
+                                {/* Show green tick inline for consistent prices */}
+                                {item.price_status === 'consistent' && (
+                                  <span style={{ marginLeft: '6px', color: '#22c55e', fontWeight: 'bold' }}>
+                                    ✓
                                   </span>
                                 )}
                               </div>
-                              {item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null && (() => {
+                              {/* Show arrow and percentage below for price changes */}
+                              {item.price_status && item.price_status !== 'no_history' && item.price_status !== 'consistent' && item.price_change_percent !== null && item.price_change_percent !== 0 && (() => {
                                 const isIncrease = item.price_change_percent > 0
                                 const arrow = isIncrease ? '▲' : '▼'
                                 const color = isIncrease ? '#ef4444' : '#22c55e'
                                 return (
-                                  <div style={{ fontSize: '0.75rem', marginTop: '2px', color }}>
+                                  <div
+                                    onClick={() => openPriceHistoryModal(item)}
+                                    style={{
+                                      fontSize: '0.75rem',
+                                      marginTop: '2px',
+                                      color,
+                                      cursor: 'pointer',
+                                      display: 'inline-block'
+                                    }}
+                                    title="View price history"
+                                  >
                                     <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
                                     {Math.abs(item.price_change_percent).toFixed(1)}%
                                   </div>
@@ -2246,20 +2600,20 @@ export default function Review() {
                               })()}
                             </div>
                           </td>
-                          <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.tax_rate || '—'}</td>
-                          <td style={styles.td}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
+                          <td style={{ ...styles.td, fontSize: '0.85rem', ...errorCellStyleMiddle }}>{item.tax_rate || '—'}</td>
+                          <td style={{ ...styles.td, ...errorCellStyleRight }}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
                               type="checkbox"
-                              checked={item.is_non_stock}
+                              checked={!item.is_non_stock}
                               onChange={(e) => {
                                 updateLineItemMutation.mutate({
                                   itemId: item.id,
-                                  data: { is_non_stock: e.target.checked }
+                                  data: { is_non_stock: !e.target.checked }
                                 })
                               }}
                               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                              title={item.is_non_stock ? 'Mark as stock item' : 'Mark as non-stock item'}
+                              title={!item.is_non_stock ? 'Mark as non-stock item' : 'Mark as stock item'}
                             />
                           </td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
@@ -2282,11 +2636,31 @@ export default function Review() {
                               <ScaleIcon />
                             </button>
                           </td>
-                          <td style={styles.td}>
-                            <button onClick={() => startEditLineItem(item)} style={styles.editBtn}>Edit</button>
-                            <button onClick={() => openSearchModal(item)} style={styles.searchBtn} title="Search similar items">
-                              🔍
-                            </button>
+                          <td style={{ ...styles.td, minWidth: '135px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                              <button onClick={() => startEditLineItem(item)} style={styles.iconBtn} title="Edit line item">
+                                ✏️
+                              </button>
+                              <button onClick={() => openSearchModal(item)} style={styles.iconBtn} title="Search similar items">
+                                🔍
+                              </button>
+                              <button
+                                onClick={() => item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null && openPriceHistoryModal(item)}
+                                style={{
+                                  ...styles.iconBtn,
+                                  opacity: (item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null) ? 1 : 0.5,
+                                  cursor: (item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null) ? 'pointer' : 'not-allowed'
+                                }}
+                                title={
+                                  (item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null)
+                                    ? "View price history"
+                                    : "No price history available"
+                                }
+                                disabled={!(item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null)}
+                              >
+                                📊
+                              </button>
+                            </div>
                           </td>
                         </>
                       )}
@@ -2303,7 +2677,7 @@ export default function Review() {
                                 </span>
                               )}
                             </div>
-                            <div style={styles.costBreakdownGrid}>
+                            <div style={{ ...styles.costBreakdownGrid, gap: '1rem' }}>
                               <div style={styles.costBreakdownField}>
                                 <label>Pack Qty</label>
                                 <input
@@ -2355,14 +2729,14 @@ export default function Review() {
                                   placeholder="—"
                                 />
                               </div>
-                              <div style={styles.costBreakdownField}>
+                              <div style={{ ...styles.costBreakdownField, gridColumn: 'span 2' }}>
                                 <label>Portion Desc</label>
                                 <input
                                   type="text"
                                   value={portionDescription}
                                   onChange={(e) => setPortionDescription(e.target.value)}
-                                  style={{ ...styles.costBreakdownInput, width: '80px' }}
-                                  placeholder="e.g., 250ml"
+                                  style={{ ...styles.costBreakdownInput, width: '100%' }}
+                                  placeholder="e.g., 250ml glass or 1 slice"
                                   title="Describe what a portion is, e.g., '250ml glass', '1 slice'"
                                 />
                               </div>
@@ -2385,6 +2759,14 @@ export default function Review() {
                                 <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600' }}>
                                   {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price && costBreakdownEdits.portions_per_unit
                                     ? `£${(costBreakdownEdits.unit_price / (costBreakdownEdits.pack_quantity * costBreakdownEdits.portions_per_unit)).toFixed(4)}`
+                                    : '—'}
+                                </span>
+                              </div>
+                              <div style={styles.costBreakdownField}>
+                                <label>Total Portions</label>
+                                <span style={{ ...styles.costBreakdownValue, color: '#007bff', fontWeight: '600' }}>
+                                  {item.quantity && costBreakdownEdits.pack_quantity && costBreakdownEdits.portions_per_unit
+                                    ? Math.round(item.quantity * costBreakdownEdits.pack_quantity * costBreakdownEdits.portions_per_unit)
                                     : '—'}
                                 </span>
                               </div>
@@ -2484,54 +2866,73 @@ export default function Review() {
                               const pageData = pdfPages[pageIndex]
                               if (!pageData) return null
 
-                              // Calculate crop coordinates in high-res canvas pixels
-                              const cropX = (bbox.x / 100) * pageData.width
-                              const cropY = (bbox.y / 100) * pageData.height
-                              const cropW = (bbox.width / 100) * pageData.width
-                              const cropH = (bbox.height / 100) * pageData.height
+                              // Calculate bounding box coordinates in high-res canvas pixels
+                              const bboxX = (bbox.x / 100) * pageData.width
+                              const bboxY = (bbox.y / 100) * pageData.height
+                              const bboxW = (bbox.width / 100) * pageData.width
+                              const bboxH = (bbox.height / 100) * pageData.height
 
-                              // Crop around bounding box with padding
-                              const horzPadding = 40 // Horizontal padding in pixels
-                              const vertPadding = 20 // Vertical padding in pixels
-                              const startX = Math.max(0, cropX - horzPadding)
-                              const startY = Math.max(0, cropY - vertPadding)
-                              const endX = Math.min(pageData.width, cropX + cropW + horzPadding)
-                              const endY = Math.min(pageData.height, cropY + cropH + vertPadding)
-                              const finalW = endX - startX
-                              const finalH = endY - startY
+                              // Small padding around OCR text so box doesn't cover the text
+                              const boxPadding = 15 // 15px breathing room around detected text
+                              const expandedBboxX = Math.max(0, bboxX - boxPadding)
+                              const expandedBboxY = Math.max(0, bboxY - boxPadding)
+                              const expandedBboxW = bboxW + (boxPadding * 2)
+                              const expandedBboxH = bboxH + (boxPadding * 2)
 
-                              // Create a cropped canvas around the bounding box
+                              // Crop tightly to the expanded box - minimal extra space
+                              const cropPadding = 5 // Very tight crop so box fills container
+                              const startX = Math.max(0, expandedBboxX - cropPadding)
+                              const startY = Math.max(0, expandedBboxY - cropPadding)
+                              const endX = Math.min(pageData.width, expandedBboxX + expandedBboxW + cropPadding)
+                              const endY = Math.min(pageData.height, expandedBboxY + expandedBboxH + cropPadding)
+                              const cropW = endX - startX
+                              const cropH = endY - startY
+
+                              // Calculate expanded bounding box position relative to cropped area
+                              const relBboxX = expandedBboxX - startX
+                              const relBboxY = expandedBboxY - startY
+
+                              // Create a cropped canvas
                               const croppedCanvas = document.createElement('canvas')
-                              croppedCanvas.width = finalW
-                              croppedCanvas.height = finalH
+                              croppedCanvas.width = cropW
+                              croppedCanvas.height = cropH
                               const ctx = croppedCanvas.getContext('2d')
                               if (ctx) {
                                 ctx.drawImage(
                                   pageData.canvas,
-                                  startX, startY, finalW, finalH,
-                                  0, 0, finalW, finalH
+                                  startX, startY, cropW, cropH,
+                                  0, 0, cropW, cropH
                                 )
                               }
 
                               return (
                                 <div style={styles.lineItemPreviewContainer}>
                                   <div style={{
-                                    background: '#fff',
-                                    borderRadius: '4px',
-                                    padding: '8px',
-                                    border: '1px solid #ddd',
-                                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-                                    display: 'flex',
-                                    justifyContent: 'center',
+                                    position: 'relative',
+                                    display: 'block',
+                                    width: '100%',
                                   }}>
                                     <img
                                       src={croppedCanvas.toDataURL()}
                                       alt="Line item from invoice"
                                       style={{
-                                        maxWidth: '100%',
+                                        width: '100%',
                                         height: 'auto',
                                         display: 'block',
+                                      }}
+                                    />
+                                    {/* Bounding box overlay */}
+                                    <div
+                                      style={{
+                                        position: 'absolute',
+                                        left: `${(relBboxX / cropW) * 100}%`,
+                                        top: `${(relBboxY / cropH) * 100}%`,
+                                        width: `${(expandedBboxW / cropW) * 100}%`,
+                                        height: `${(expandedBboxH / cropH) * 100}%`,
+                                        border: '2px solid #ffc107',
                                         borderRadius: '2px',
+                                        pointerEvents: 'none',
+                                        boxShadow: '0 0 8px rgba(255, 193, 7, 0.5)',
                                       }}
                                     />
                                   </div>
@@ -2539,26 +2940,48 @@ export default function Review() {
                               )
                             })()
                           ) : imageUrl ? (
-                            <div style={styles.lineItemPreviewContainer}>
-                              <div style={{
-                                position: 'relative',
-                                width: '100%',
-                                height: '60px',
-                                overflow: 'hidden',
-                              }}>
-                                <img
-                                  src={`${imageUrl.split('?')[0]}?token=${encodeURIComponent(token || '')}`}
-                                  alt="Line item location"
-                                  style={{
-                                    position: 'absolute',
-                                    width: `${100 / (bbox.width / 100)}%`,
-                                    left: `${-bbox.x * (100 / bbox.width)}%`,
-                                    top: `${-bbox.y * (100 / bbox.height) * (60 / 100)}%`,
-                                    maxWidth: 'none',
-                                  }}
-                                />
-                              </div>
-                            </div>
+                            (() => {
+                              // Expand bounding box for better visibility (percentage-based)
+                              const expansionPercent = 2 // Expand by 2% in each direction
+                              const expandedX = Math.max(0, bbox.x - expansionPercent)
+                              const expandedY = Math.max(0, bbox.y - expansionPercent)
+                              const expandedWidth = Math.min(100 - expandedX, bbox.width + (expansionPercent * 2))
+                              const expandedHeight = Math.min(100 - expandedY, bbox.height + (expansionPercent * 2))
+
+                              return (
+                                <div style={styles.lineItemPreviewContainer}>
+                                  <div style={{
+                                    position: 'relative',
+                                    display: 'block',
+                                    width: '100%',
+                                  }}>
+                                    <img
+                                      src={`${imageUrl.split('?')[0]}?token=${encodeURIComponent(token || '')}`}
+                                      alt="Line item location"
+                                      style={{
+                                        width: '100%',
+                                        height: 'auto',
+                                        display: 'block',
+                                      }}
+                                    />
+                                    {/* Bounding box overlay */}
+                                    <div
+                                      style={{
+                                        position: 'absolute',
+                                        left: `${expandedX}%`,
+                                        top: `${expandedY}%`,
+                                        width: `${expandedWidth}%`,
+                                        height: `${expandedHeight}%`,
+                                        border: '2px solid #ffc107',
+                                        borderRadius: '2px',
+                                        pointerEvents: 'none',
+                                        boxShadow: '0 0 8px rgba(255, 193, 7, 0.5)',
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              )
+                            })()
                           ) : null}
                         </td>
                       </tr>
@@ -2896,7 +3319,7 @@ export default function Review() {
                             <tr key={idx}>
                               <td style={styles.searchTd}>{item.description}</td>
                               <td style={styles.searchTdRight}>
-                                {item.unit_price ? `£${item.unit_price.toFixed(2)}` : '—'}
+                                {item.unit_price != null ? `£${item.unit_price.toFixed(2)}` : '—'}
                               </td>
                               <td style={styles.searchTd}>{item.unit || '—'}</td>
                               <td style={styles.searchTd}>{item.pack_info || '—'}</td>
@@ -2923,6 +3346,52 @@ export default function Review() {
             )}
 
             <button onClick={() => setShowSearchModal(false)} style={styles.closeBtn}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Stock Modal */}
+      {showBulkStockModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowBulkStockModal(false)}>
+          <div style={{ ...styles.modal, maxWidth: '400px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: '1rem' }}>Bulk Stock Update</h3>
+            <p style={{ marginBottom: '1.5rem', color: '#666' }}>
+              Mark all line items on this invoice as:
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <button
+                onClick={() => handleBulkStockUpdate(true)}
+                style={{
+                  ...styles.saveBtn,
+                  padding: '1rem',
+                  background: '#28a745',
+                  fontSize: '0.95rem'
+                }}
+              >
+                Mark All as Stock
+              </button>
+              <button
+                onClick={() => handleBulkStockUpdate(false)}
+                style={{
+                  ...styles.saveBtn,
+                  padding: '1rem',
+                  background: '#dc3545',
+                  fontSize: '0.95rem'
+                }}
+              >
+                Mark All as Non-Stock
+              </button>
+              <button
+                onClick={() => setShowBulkStockModal(false)}
+                style={{
+                  ...styles.backBtn,
+                  padding: '0.75rem',
+                  marginTop: '0.5rem'
+                }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2994,17 +3463,18 @@ const styles: Record<string, React.CSSProperties> = {
   lineItemsSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
   lineItemsTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.95rem' },
   th: { textAlign: 'left', padding: '0.75rem 0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#f8f9fa' },
-  td: { padding: '0.75rem 0.5rem', borderBottom: '1px solid #eee' },
+  td: { padding: '0.75rem 0.5rem', borderBottom: '1px solid #eee', verticalAlign: 'middle' },
   tableInput: { padding: '0.35rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.9rem', width: '100%' },
   smallBtn: { padding: '0.35rem 0.75rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginRight: '0.25rem', fontSize: '0.8rem' },
   smallBtnCancel: { padding: '0.35rem 0.75rem', background: '#999', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' },
   editBtn: { padding: '0.35rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' },
+  iconBtn: { padding: '0.35rem 0.5rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: '32px', height: '32px' },
   noItems: { color: '#999', fontStyle: 'italic', marginTop: '0.5rem' },
   status: { marginTop: '1rem', padding: '0.75rem', background: '#f5f5f5', borderRadius: '6px', color: '#666', fontSize: '0.9rem' },
   docTypeBadge: { marginLeft: '1rem', padding: '0.25rem 0.5rem', background: '#17a2b8', color: 'white', borderRadius: '4px', fontSize: '0.75rem' },
   actions: { display: 'flex', gap: '0.75rem', marginTop: '1rem' },
-  saveBtn: { flex: 1, padding: '0.75rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
-  confirmBtn: { flex: 1, padding: '0.75rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' },
+  saveBtn: { flex: 1, padding: '1.25rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '1rem' },
+  confirmBtn: { flex: 1, padding: '1.25rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '1rem' },
   secondaryActions: { display: 'flex', gap: '0.75rem', marginTop: '0.75rem' },
   deleteBtn: { flex: 1, padding: '0.5rem', background: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' },
   rawOcrBtn: { flex: 1, padding: '0.5rem', background: '#6c757d', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.85rem' },
@@ -3028,8 +3498,8 @@ const styles: Record<string, React.CSSProperties> = {
   rawOcrTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.85rem' },
   rawOcrTh: { textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#e9ecef' },
   rawOcrTd: { padding: '0.5rem', borderBottom: '1px solid #eee', verticalAlign: 'top', wordBreak: 'break-word', maxWidth: '300px' },
-  lineItemPreviewCell: { padding: '0.5rem', background: '#f8f9fa', borderBottom: '1px solid #eee' },
-  lineItemPreviewContainer: { maxWidth: '100%', overflow: 'hidden', borderRadius: '4px', border: '2px solid #ffc107', background: '#fff' },
+  lineItemPreviewCell: { padding: '0.5rem', background: '#f8f9fa', borderBottom: '1px solid #eee', textAlign: 'center' },
+  lineItemPreviewContainer: { width: '100%', overflow: 'hidden', display: 'inline-block' },
   lineItemPreviewCrop: { width: '100%', backgroundRepeat: 'no-repeat' },
   scaleBtn: { padding: '0.25rem', background: 'transparent', borderWidth: '1px', borderStyle: 'solid', borderColor: '#ddd', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666' },
   scaleBtnActive: { background: '#e8f5e9', borderColor: '#28a745' },

@@ -392,7 +392,8 @@ class NewbookSyncService:
                         }
                     )
                 else:
-                    # Past dates - insert only if doesn't exist (using ON CONFLICT DO NOTHING)
+                    # Past dates - insert if new, or update is_forecast flag if already exists
+                    # This ensures dates that were previously forecast get marked as historical
                     stmt = insert(NewbookDailyOccupancy).values(
                         kitchen_id=self.kitchen_id,
                         date=entry_date,
@@ -406,7 +407,13 @@ class NewbookSyncService:
                         dinner_allocation_netvalue=allocs.get("dinner_netvalue"),
                         is_forecast=False,
                         fetched_at=datetime.utcnow()
-                    ).on_conflict_do_nothing(constraint="uq_newbook_occupancy_per_day")
+                    ).on_conflict_do_update(
+                        constraint="uq_newbook_occupancy_per_day",
+                        set_={
+                            "is_forecast": False,
+                            "fetched_at": datetime.utcnow()
+                        }
+                    )
 
                 await self.db.execute(stmt)
                 records_count += 1

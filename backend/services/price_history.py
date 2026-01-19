@@ -540,6 +540,18 @@ class PriceHistoryService:
             supplier_id_val = row.supplier_id
 
             # Get most recent price, invoice info, and unit
+            # Match by first line of description only
+            recent_conditions = [
+                Invoice.kitchen_id == self.kitchen_id,
+                LineItem.invoice_id == Invoice.id,
+                Invoice.supplier_id == supplier_id_val,
+                LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
+            ]
+            if description:
+                recent_conditions.append(
+                    func.split_part(LineItem.description, '\n', 1) == description
+                )
+
             recent_query = (
                 select(
                     LineItem.unit_price,
@@ -547,13 +559,7 @@ class PriceHistoryService:
                     Invoice.invoice_number,
                     LineItem.unit
                 )
-                .where(and_(
-                    Invoice.kitchen_id == self.kitchen_id,
-                    LineItem.invoice_id == Invoice.id,
-                    Invoice.supplier_id == supplier_id_val,
-                    LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
-                    LineItem.description == description if description else True,
-                ))
+                .where(and_(*recent_conditions))
                 .order_by(desc(Invoice.invoice_date))
                 .limit(1)
             )
@@ -566,17 +572,23 @@ class PriceHistoryService:
             unit = recent_row[3] if recent_row else None
 
             # Get earliest price in period for change detection
+            # Match by first line of description only
+            earliest_conditions = [
+                Invoice.kitchen_id == self.kitchen_id,
+                LineItem.invoice_id == Invoice.id,
+                Invoice.supplier_id == supplier_id_val,
+                Invoice.invoice_date >= date_from,
+                Invoice.invoice_date <= date_to,
+                LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
+            ]
+            if description:
+                earliest_conditions.append(
+                    func.split_part(LineItem.description, '\n', 1) == description
+                )
+
             earliest_query = (
                 select(LineItem.unit_price)
-                .where(and_(
-                    Invoice.kitchen_id == self.kitchen_id,
-                    LineItem.invoice_id == Invoice.id,
-                    Invoice.supplier_id == supplier_id_val,
-                    Invoice.invoice_date >= date_from,
-                    Invoice.invoice_date <= date_to,
-                    LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
-                    LineItem.description == description if description else True,
-                ))
+                .where(and_(*earliest_conditions))
                 .order_by(Invoice.invoice_date)
                 .limit(1)
             )

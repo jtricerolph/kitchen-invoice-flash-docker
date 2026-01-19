@@ -3,6 +3,7 @@ import { useState, useEffect, createContext, useContext } from 'react'
 import Login from './pages/Login'
 import Settings from './pages/Settings'
 import NewbookData from './pages/NewbookData'
+import ResosData from './pages/ResosData'
 import Dashboard from './components/Dashboard'
 import Upload from './components/Upload'
 import InvoiceList from './components/InvoiceList'
@@ -157,6 +158,12 @@ function App() {
               }
             />
             <Route
+              path="/resos"
+              element={
+                token ? (isPageAccessible('/resos') ? <ResosData /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/search/invoices"
               element={
                 token ? (isPageAccessible('/search') ? <SearchInvoices /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -217,8 +224,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               <span style={styles.navLink}>Invoices ▾</span>
               {invoicesOpen && (
                 <div style={styles.dropdown}>
-                  {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Incoming/Processing</a>}
-                  {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Weekly Tables</a>}
+                  {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Pending Invoices</a>}
+                  {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
                   {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
                 </div>
               )}
@@ -233,8 +240,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               <span style={styles.navLink}>Search ▾</span>
               {searchOpen && (
                 <div style={styles.dropdown}>
-                  <a href="/search/invoices" style={styles.dropdownLink}>Search Invoices</a>
-                  <a href="/search/line-items" style={styles.dropdownLink}>Search Line Items</a>
+                  <a href="/search/invoices" style={styles.dropdownLink}>Invoices</a>
+                  <a href="/search/line-items" style={styles.dropdownLink}>Line Items</a>
                   <a href="/search/definitions" style={styles.dropdownLink}>Product Definitions</a>
                 </div>
               )}
@@ -300,6 +307,7 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute',
     top: '100%',
     left: 0,
+    marginTop: '0.5rem',
     background: '#2d2d44',
     borderRadius: '4px',
     padding: '0.5rem 0',

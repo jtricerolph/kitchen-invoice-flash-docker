@@ -36,6 +36,20 @@ class Kitchen(Base):
         "NewbookRoomCategory", back_populates="kitchen", cascade="all, delete-orphan"
     )
 
+    # Resos relationships
+    resos_bookings: Mapped[list["ResosBooking"]] = relationship(
+        "ResosBooking", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    resos_daily_stats: Mapped[list["ResosDailyStats"]] = relationship(
+        "ResosDailyStats", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    resos_opening_hours: Mapped[list["ResosOpeningHour"]] = relationship(
+        "ResosOpeningHour", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+    resos_sync_logs: Mapped[list["ResosSyncLog"]] = relationship(
+        "ResosSyncLog", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -59,3 +73,4 @@ from .invoice import Invoice
 from .gp import RevenueEntry, GPPeriod
 from .settings import KitchenSettings
 from .newbook import NewbookGLAccount, NewbookDailyRevenue, NewbookDailyOccupancy, NewbookSyncLog, NewbookRoomCategory
+from .resos import ResosBooking, ResosDailyStats, ResosOpeningHour, ResosSyncLog

@@ -249,18 +249,41 @@ export default function SearchLineItems() {
 
   const renderPriceStatus = (item: LineItemSearchItem) => {
     const config = getPriceStatusConfig(item.price_change_status)
-    if (!config.icon || !item.price_change_percent) return null
+    if (!config.icon) return null
 
-    const isIncrease = item.price_change_percent > 0
-    const arrow = isIncrease ? '▲' : '▼'
-    const color = isIncrease ? '#ef4444' : '#22c55e' // Red for increase, green for decrease
+    // Show icon for consistent prices (green tick)
+    if (item.price_change_status === 'consistent' || item.price_change_status === 'acknowledged') {
+      return (
+        <div style={{ fontSize: '0.75rem', marginTop: '2px', color: config.color }}>
+          <span style={{ fontWeight: 'bold' }}>{config.icon}</span>
+        </div>
+      )
+    }
 
-    return (
-      <div style={{ fontSize: '0.75rem', marginTop: '2px', color }}>
-        <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
-        {Math.abs(item.price_change_percent).toFixed(1)}%
-      </div>
-    )
+    // Show icon + percentage for amber/red status with actual price changes
+    if ((item.price_change_status === 'amber' || item.price_change_status === 'red') && item.price_change_percent !== null && item.price_change_percent !== 0) {
+      const isIncrease = item.price_change_percent > 0
+      const arrow = isIncrease ? '▲' : '▼'
+      const color = isIncrease ? '#ef4444' : '#22c55e' // Red for increase, green for decrease
+
+      return (
+        <div style={{ fontSize: '0.75rem', marginTop: '2px', color }}>
+          <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
+          {Math.abs(item.price_change_percent).toFixed(1)}%
+        </div>
+      )
+    }
+
+    // Show just the icon for amber/red without percentage
+    if (item.price_change_status === 'amber' || item.price_change_status === 'red') {
+      return (
+        <div style={{ fontSize: '0.75rem', marginTop: '2px', color: config.color }}>
+          <span style={{ fontWeight: 'bold' }}>{config.icon}</span>
+        </div>
+      )
+    }
+
+    return null
   }
 
   const clearSearch = () => {

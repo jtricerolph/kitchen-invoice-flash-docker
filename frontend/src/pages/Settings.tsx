@@ -39,6 +39,18 @@ interface NewbookSettingsData {
   newbook_dinner_vat_rate: string | null
 }
 
+interface ResosSettingsData {
+  resos_api_key_set: boolean
+  resos_last_sync: string | null
+  resos_auto_sync_enabled: boolean
+  resos_large_group_threshold: number
+  resos_note_keywords: string | null
+  resos_allergy_keywords: string | null
+  resos_custom_field_mapping: Record<string, string> | null
+  resos_opening_hours_mapping: Array<{resos_id: string; display_name: string; actual_end: string}> | null
+  resos_restaurant_table_entities: string | null
+}
+
 interface GLAccount {
   id: number
   gl_account_id: string
@@ -70,7 +82,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'dext' | 'newbook' | 'sambapos' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -211,6 +223,21 @@ export default function Settings() {
   const [historicalDateFrom, setHistoricalDateFrom] = useState(yesterdayStr)
   const [historicalDateTo, setHistoricalDateTo] = useState(yesterdayStr)
 
+  // Resos state
+  const [resosApiKey, setResosApiKey] = useState('')
+  const [resosLargeGroupThreshold, setResosLargeGroupThreshold] = useState(8)
+  const [resosNoteKeywords, setResosNoteKeywords] = useState('')
+  const [resosAllergyKeywords, setResosAllergyKeywords] = useState('')
+  const [resosTestStatus, setResosTestStatus] = useState<string | null>(null)
+  const [resosSaveMessage, setResosSaveMessage] = useState<string | null>(null)
+  const [customFields, setCustomFields] = useState<Array<{_id: string; name: string}>>([])
+  const [openingHours, setOpeningHours] = useState<Array<{_id: string; name: string; startTime: string; endTime: string}>>([])
+  const [customFieldMapping, setCustomFieldMapping] = useState<Record<string, string>>({})
+  const [openingHoursMapping, setOpeningHoursMapping] = useState<Array<{resos_id: string; display_name: string; actual_end: string}>>([])
+  const [showHistoricalResosModal, setShowHistoricalResosModal] = useState(false)
+  const [historicalResosDateFrom, setHistoricalResosDateFrom] = useState(yesterdayStr)
+  const [historicalResosDateTo, setHistoricalResosDateTo] = useState(yesterdayStr)
+
   // SambaPOS state
   const [sambaDbHost, setSambaDbHost] = useState('')
   const [sambaDbPort, setSambaDbPort] = useState('1433')
@@ -284,6 +311,25 @@ export default function Settings() {
       return data
     },
     staleTime: 0, // Always fetch fresh data
+  })
+
+  // Fetch Resos settings
+  const { data: resosSettings, error: resosError, isLoading: resosLoading } = useQuery<ResosSettingsData>({
+    queryKey: ['resos-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/resos/settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error('Resos settings fetch failed:', res.status, errorText)
+        throw new Error(`Failed to fetch: ${res.status}`)
+      }
+      const data = await res.json()
+      console.log('Resos settings loaded:', data)
+      return data
+    },
+    staleTime: 0,
   })
 
   // Fetch GL accounts
@@ -551,6 +597,36 @@ export default function Settings() {
       setSambaExcludedItems(new Set(sambaSettings.sambapos_excluded_items || []))
     }
   }, [sambaSettings])
+
+  useEffect(() => {
+    if (resosSettings) {
+      setResosLargeGroupThreshold(resosSettings.resos_large_group_threshold || 8)
+      setResosNoteKeywords(resosSettings.resos_note_keywords || '')
+      setResosAllergyKeywords(resosSettings.resos_allergy_keywords || '')
+      setCustomFieldMapping(resosSettings.resos_custom_field_mapping || {})
+      setOpeningHoursMapping(resosSettings.resos_opening_hours_mapping || [])
+
+      // Auto-fetch custom fields if mapping exists but fields list is empty
+      if (resosSettings.resos_custom_field_mapping && Object.keys(resosSettings.resos_custom_field_mapping).length > 0 && customFields.length === 0) {
+        fetch('/api/resos/custom-fields', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+          .then(res => res.json())
+          .then(data => setCustomFields(data.custom_fields || []))
+          .catch(err => console.error('Failed to auto-fetch custom fields:', err))
+      }
+
+      // Auto-fetch opening hours if mapping exists but hours list is empty
+      if (resosSettings.resos_opening_hours_mapping && resosSettings.resos_opening_hours_mapping.length > 0 && openingHours.length === 0) {
+        fetch('/api/resos/opening-hours', {
+          headers: { Authorization: `Bearer ${token}` }
+        })
+          .then(res => res.json())
+          .then(data => setOpeningHours(data.opening_hours || []))
+          .catch(err => console.error('Failed to auto-fetch opening hours:', err))
+      }
+    }
+  }, [resosSettings])
 
   // Mutations
   const updateMutation = useMutation({
@@ -1373,6 +1449,7 @@ export default function Settings() {
     { id: 'email', label: 'Email Configuration', restrictPath: '/settings-email' },
     { id: 'dext', label: 'Dext Integration', restrictPath: '/settings-dext' },
     { id: 'newbook', label: 'Newbook PMS', restrictPath: '/settings-newbook' },
+    { id: 'resos', label: 'Resos Bookings', restrictPath: '/settings-resos' },
     { id: 'sambapos', label: 'SambaPOS EPOS', restrictPath: '/settings-sambapos' },
     { id: 'suppliers', label: 'Suppliers', restrictPath: '/settings-suppliers' },
     { id: 'search', label: 'Search & Pricing', restrictPath: '/settings-search' },
@@ -1602,6 +1679,7 @@ export default function Settings() {
               {[
                 { path: '/gp-report', label: 'GP Report' },
                 { path: '/newbook', label: 'Newbook Data' },
+                { path: '/resos', label: 'Resos Booking Data' },
               ].map(({ path, label }) => (
                 <label key={path} style={styles.checkboxLabel}>
                   <input
@@ -1630,6 +1708,7 @@ export default function Settings() {
                 { path: '/settings-display', label: 'Display Settings' },
                 { path: '/settings-azure', label: 'Azure OCR' },
                 { path: '/settings-newbook', label: 'Newbook PMS' },
+                { path: '/settings-resos', label: 'Resos Bookings' },
                 { path: '/settings-sambapos', label: 'SambaPOS EPOS' },
                 { path: '/settings-suppliers', label: 'Suppliers' },
                 { path: '/settings-nextcloud', label: 'Nextcloud Storage' },
@@ -2307,6 +2386,448 @@ export default function Settings() {
               </a>
               <p style={{ ...styles.hint, marginTop: '0.5rem' }}>View synced revenue, charges, and occupancy data from Newbook.</p>
             </div>
+          </div>
+        )}
+
+        {/* Resos Bookings Section */}
+        {activeSection === 'resos' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Resos Restaurant Bookings Integration</h2>
+            <p style={styles.hint}>Connect to Resos to fetch booking data, flag notable reservations, and track covers.</p>
+
+            {resosLoading && <div style={{ padding: '0.5rem', background: '#fff3cd', borderRadius: '4px', marginBottom: '1rem' }}>Loading Resos settings...</div>}
+            {resosError && <div style={{ padding: '0.5rem', background: '#f8d7da', color: '#721c24', borderRadius: '4px', marginBottom: '1rem' }}>Failed to load Resos settings</div>}
+
+            <h3 style={styles.subsectionTitle}>API Configuration</h3>
+
+            <div style={styles.formGroup}>
+              <label style={styles.label}>Resos API Key *</label>
+              <input
+                type="password"
+                value={resosApiKey}
+                onChange={(e) => setResosApiKey(e.target.value)}
+                placeholder={resosSettings?.resos_api_key_set ? '••••••••••••' : 'Enter API key'}
+                style={styles.input}
+              />
+              {resosSettings?.resos_api_key_set && <small style={styles.hint}>API key is configured (enter new value to update)</small>}
+            </div>
+
+            <button
+              onClick={async () => {
+                try {
+                  setResosTestStatus('Testing...')
+                  const res = await fetch('/api/resos/test-connection', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}` }
+                  })
+                  if (res.ok) {
+                    setResosTestStatus('✓ Connection successful')
+                  } else {
+                    const data = await res.json()
+                    setResosTestStatus(`✗ Connection failed: ${data.detail || 'Unknown error'}`)
+                  }
+                } catch (error) {
+                  setResosTestStatus(`✗ Connection failed: ${error}`)
+                }
+                setTimeout(() => setResosTestStatus(null), 5000)
+              }}
+              style={styles.secondaryButton}
+            >
+              Test Connection
+            </button>
+            {resosTestStatus && <div style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>{resosTestStatus}</div>}
+
+            <h3 style={styles.subsectionTitle}>Flagging Configuration</h3>
+
+            <div style={{ ...styles.formGroup, marginBottom: '1.5rem' }}>
+              <label style={styles.label}>Large Group Threshold</label>
+              <input
+                type="number"
+                value={resosLargeGroupThreshold}
+                onChange={(e) => setResosLargeGroupThreshold(parseInt(e.target.value) || 8)}
+                style={{ ...styles.input, maxWidth: '150px' }}
+              />
+              <small style={{ ...styles.hint, display: 'block', marginTop: '0.5rem' }}>Flag bookings with this many people or more (default: 8)</small>
+            </div>
+
+            <div style={{ ...styles.formGroup, marginBottom: '1.5rem' }}>
+              <label style={styles.label}>Note Keywords (pipe-separated)</label>
+              <input
+                type="text"
+                value={resosNoteKeywords}
+                onChange={(e) => setResosNoteKeywords(e.target.value)}
+                placeholder="birthday|anniversary|proposal|vip"
+                style={{ ...styles.input, maxWidth: '600px' }}
+              />
+              <small style={{ ...styles.hint, display: 'block', marginTop: '0.5rem' }}>Flag bookings with these keywords in notes</small>
+            </div>
+
+            <div style={{ ...styles.formGroup, marginBottom: '1.5rem' }}>
+              <label style={styles.label}>Allergy Keywords (pipe-separated)</label>
+              <input
+                type="text"
+                value={resosAllergyKeywords}
+                onChange={(e) => setResosAllergyKeywords(e.target.value)}
+                placeholder="gluten|dairy|nut|shellfish|vegan"
+                style={{ ...styles.input, maxWidth: '600px' }}
+              />
+              <small style={{ ...styles.hint, display: 'block', marginTop: '0.5rem' }}>Additional allergy terms to detect in notes (for "Other Allergies" free-text field)</small>
+            </div>
+
+            <h3 style={styles.subsectionTitle}>Custom Field Mapping</h3>
+            <p style={styles.hint}>Map Resos custom fields to system fields. Fetch from API to populate available fields.</p>
+
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/resos/custom-fields', {
+                    headers: { Authorization: `Bearer ${token}` }
+                  })
+                  if (res.ok) {
+                    const data = await res.json()
+                    setCustomFields(data.custom_fields || [])
+                    setResosSaveMessage('Custom fields fetched successfully')
+                  } else {
+                    setResosSaveMessage('Failed to fetch custom fields')
+                  }
+                } catch (error) {
+                  setResosSaveMessage(`Error: ${error}`)
+                }
+                setTimeout(() => setResosSaveMessage(null), 5000)
+              }}
+              style={styles.secondaryButton}
+            >
+              Fetch Custom Fields from Resos
+            </button>
+
+            {customFields.length > 0 && (
+              <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {[
+                  { key: 'booking_number', label: 'Hotel Booking #', hint: 'Newbook/hotel booking reference number from Resos custom field' },
+                  { key: 'hotel_guest', label: 'Hotel Guest', hint: 'Yes/No field indicating if diner is a hotel guest' },
+                  { key: 'dbb', label: 'DBB (Dinner B&B)', hint: 'Yes/No field indicating Dinner Bed & Breakfast package guests' },
+                  { key: 'package', label: 'Package', hint: 'Yes/No field indicating package deal bookings (e.g., special offers)' },
+                  { key: 'exclude', label: 'Group/Exclude', hint: 'Free-text field for group codes and exclusions (e.g., "G#123" for groups)' },
+                  { key: 'allergies', label: 'Allergies (Predefined)', hint: 'Multi-select field with predefined allergy options (e.g., Gluten, Dairy, Nuts)' },
+                  { key: 'allergies_other', label: 'Other Allergies', hint: 'Free-text field for custom allergy notes not in predefined list' },
+                ].map((field) => (
+                  <div key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <label style={{ fontWeight: '500', color: '#333', fontSize: '0.9rem' }}>{field.label}</label>
+                    <select
+                      value={customFieldMapping[field.key] || ''}
+                      onChange={(e) => setCustomFieldMapping({...customFieldMapping, [field.key]: e.target.value})}
+                      style={{ ...styles.input, maxWidth: '400px', fontSize: '0.85rem' }}
+                    >
+                      <option value="">-- Select Field --</option>
+                      {customFields.map((customField) => (
+                        <option key={customField._id} value={customField._id}>
+                          {customField.name}
+                        </option>
+                      ))}
+                    </select>
+                    <small style={{ ...styles.hint, marginTop: 0, fontSize: '0.75rem' }}>{field.hint}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <h3 style={styles.subsectionTitle}>Opening Hours Mapping</h3>
+            <p style={styles.hint}>
+              Map regular service periods (excludes special/one-off periods). Resos extends closing times by the default booking length
+              to allow late bookings - the Actual End field shows the calculated time when kitchen closes for new arrivals.
+            </p>
+
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/resos/opening-hours', {
+                    headers: { Authorization: `Bearer ${token}` }
+                  })
+                  if (res.ok) {
+                    const data = await res.json()
+                    // Backend API already filters special periods with onlySpecial=false parameter
+                    setOpeningHours(data.opening_hours || [])
+                    setResosSaveMessage(`Opening hours fetched: ${data.opening_hours?.length || 0} service periods`)
+                  } else {
+                    setResosSaveMessage('Failed to fetch opening hours')
+                  }
+                } catch (error) {
+                  setResosSaveMessage(`Error: ${error}`)
+                }
+                setTimeout(() => setResosSaveMessage(null), 5000)
+              }}
+              style={styles.secondaryButton}
+            >
+              Fetch Opening Hours from Resos
+            </button>
+
+            {openingHours.length > 0 && (
+              <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #ddd' }}>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Day</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Period Name</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Start Time</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>End Time (Resos)</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Actual End</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Display Name</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Service Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {openingHours.map((hour) => {
+                      const mapping = openingHoursMapping.find(m => m.resos_id === hour._id)
+
+                      return (
+                        <tr key={hour._id} style={{ borderBottom: '1px solid #eee' }}>
+                          <td style={{ padding: '0.5rem' }}>{hour.dayName || '-'}</td>
+                          <td style={{ padding: '0.5rem' }}>{hour.name}</td>
+                          <td style={{ padding: '0.5rem' }}>{hour.startTime || '-'}</td>
+                          <td style={{ padding: '0.5rem' }}>{hour.endTime || '-'}</td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <input
+                              type="time"
+                              value={mapping?.actual_end || hour.actualEnd || ''}
+                              onChange={(e) => {
+                                const newMapping = openingHoursMapping.filter(m => m.resos_id !== hour._id)
+                                newMapping.push({
+                                  resos_id: hour._id,
+                                  display_name: mapping?.display_name || hour.name,
+                                  actual_end: e.target.value,
+                                  service_type: mapping?.service_type || ''
+                                })
+                                setOpeningHoursMapping(newMapping)
+                              }}
+                              style={{ padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                              placeholder="Enter actual end time"
+                            />
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <input
+                              type="text"
+                              value={mapping?.display_name || ''}
+                              onChange={(e) => {
+                                const newMapping = openingHoursMapping.filter(m => m.resos_id !== hour._id)
+                                newMapping.push({
+                                  resos_id: hour._id,
+                                  display_name: e.target.value,
+                                  actual_end: mapping?.actual_end || hour.actualEnd || '',
+                                  service_type: mapping?.service_type || ''
+                                })
+                                setOpeningHoursMapping(newMapping)
+                              }}
+                              placeholder={hour.name}
+                              style={{ padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px', width: '100%' }}
+                            />
+                          </td>
+                          <td style={{ padding: '0.5rem' }}>
+                            <select
+                              value={mapping?.service_type || ''}
+                              onChange={(e) => {
+                                const newMapping = openingHoursMapping.filter(m => m.resos_id !== hour._id)
+                                newMapping.push({
+                                  resos_id: hour._id,
+                                  display_name: mapping?.display_name || hour.name,
+                                  actual_end: mapping?.actual_end || hour.actualEnd || '',
+                                  service_type: e.target.value
+                                })
+                                setOpeningHoursMapping(newMapping)
+                              }}
+                              style={{ padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px', width: '120px' }}
+                            >
+                              <option value="">-- Select --</option>
+                              <option value="breakfast">Breakfast</option>
+                              <option value="lunch">Lunch</option>
+                              <option value="dinner">Dinner</option>
+                              <option value="other">Other</option>
+                            </select>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <small style={{ ...styles.hint, display: 'block', marginTop: '0.75rem' }}>
+                  <strong>Actual End:</strong> Resos extends end times to allow late bookings. The system auto-calculates this by subtracting booking duration, or you can override manually.<br />
+                  <strong>Display Name:</strong> Customize how this period appears in reports (e.g., "Dinner Service" instead of "Dinner").<br />
+                  <strong>Service Type:</strong> Map periods to Breakfast/Lunch/Dinner for reporting and SambaPOS integration.
+                </small>
+              </div>
+            )}
+
+            <h3 style={styles.subsectionTitle}>Sync Configuration</h3>
+
+            <div style={styles.formGroup}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={resosSettings?.resos_auto_sync_enabled || false}
+                  readOnly
+                />
+                Enable automatic daily sync (4:30 AM)
+              </label>
+              <small style={styles.hint}>This setting is saved with the main settings below</small>
+            </div>
+
+            {resosSettings?.resos_last_sync && (
+              <div style={styles.formGroup}>
+                <small style={styles.hint}>Last sync: {new Date(resosSettings.resos_last_sync).toLocaleString()}</small>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+              <button
+                onClick={async () => {
+                  try {
+                    setResosSaveMessage('Syncing forecast...')
+                    const res = await fetch('/api/resos/sync/forecast', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` }
+                    })
+                    if (res.ok) {
+                      const data = await res.json()
+                      setResosSaveMessage(`✓ Forecast synced: ${data.bookings_fetched} bookings`)
+                      queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
+                    } else {
+                      setResosSaveMessage('✗ Forecast sync failed')
+                    }
+                  } catch (error) {
+                    setResosSaveMessage(`✗ Error: ${error}`)
+                  }
+                  setTimeout(() => setResosSaveMessage(null), 10000)
+                }}
+                style={styles.secondaryButton}
+              >
+                Sync Forecast (Next 60 Days)
+              </button>
+
+              <button
+                onClick={() => setShowHistoricalResosModal(true)}
+                style={styles.secondaryButton}
+              >
+                Sync Historical (Custom Range)
+              </button>
+            </div>
+
+            {resosSaveMessage && (
+              <div style={{ marginTop: '1rem', padding: '0.75rem', background: resosSaveMessage.includes('✓') ? '#d4edda' : '#f8d7da', borderRadius: '4px' }}>
+                {resosSaveMessage}
+              </div>
+            )}
+
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/resos/settings', {
+                    method: 'PATCH',
+                    headers: {
+                      Authorization: `Bearer ${token}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                      resos_api_key: resosApiKey || undefined,
+                      resos_large_group_threshold: resosLargeGroupThreshold,
+                      resos_note_keywords: resosNoteKeywords,
+                      resos_allergy_keywords: resosAllergyKeywords,
+                      resos_custom_field_mapping: customFieldMapping,
+                      resos_opening_hours_mapping: openingHoursMapping,
+                      resos_auto_sync_enabled: resosSettings?.resos_auto_sync_enabled
+                    })
+                  })
+                  if (res.ok) {
+                    setResosSaveMessage('✓ Settings saved successfully')
+                    queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
+                  } else {
+                    setResosSaveMessage('✗ Failed to save settings')
+                  }
+                } catch (error) {
+                  setResosSaveMessage(`✗ Error: ${error}`)
+                }
+                setTimeout(() => setResosSaveMessage(null), 5000)
+              }}
+              style={{ ...styles.button, marginTop: '2rem' }}
+            >
+              Save Resos Settings
+            </button>
+
+            {/* View Resos Data Link */}
+            <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid #e0e0e0' }}>
+              <a
+                href="/resos"
+                style={{
+                  display: 'inline-block',
+                  padding: '0.75rem 1.5rem',
+                  background: '#0066cc',
+                  color: 'white',
+                  textDecoration: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 500,
+                }}
+              >
+                View Resos Booking Data
+              </a>
+              <p style={{ ...styles.hint, marginTop: '0.5rem' }}>View synced booking data, covers, and flagged reservations from Resos.</p>
+            </div>
+
+            {showHistoricalResosModal && (
+              <div style={styles.modal}>
+                <div style={styles.modalContent}>
+                  <h3>Sync Historical Bookings</h3>
+                  <div style={styles.formGroup}>
+                    <label>From Date:</label>
+                    <input
+                      type="date"
+                      value={historicalResosDateFrom}
+                      onChange={(e) => setHistoricalResosDateFrom(e.target.value)}
+                      style={styles.input}
+                    />
+                  </div>
+                  <div style={styles.formGroup}>
+                    <label>To Date:</label>
+                    <input
+                      type="date"
+                      value={historicalResosDateTo}
+                      onChange={(e) => setHistoricalResosDateTo(e.target.value)}
+                      style={styles.input}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+                    <button
+                      onClick={async () => {
+                        try {
+                          setResosSaveMessage('Syncing historical data...')
+                          const res = await fetch(`/api/resos/sync/historical?from_date=${historicalResosDateFrom}&to_date=${historicalResosDateTo}`, {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${token}` }
+                          })
+                          if (res.ok) {
+                            const data = await res.json()
+                            setResosSaveMessage(`✓ Historical synced: ${data.bookings_fetched} bookings`)
+                            setShowHistoricalResosModal(false)
+                            queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
+                          } else {
+                            setResosSaveMessage('✗ Historical sync failed')
+                          }
+                        } catch (error) {
+                          setResosSaveMessage(`✗ Error: ${error}`)
+                        }
+                        setTimeout(() => setResosSaveMessage(null), 10000)
+                      }}
+                      style={styles.button}
+                    >
+                      Start Sync
+                    </button>
+                    <button
+                      onClick={() => setShowHistoricalResosModal(false)}
+                      style={styles.secondaryButton}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3542,6 +4063,25 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     borderRadius: '6px',
     cursor: 'pointer',
+  },
+  secondaryButton: {
+    padding: '0.5rem 1rem',
+    background: '#5bc0de',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+  },
+  button: {
+    padding: '0.75rem 1.5rem',
+    background: '#e94560',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: '500',
+    fontSize: '1rem',
   },
   statusMessage: {
     padding: '0.75rem',

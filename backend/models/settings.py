@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from sqlalchemy import String, DateTime, ForeignKey, Text, Boolean, Numeric, Integer
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -34,6 +35,23 @@ class KitchenSettings(Base):
     # VAT rates for calculating net from gross (e.g., 0.10 for 10% VAT)
     newbook_breakfast_vat_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True, default=Decimal("0.10"))
     newbook_dinner_vat_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True, default=Decimal("0.10"))
+
+    # Resos API Configuration
+    resos_api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    resos_last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resos_auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Resos Flagging Configuration
+    resos_large_group_threshold: Mapped[int] = mapped_column(Integer, default=8)
+    resos_note_keywords: Mapped[str | None] = mapped_column(Text, nullable=True)  # Pipe-separated: "birthday|anniversary|proposal"
+    resos_allergy_keywords: Mapped[str | None] = mapped_column(Text, nullable=True)  # Pipe-separated: "gluten|dairy|nut|shellfish"
+
+    # Resos Custom Field & Period Mapping
+    resos_custom_field_mapping: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # Format: {"booking_number": "field_id_123", ...}
+    resos_opening_hours_mapping: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # Format: [{"resos_id": "abc123", "display_name": "Lunch", "actual_end": "14:30"}, ...]
+
+    # Resos SambaPOS Integration
+    resos_restaurant_table_entities: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated entity names
 
     # SambaPOS MSSQL Connection
     sambapos_db_host: Mapped[str | None] = mapped_column(String(255), nullable=True)

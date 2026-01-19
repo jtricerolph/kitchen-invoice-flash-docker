@@ -13,6 +13,7 @@ from sqlalchemy import select
 from database import AsyncSessionLocal
 from models.settings import KitchenSettings
 from services.newbook_sync import NewbookSyncService
+from services.resos_sync import ResosSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,35 @@ async def run_daily_newbook_sync():
                 logger.info(f"Kitchen {settings.kitchen_id} sync completed: {results}")
             except Exception as e:
                 logger.error(f"Kitchen {settings.kitchen_id} sync failed: {e}")
+                # Continue with other kitchens
+
+
+async def run_daily_resos_sync():
+    """
+    Daily Resos sync job that runs for all kitchens with auto-sync enabled.
+    Scheduled to run at 4:30 AM server time.
+    """
+    logger.info("Starting daily Resos sync job")
+
+    async with AsyncSessionLocal() as db:
+        # Get all kitchens with Resos auto-sync enabled
+        result = await db.execute(
+            select(KitchenSettings).where(
+                KitchenSettings.resos_auto_sync_enabled == True,
+                KitchenSettings.resos_api_key.isnot(None)
+            )
+        )
+        settings_list = result.scalars().all()
+
+        logger.info(f"Found {len(settings_list)} kitchens with Resos auto-sync enabled")
+
+        for settings in settings_list:
+            try:
+                sync_service = ResosSyncService(settings.kitchen_id, db)
+                results = await sync_service.run_daily_sync()
+                logger.info(f"Kitchen {settings.kitchen_id} Resos sync completed: {results}")
+            except Exception as e:
+                logger.error(f"Kitchen {settings.kitchen_id} Resos sync failed: {e}")
                 # Continue with other kitchens
 
 
@@ -170,8 +200,17 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # Daily Resos sync at 4:30 AM
+    scheduler.add_job(
+        run_daily_resos_sync,
+        CronTrigger(hour=4, minute=30),
+        id="daily_resos_sync",
+        name="Daily Resos Booking Data Sync",
+        replace_existing=True
+    )
+
     scheduler.start()
-    logger.info("Scheduler started - backup at 3:00 AM, archival at 3:30 AM, Newbook sync at 4:00 AM")
+    logger.info("Scheduler started - backup at 3:00 AM, archival at 3:30 AM, Newbook sync at 4:00 AM, Resos sync at 4:30 AM")
 
 
 def stop_scheduler():

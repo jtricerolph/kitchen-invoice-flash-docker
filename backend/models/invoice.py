@@ -11,10 +11,10 @@ if TYPE_CHECKING:
 
 
 class InvoiceStatus(str, enum.Enum):
-    PENDING = "pending"           # Uploaded, awaiting OCR
-    PROCESSED = "processed"       # OCR complete, awaiting review
-    REVIEWED = "reviewed"         # User has reviewed/corrected
-    CONFIRMED = "confirmed"       # Confirmed and included in GP
+    PENDING = "PENDING"           # Uploaded, awaiting OCR
+    PROCESSED = "PROCESSED"       # OCR complete, awaiting review
+    REVIEWED = "REVIEWED"         # User has reviewed/corrected
+    CONFIRMED = "CONFIRMED"       # Confirmed and included in GP
 
 
 class Invoice(Base):
