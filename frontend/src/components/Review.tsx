@@ -1347,130 +1347,24 @@ export default function Review() {
             </div>
           )}
 
-          <h3>Invoice Details</h3>
+          {/* Header: Title | Status Badge */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <h3 style={{ margin: 0 }}>Invoice Details</h3>
+            <span style={{
+              padding: '0.4rem 0.8rem',
+              borderRadius: '4px',
+              fontSize: '0.85rem',
+              fontWeight: '600',
+              background: invoice.status === 'confirmed' ? '#22c55e' : invoice.status === 'reviewed' ? '#8b5cf6' : invoice.status === 'processed' ? '#3b82f6' : '#f59e0b',
+              color: 'white'
+            }}>
+              {invoice.status.toUpperCase()}
+              {invoice.document_type === 'delivery_note' && ' (DN)'}
+            </span>
+          </div>
 
           <div style={styles.form}>
-            <div style={styles.row}>
-              <label style={{ ...styles.label, flex: 1 }}>
-                Invoice Number
-                <div style={styles.inputWithEye}>
-                  <input
-                    type="text"
-                    value={invoiceNumber}
-                    onChange={(e) => setInvoiceNumber(e.target.value)}
-                    style={styles.input}
-                    placeholder="e.g., INV-12345"
-                  />
-                  {getFieldBoundingBox('InvoiceId') && (
-                    <button
-                      type="button"
-                      onClick={() => handleHighlightField('InvoiceId')}
-                      style={{
-                        ...styles.eyeBtn,
-                        ...(highlightedField === 'InvoiceId' ? styles.eyeBtnActive : {})
-                      }}
-                      title="Show on document"
-                    >
-                      👁
-                    </button>
-                  )}
-                </div>
-              </label>
-
-              <label style={{ ...styles.label, flex: 1 }}>
-                Invoice Date
-                {(() => {
-                  const dateWarning = getDateWarning(invoiceDate || null, invoice?.status || '');
-                  return (
-                    <>
-                      <div style={styles.inputWithEye}>
-                        <input
-                          type="date"
-                          value={invoiceDate}
-                          onChange={(e) => setInvoiceDate(e.target.value)}
-                          style={{ ...styles.input, ...dateWarningStyles[dateWarning] }}
-                        />
-                        {getFieldBoundingBox('InvoiceDate') && (
-                          <button
-                            type="button"
-                            onClick={() => handleHighlightField('InvoiceDate')}
-                            style={{
-                              ...styles.eyeBtn,
-                              ...(highlightedField === 'InvoiceDate' ? styles.eyeBtnActive : {})
-                            }}
-                            title="Show on document"
-                          >
-                            👁
-                          </button>
-                        )}
-                      </div>
-                      {dateWarning !== 'none' && (
-                        <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
-                          {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
-                        </span>
-                      )}
-                    </>
-                  );
-                })()}
-              </label>
-            </div>
-
-            <div style={styles.row}>
-              <label style={{ ...styles.label, flex: 1 }}>
-                Gross Total (£)
-                <div style={styles.inputWithEye}>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={total}
-                    onChange={(e) => setTotal(e.target.value)}
-                    style={styles.input}
-                    placeholder="Inc. VAT"
-                  />
-                  {getFieldBoundingBox('InvoiceTotal') && (
-                    <button
-                      type="button"
-                      onClick={() => handleHighlightField('InvoiceTotal')}
-                      style={{
-                        ...styles.eyeBtn,
-                        ...(highlightedField === 'InvoiceTotal' ? styles.eyeBtnActive : {})
-                      }}
-                      title="Show on document"
-                    >
-                      👁
-                    </button>
-                  )}
-                </div>
-              </label>
-
-              <label style={{ ...styles.label, flex: 1 }}>
-                Net Total (£)
-                <div style={styles.inputWithEye}>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={netTotal}
-                    onChange={(e) => setNetTotal(e.target.value)}
-                    style={styles.input}
-                    placeholder="Exc. VAT"
-                  />
-                  {getFieldBoundingBox('SubTotal') && (
-                    <button
-                      type="button"
-                      onClick={() => handleHighlightField('SubTotal')}
-                      style={{
-                        ...styles.eyeBtn,
-                        ...(highlightedField === 'SubTotal' ? styles.eyeBtnActive : {})
-                      }}
-                      title="Show on document"
-                    >
-                      👁
-                    </button>
-                  )}
-                </div>
-              </label>
-            </div>
-
+            {/* Supplier (full width) */}
             <div style={styles.label}>
               <span>Supplier</span>
               <div style={styles.supplierRow}>
@@ -1546,7 +1440,86 @@ export default function Review() {
               )}
             </div>
 
+            {/* Date | Type */}
             <div style={styles.row}>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Invoice Date
+                {(() => {
+                  const dateWarning = getDateWarning(invoiceDate || null, invoice?.status || '');
+                  return (
+                    <>
+                      <div style={styles.inputWithEye}>
+                        <input
+                          type="date"
+                          value={invoiceDate}
+                          onChange={(e) => setInvoiceDate(e.target.value)}
+                          style={{ ...styles.input, ...dateWarningStyles[dateWarning] }}
+                        />
+                        {getFieldBoundingBox('InvoiceDate') && (
+                          <button
+                            type="button"
+                            onClick={() => handleHighlightField('InvoiceDate')}
+                            style={{
+                              ...styles.eyeBtn,
+                              ...(highlightedField === 'InvoiceDate' ? styles.eyeBtnActive : {})
+                            }}
+                            title="Show on document"
+                          >
+                            👁
+                          </button>
+                        )}
+                      </div>
+                      {dateWarning !== 'none' && (
+                        <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
+                          {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
+              </label>
+
+              <label style={{ ...styles.label, flex: 1 }}>
+                Document Type
+                <select
+                  value={documentType}
+                  onChange={(e) => setDocumentType(e.target.value)}
+                  style={styles.input}
+                >
+                  <option value="invoice">Invoice</option>
+                  <option value="delivery_note">Delivery Note</option>
+                </select>
+              </label>
+            </div>
+
+            {/* Number | PO */}
+            <div style={styles.row}>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Invoice Number
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="text"
+                    value={invoiceNumber}
+                    onChange={(e) => setInvoiceNumber(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., INV-12345"
+                  />
+                  {getFieldBoundingBox('InvoiceId') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('InvoiceId')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'InvoiceId' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
+              </label>
+
               <label style={{ ...styles.label, flex: 1 }}>
                 Order/PO Number
                 <div style={styles.inputWithEye}>
@@ -1572,40 +1545,73 @@ export default function Review() {
                   )}
                 </div>
               </label>
+            </div>
+
+            {/* Net | Gross */}
+            <div style={styles.row}>
+              <label style={{ ...styles.label, flex: 1 }}>
+                Net Total (£)
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={netTotal}
+                    onChange={(e) => setNetTotal(e.target.value)}
+                    style={styles.input}
+                    placeholder="Exc. VAT"
+                  />
+                  {getFieldBoundingBox('SubTotal') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('SubTotal')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'SubTotal' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
+              </label>
 
               <label style={{ ...styles.label, flex: 1 }}>
-                Category
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  style={styles.input}
-                >
-                  <option value="food">Food</option>
-                  <option value="beverages">Beverages</option>
-                  <option value="supplies">Supplies</option>
-                  <option value="equipment">Equipment</option>
-                  <option value="other">Other</option>
-                </select>
+                Gross Total (£)
+                <div style={styles.inputWithEye}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={total}
+                    onChange={(e) => setTotal(e.target.value)}
+                    style={styles.input}
+                    placeholder="Inc. VAT"
+                  />
+                  {getFieldBoundingBox('InvoiceTotal') && (
+                    <button
+                      type="button"
+                      onClick={() => handleHighlightField('InvoiceTotal')}
+                      style={{
+                        ...styles.eyeBtn,
+                        ...(highlightedField === 'InvoiceTotal' ? styles.eyeBtnActive : {})
+                      }}
+                      title="Show on document"
+                    >
+                      👁
+                    </button>
+                  )}
+                </div>
               </label>
             </div>
 
+            {/* Notes */}
             <label style={styles.label}>
-              Document Type
-              <select
-                value={documentType}
-                onChange={(e) => setDocumentType(e.target.value)}
-                style={styles.input}
-              >
-                <option value="invoice">Invoice</option>
-                <option value="delivery_note">Delivery Note</option>
-              </select>
-            </label>
-
-            <label style={styles.label}>
-              Invoice Notes
-              <small style={{ marginLeft: '0.5rem', color: '#666', fontSize: '0.85em' }}>
-                (Optional - included in Dext email if configured)
-              </small>
+              <span>
+                Invoice Notes{' '}
+                <small style={{ color: '#666', fontSize: '0.85em' }}>
+                  (Optional, included in Dext etc.)
+                </small>
+              </span>
               <textarea
                 value={invoiceNotes}
                 onChange={(e) => setInvoiceNotes(e.target.value)}
@@ -1634,123 +1640,137 @@ export default function Review() {
             </label>
           </div>
 
-          <div style={styles.status}>
-            Current status: <strong>{invoice.status}</strong>
-            {invoice.document_type === 'delivery_note' && (
-              <span style={styles.docTypeBadge}>Delivery Note</span>
-            )}
-          </div>
-
-          <div style={styles.actions}>
-            <button
-              onClick={() => handleSave('reviewed')}
-              style={styles.saveBtn}
-              disabled={updateMutation.isPending}
-            >
-              Save Changes
-            </button>
-            <button
-              onClick={handleConfirm}
-              style={styles.confirmBtn}
-              disabled={updateMutation.isPending}
-            >
-              Confirm & DEXT
-            </button>
-            {invoice.status === 'confirmed' && (
-              <>
-                {invoice.dext_sent_at ? (
-                  // Show sent status always, resend button only if manual send is enabled
-                  settings?.dext_manual_send_enabled ? (
+          {/* Dext Status Block | Dext Button */}
+          {invoice.status === 'confirmed' && (
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '15px' }}>
+              {invoice.dext_sent_at ? (
+                <>
+                  <div style={{
+                    flex: 1,
+                    padding: '0.75rem 1rem',
+                    background: '#d4edda',
+                    borderRadius: '4px',
+                    border: '1px solid #c3e6cb',
+                    color: '#155724',
+                    fontSize: '0.9rem'
+                  }}>
+                    <div style={{ fontWeight: '500' }}>✓ Sent to Dext</div>
+                    <small style={{ fontSize: '0.75rem' }}>
+                      {new Date(invoice.dext_sent_at).toLocaleString()}
+                      {invoice.dext_sent_by_username && ` by ${invoice.dext_sent_by_username}`}
+                    </small>
+                  </div>
+                  {settings?.dext_manual_send_enabled && (
                     <button
                       onClick={() => setShowDextSendConfirm(true)}
                       style={{
                         padding: '0.75rem 1.5rem',
-                        background: '#d4edda',
+                        background: '#17a2b8',
+                        color: 'white',
+                        border: 'none',
                         borderRadius: '4px',
-                        border: '1px solid #c3e6cb',
-                        color: '#155724',
-                        fontSize: '0.95rem',
                         cursor: 'pointer',
-                        fontWeight: '500',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                        gap: '0.25rem'
+                        fontSize: '0.9rem',
+                        fontWeight: '500'
                       }}
                     >
-                      <span>✓ Sent to Dext - Click to Resend</span>
-                      <small style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>
-                        {new Date(invoice.dext_sent_at).toLocaleString()}
-                        {invoice.dext_sent_by_username && ` by ${invoice.dext_sent_by_username}`}
-                      </small>
+                      Resend to Dext
                     </button>
-                  ) : (
-                    <div style={{
-                      padding: '0.75rem 1.5rem',
-                      background: '#d4edda',
-                      borderRadius: '4px',
-                      border: '1px solid #c3e6cb',
-                      color: '#155724',
-                      fontSize: '0.95rem',
-                      fontWeight: '500',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
-                      gap: '0.25rem'
-                    }}>
-                      <span>✓ Sent to Dext</span>
-                      <small style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>
-                        {new Date(invoice.dext_sent_at).toLocaleString()}
-                        {invoice.dext_sent_by_username && ` by ${invoice.dext_sent_by_username}`}
-                      </small>
-                    </div>
-                  )
-                ) : (
-                  // Not sent yet
-                  settings?.dext_manual_send_enabled ? (
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={{
+                    flex: 1,
+                    padding: '0.75rem 1rem',
+                    background: '#fff3cd',
+                    borderRadius: '4px',
+                    border: '1px solid #ffc107',
+                    color: '#856404',
+                    fontSize: '0.9rem',
+                    fontWeight: '500'
+                  }}>
+                    Not submitted to Dext
+                  </div>
+                  {settings?.dext_manual_send_enabled && (
                     <button
                       onClick={() => setShowDextSendConfirm(true)}
                       style={{
-                        ...styles.confirmBtn,
-                        background: '#17a2b8'
+                        padding: '0.75rem 1.5rem',
+                        background: '#17a2b8',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '0.9rem',
+                        fontWeight: '500'
                       }}
                     >
                       Send to Dext
                     </button>
-                  ) : (
-                    <div style={{
-                      padding: '0.75rem 1.5rem',
-                      background: '#fff3cd',
-                      borderRadius: '4px',
-                      border: '1px solid #ffc107',
-                      color: '#856404',
-                      fontSize: '0.95rem',
-                      fontWeight: '500'
-                    }}>
-                      Not submitted to Dext
-                    </div>
-                  )
-                )}
-              </>
-            )}
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Save | Confirm & Dext */}
+          <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+            <button
+              onClick={() => handleSave('reviewed')}
+              style={{ ...styles.saveBtn, flex: 1 }}
+              disabled={updateMutation.isPending}
+            >
+              SAVE
+            </button>
+            <button
+              onClick={handleConfirm}
+              style={{ ...styles.confirmBtn, flex: 1 }}
+              disabled={updateMutation.isPending}
+            >
+              CONFIRM & DEXT
+            </button>
           </div>
 
-          <div style={styles.secondaryActions}>
+          {/* Checks Section (to come) */}
+          {/* <div style={{ marginTop: '20px', padding: '15px', background: '#f8f9fa', borderRadius: '4px' }}>
+            <h4 style={{ margin: '0 0 10px 0', fontSize: '0.9rem', color: '#6b7280' }}>Checks Summary</h4>
+            <p style={{ margin: 0, fontSize: '0.85rem', color: '#999' }}>To be implemented...</p>
+          </div> */}
+
+          {/* Small Delete | Small OCR */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '15px' }}>
             <button
               onClick={() => setShowDeleteModal(true)}
-              style={styles.deleteBtn}
+              style={{
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.8rem',
+                background: '#dc3545',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
             >
-              Delete Invoice
+              Delete
             </button>
             <button
               onClick={() => setShowRawOcrModal(true)}
-              style={styles.rawOcrBtn}
+              style={{
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.8rem',
+                background: '#6c757d',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
             >
-              View Raw OCR Data
+              OCR Data
             </button>
           </div>
 
-          <button onClick={() => navigate('/invoices')} style={styles.backBtn}>
+          <button onClick={() => navigate('/invoices')} style={{ ...styles.backBtn, marginTop: '15px' }}>
             ← Back to Invoices
           </button>
         </div>
