@@ -366,10 +366,11 @@ export default function LineItemHistoryModal({
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                       <thead>
                         <tr style={{ backgroundColor: '#f8fafc' }}>
-                          <th style={{ padding: '8px', textAlign: 'left' }}>Date</th>
-                          <th style={{ padding: '8px', textAlign: 'right' }}>Price</th>
-                          <th style={{ padding: '8px', textAlign: 'right' }}>Qty</th>
-                          <th style={{ padding: '8px', textAlign: 'left' }}>Invoice</th>
+                          <th style={{ padding: '8px', textAlign: 'left', width: '90px' }}>Date</th>
+                          <th style={{ padding: '8px', textAlign: 'left', minWidth: '200px' }}>Description</th>
+                          <th style={{ padding: '8px', textAlign: 'left', width: '80px' }}>Unit</th>
+                          <th style={{ padding: '8px', textAlign: 'right', width: '80px' }}>Qty</th>
+                          <th style={{ padding: '8px', textAlign: 'right', width: '80px' }}>Price</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -378,24 +379,38 @@ export default function LineItemHistoryModal({
                           .reverse()
                           .map((point, idx) => (
                             <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                              <td style={{ padding: '8px' }}>
+                              <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
                                 {formatDateForDisplay(point.date)}
                               </td>
-                              <td style={{ padding: '8px', textAlign: 'right' }}>
-                                {formatCurrency(point.price)}
+                              <td style={{ padding: '8px', maxWidth: '300px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {data.description || '-'}
+                                  </span>
+                                  <a
+                                    href={`/invoice/${point.invoice_id}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{
+                                      color: '#2563eb',
+                                      textDecoration: 'none',
+                                      whiteSpace: 'nowrap',
+                                      flexShrink: 0,
+                                      fontSize: '12px'
+                                    }}
+                                  >
+                                    {point.invoice_number || 'View'} ↗
+                                  </a>
+                                </div>
+                              </td>
+                              <td style={{ padding: '8px' }}>
+                                {unit || '-'}
                               </td>
                               <td style={{ padding: '8px', textAlign: 'right' }}>
                                 {formatQuantity(point.quantity)}
                               </td>
-                              <td style={{ padding: '8px' }}>
-                                <a
-                                  href={`/invoice/${point.invoice_id}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  style={{ color: '#2563eb', textDecoration: 'none' }}
-                                >
-                                  {point.invoice_number || '-'} ↗
-                                </a>
+                              <td style={{ padding: '8px', textAlign: 'right' }}>
+                                {formatCurrency(point.price)}
                               </td>
                             </tr>
                           ))}
