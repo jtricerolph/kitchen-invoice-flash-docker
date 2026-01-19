@@ -714,16 +714,26 @@ class PriceHistoryService:
 
             # Check if has definition
             from models.product_definition import ProductDefinition
+
+            # Build conditions for definition lookup
+            def_conditions = [
+                ProductDefinition.kitchen_id == self.kitchen_id,
+                ProductDefinition.supplier_id == supplier_id_val,
+            ]
+
+            # Match by product_code (preferred) OR description (fallback), not both
+            if product_code:
+                # Exact match by product_code only
+                def_conditions.append(ProductDefinition.product_code == product_code)
+            else:
+                # Match by description, but ONLY definitions without product_code
+                def_conditions.append(ProductDefinition.product_code.is_(None))
+                if description:
+                    def_conditions.append(ProductDefinition.description_pattern == description)
+
             def_query = (
                 select(ProductDefinition.portions_per_unit, ProductDefinition.pack_quantity)
-                .where(and_(
-                    ProductDefinition.kitchen_id == self.kitchen_id,
-                    ProductDefinition.supplier_id == supplier_id_val,
-                    or_(
-                        ProductDefinition.product_code == product_code,
-                        ProductDefinition.description_pattern == description
-                    ) if product_code or description else False
-                ))
+                .where(and_(*def_conditions))
                 .limit(1)
             )
             def_result = await self.db.execute(def_query)
