@@ -63,6 +63,9 @@ class LineItemResponse(BaseModel):
     price_change_status: str | None = None  # "consistent", "amber", "red", "no_history", "acknowledged"
     price_change_percent: float | None = None
     previous_price: float | None = None
+    # Future price (for old invoices)
+    future_price: float | None = None
+    future_change_percent: float | None = None
 
     class Config:
         from_attributes = True
@@ -1318,6 +1321,8 @@ async def get_line_items(
         price_change_status = None
         price_change_percent = None
         previous_price = None
+        future_price = None
+        future_change_percent = None
 
         if item.unit_price and invoice.supplier_id:
             try:
@@ -1333,6 +1338,8 @@ async def get_line_items(
                 price_change_status = status.status
                 price_change_percent = status.change_percent
                 previous_price = float(status.previous_price) if status.previous_price else None
+                future_price = float(status.future_price) if status.future_price else None
+                future_change_percent = status.future_change_percent
             except Exception as e:
                 logger.warning(f"Failed to get price status for line item {item.id}: {e}")
 
@@ -1359,7 +1366,9 @@ async def get_line_items(
             ocr_warnings=item.ocr_warnings,
             price_change_status=price_change_status,
             price_change_percent=price_change_percent,
-            previous_price=previous_price
+            previous_price=previous_price,
+            future_price=future_price,
+            future_change_percent=future_change_percent
         ))
 
     return responses

@@ -52,6 +52,9 @@ class PriceStatus:
     previous_price: Optional[Decimal] = None
     change_percent: Optional[float] = None
     acknowledged_price: Optional[Decimal] = None
+    # Future price info (for old invoices)
+    future_price: Optional[Decimal] = None
+    future_change_percent: Optional[float] = None
 
 
 @dataclass
@@ -175,6 +178,54 @@ class PriceHistoryService:
 
         return [(row[0], row[1]) for row in result.fetchall()]
 
+    async def _get_future_prices(
+        self,
+        supplier_id: int,
+        product_code: Optional[str],
+        description: Optional[str],
+        unit: Optional[str],
+        reference_date: date,
+        exclude_invoice_id: Optional[int] = None
+    ) -> List[Tuple[Decimal, date]]:
+        """Get future prices for a product (after reference_date)."""
+        # Build conditions for matching product
+        conditions = [
+            Invoice.kitchen_id == self.kitchen_id,
+            LineItem.invoice_id == Invoice.id,
+            Invoice.supplier_id == supplier_id,
+            Invoice.invoice_date > reference_date,
+            LineItem.unit_price.isnot(None),
+        ]
+
+        # Match by product_code if available, otherwise by description
+        if product_code:
+            conditions.append(LineItem.product_code == product_code)
+        else:
+            conditions.append(LineItem.product_code.is_(None))
+            if description:
+                normalized_desc = normalize_description(description)
+                conditions.append(
+                    func.split_part(LineItem.description, '\n', 1) == normalized_desc
+                )
+
+        # Match by unit
+        if unit:
+            conditions.append(LineItem.unit == unit)
+        else:
+            conditions.append(LineItem.unit.is_(None))
+
+        # Exclude current invoice if provided
+        if exclude_invoice_id:
+            conditions.append(Invoice.id != exclude_invoice_id)
+
+        result = await self.db.execute(
+            select(LineItem.unit_price, Invoice.invoice_date)
+            .where(and_(*conditions))
+            .order_by(desc(Invoice.invoice_date))
+        )
+
+        return [(row[0], row[1]) for row in result.fetchall()]
+
     async def get_price_status(
         self,
         supplier_id: int,
@@ -211,8 +262,24 @@ class PriceHistoryService:
             supplier_id, product_code, description, unit, lookback_days, current_invoice_id, reference_date
         )
 
+        # Get future prices (if viewing an old invoice)
+        future_price = None
+        future_change_percent = None
+        if reference_date:
+            future_prices = await self._get_future_prices(
+                supplier_id, product_code, description, unit, reference_date, current_invoice_id
+            )
+            if future_prices:
+                future_price = future_prices[0][0]  # Most recent future price
+                if future_price and future_price != 0:
+                    future_change_percent = float((future_price - current_price) / current_price * 100)
+
         if not previous_prices:
-            return PriceStatus(status="no_history")
+            return PriceStatus(
+                status="no_history",
+                future_price=future_price,
+                future_change_percent=future_change_percent
+            )
 
         # Get most recent previous price
         previous_price = previous_prices[0][0]
@@ -235,7 +302,9 @@ class PriceHistoryService:
                 status="acknowledged",
                 previous_price=previous_price,
                 change_percent=change_percent,
-                acknowledged_price=acknowledged.acknowledged_price
+                acknowledged_price=acknowledged.acknowledged_price,
+                future_price=future_price,
+                future_change_percent=future_change_percent
             )
 
         # Determine status based on change
@@ -243,19 +312,25 @@ class PriceHistoryService:
             return PriceStatus(
                 status="consistent",
                 previous_price=previous_price,
-                change_percent=0.0
+                change_percent=0.0,
+                future_price=future_price,
+                future_change_percent=future_change_percent
             )
         elif abs_change <= red_threshold:
             return PriceStatus(
                 status="amber",  # Any change > 0.01% up to red threshold shows amber
                 previous_price=previous_price,
-                change_percent=change_percent
+                change_percent=change_percent,
+                future_price=future_price,
+                future_change_percent=future_change_percent
             )
         else:
             return PriceStatus(
                 status="red",
                 previous_price=previous_price,
-                change_percent=change_percent
+                change_percent=change_percent,
+                future_price=future_price,
+                future_change_percent=future_change_percent
             )
 
     async def get_history(

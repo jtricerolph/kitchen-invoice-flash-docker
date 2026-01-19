@@ -78,6 +78,9 @@ interface LineItem {
   price_change_status: string | null  // "consistent", "amber", "red", "no_history", "acknowledged"
   price_change_percent: number | null
   previous_price: number | null
+  // Future price (for old invoices)
+  future_price: number | null
+  future_change_percent: number | null
 }
 
 // Scale icon color based on data completeness
@@ -2594,6 +2597,27 @@ export default function Review() {
                                   >
                                     <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
                                     {Math.abs(item.price_change_percent).toFixed(1)}%
+                                  </div>
+                                )
+                              })()}
+                              {/* Show future price change in brackets and grey for old invoices */}
+                              {item.future_change_percent !== null && item.future_change_percent !== 0 && (() => {
+                                const isIncrease = item.future_change_percent > 0
+                                const arrow = isIncrease ? '▲' : '▼'
+                                return (
+                                  <div
+                                    onClick={() => openPriceHistoryModal(item)}
+                                    style={{
+                                      fontSize: '0.75rem',
+                                      marginTop: '2px',
+                                      color: '#9ca3af',
+                                      cursor: 'pointer',
+                                      display: 'inline-block'
+                                    }}
+                                    title="Price changed after this invoice"
+                                  >
+                                    (<span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
+                                    {Math.abs(item.future_change_percent).toFixed(1)}%)
                                   </div>
                                 )
                               })()}
