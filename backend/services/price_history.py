@@ -481,12 +481,15 @@ class PriceHistoryService:
         # First, get the consolidation key and aggregates
         from sqlalchemy import case, literal_column
 
+        # Create expression for first line of description (reuse this in SELECT and GROUP BY)
+        desc_first_line = func.split_part(LineItem.description, '\n', 1)
+
         # Create a composite key for grouping
         # Use first line of description only for grouping
         consolidation_key = func.concat(
             func.coalesce(LineItem.product_code, ''),
             '||',
-            func.coalesce(func.split_part(LineItem.description, '\n', 1), ''),
+            func.coalesce(desc_first_line, ''),
             '||',
             func.cast(Invoice.supplier_id, String)
         )
@@ -497,7 +500,7 @@ class PriceHistoryService:
         agg_query = (
             select(
                 LineItem.product_code,
-                func.split_part(LineItem.description, '\n', 1).label('description'),
+                desc_first_line.label('description'),
                 Invoice.supplier_id,
                 Supplier.name.label('supplier_name'),
                 func.sum(LineItem.quantity).label('total_quantity'),
@@ -510,7 +513,7 @@ class PriceHistoryService:
             .where(and_(*conditions))
             .group_by(
                 LineItem.product_code,
-                func.split_part(LineItem.description, '\n', 1),
+                desc_first_line,
                 Invoice.supplier_id,
                 Supplier.name,
             )
