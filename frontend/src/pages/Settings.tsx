@@ -604,7 +604,12 @@ export default function Settings() {
       setResosNoteKeywords(resosSettings.resos_note_keywords || '')
       setResosAllergyKeywords(resosSettings.resos_allergy_keywords || '')
       setCustomFieldMapping(resosSettings.resos_custom_field_mapping || {})
-      setOpeningHoursMapping(resosSettings.resos_opening_hours_mapping || [])
+      // Ensure all mapping items have service_type property
+      const mapping = (resosSettings.resos_opening_hours_mapping || []).map(m => ({
+        ...m,
+        service_type: m.service_type || ''
+      }))
+      setOpeningHoursMapping(mapping)
 
       // Auto-fetch custom fields if mapping exists but fields list is empty
       if (resosSettings.resos_custom_field_mapping && Object.keys(resosSettings.resos_custom_field_mapping).length > 0 && customFields.length === 0) {
