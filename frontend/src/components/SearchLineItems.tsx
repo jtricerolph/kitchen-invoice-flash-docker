@@ -103,7 +103,7 @@ export default function SearchLineItems() {
   })
 
   // Fetch search settings (for price change thresholds)
-  const { data: searchSettings } = useQuery<SearchSettings>({
+  const { data: _searchSettings } = useQuery<SearchSettings>({
     queryKey: ['search-settings'],
     queryFn: async () => {
       const res = await fetch('/api/search/settings', {
@@ -254,8 +254,15 @@ export default function SearchLineItems() {
 
     // Show icon for consistent prices (green tick)
     if (item.price_change_status === 'consistent' || item.price_change_status === 'acknowledged') {
+      // Calculate lookback days from search period
+      const searchPeriodDays = Math.ceil((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / (1000 * 60 * 60 * 24))
+      const lookbackDays = searchPeriodDays + 30
+
       return (
-        <div style={{ fontSize: '0.75rem', marginTop: '2px', color: config.color }}>
+        <div
+          style={{ fontSize: '0.75rem', marginTop: '2px', color: config.color, cursor: 'help' }}
+          title={`Price stable over last ${lookbackDays} days\nClick 📊 to see full 12-month history`}
+        >
           <span style={{ fontWeight: 'bold' }}>{config.icon}</span>
         </div>
       )
@@ -266,9 +273,17 @@ export default function SearchLineItems() {
       const isIncrease = item.price_change_percent > 0
       const arrow = isIncrease ? '▲' : '▼'
       const color = isIncrease ? '#ef4444' : '#22c55e' // Red for increase, green for decrease
+      const direction = isIncrease ? 'increased' : 'decreased'
+
+      // Calculate lookback days from search period
+      const searchPeriodDays = Math.ceil((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / (1000 * 60 * 60 * 24))
+      const lookbackDays = searchPeriodDays + 30
 
       return (
-        <div style={{ fontSize: '0.75rem', marginTop: '2px', color }}>
+        <div
+          style={{ fontSize: '0.75rem', marginTop: '2px', color, cursor: 'help' }}
+          title={`Price ${direction} ${Math.abs(item.price_change_percent).toFixed(1)}% over last ${lookbackDays} days\nClick 📊 to see full history`}
+        >
           <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
           {Math.abs(item.price_change_percent).toFixed(1)}%
         </div>
