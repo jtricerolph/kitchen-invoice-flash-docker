@@ -23,6 +23,18 @@ from models.acknowledged_price import AcknowledgedPrice
 logger = logging.getLogger(__name__)
 
 
+def normalize_description(description: Optional[str]) -> Optional[str]:
+    """
+    Normalize description by taking only the first line.
+    Many descriptions have newlines and additional details,
+    but for matching purposes we only want the first line.
+    """
+    if not description:
+        return description
+    # Take everything before the first newline
+    return description.split('\n')[0].strip()
+
+
 @dataclass
 class PriceHistoryPoint:
     """Single point in price history."""
@@ -135,7 +147,12 @@ class PriceHistoryService:
         else:
             conditions.append(LineItem.product_code.is_(None))
             if description:
-                conditions.append(LineItem.description == description)
+                # Normalize description to first line only for matching
+                normalized_desc = normalize_description(description)
+                # Match against first line of stored descriptions
+                conditions.append(
+                    func.split_part(LineItem.description, '\n', 1) == normalized_desc
+                )
 
         # Match by unit - critical for products sold in different units (Box, Each, Kg, etc.)
         if unit:
@@ -281,7 +298,12 @@ class PriceHistoryService:
         else:
             conditions.append(LineItem.product_code.is_(None))
             if description:
-                conditions.append(LineItem.description == description)
+                # Normalize description to first line only for matching
+                normalized_desc = normalize_description(description)
+                # Match against first line of stored descriptions
+                conditions.append(
+                    func.split_part(LineItem.description, '\n', 1) == normalized_desc
+                )
 
         # Match by unit - critical for products sold in different units
         if unit:
@@ -460,10 +482,11 @@ class PriceHistoryService:
         from sqlalchemy import case, literal_column
 
         # Create a composite key for grouping
+        # Use first line of description only for grouping
         consolidation_key = func.concat(
             func.coalesce(LineItem.product_code, ''),
             '||',
-            func.coalesce(LineItem.description, ''),
+            func.coalesce(func.split_part(LineItem.description, '\n', 1), ''),
             '||',
             func.cast(Invoice.supplier_id, String)
         )
@@ -474,7 +497,7 @@ class PriceHistoryService:
         agg_query = (
             select(
                 LineItem.product_code,
-                LineItem.description,
+                func.split_part(LineItem.description, '\n', 1).label('description'),
                 Invoice.supplier_id,
                 Supplier.name.label('supplier_name'),
                 func.sum(LineItem.quantity).label('total_quantity'),
@@ -487,7 +510,7 @@ class PriceHistoryService:
             .where(and_(*conditions))
             .group_by(
                 LineItem.product_code,
-                LineItem.description,
+                func.split_part(LineItem.description, '\n', 1),
                 Invoice.supplier_id,
                 Supplier.name,
             )

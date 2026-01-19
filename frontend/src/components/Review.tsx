@@ -144,6 +144,12 @@ interface SearchResponse {
 
 const TOLERANCE = 0.02; // 2p tolerance for rounding
 
+// Helper to get first line of description (before newline)
+const getFirstLineOfDescription = (description: string | null): string => {
+  if (!description) return '';
+  return description.split('\n')[0].trim();
+};
+
 // Date warning levels for unconfirmed invoices
 type DateWarning = 'none' | 'amber' | 'red';
 function getDateWarning(dateStr: string | null, status: string): DateWarning {
@@ -1805,100 +1811,104 @@ export default function Review() {
 
           {/* Checks Section */}
           {lineItems && lineItems.length > 0 && (
-            <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
-              {/* Line Items Total Check */}
+            <div style={{ margin: '20px 0', display: 'flex', gap: '10px' }}>
+              {/* Items Total Check */}
               <div style={{
                 flex: 1,
-                padding: '10px',
+                padding: '12px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.totalsMatch ? '#c3e6cb' : '#ffc107'}`,
                 background: lineItemStats.totalsMatch ? '#d4edda' : '#fff3cd',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                gap: '8px',
+                textAlign: 'center',
                 fontSize: '0.85rem'
               }}>
-                <span style={{ fontSize: '1.2rem' }}>
-                  {lineItemStats.totalsMatch ? '✓' : '⚠'}
-                </span>
-                <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <span style={{ fontSize: '1.1rem' }}>
+                    {lineItemStats.totalsMatch ? '✓' : '⚠'}
+                  </span>
                   <div style={{ fontWeight: '600', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
-                    Line Items Total
+                    Items Total
                   </div>
-                  <div style={{ fontSize: '0.75rem', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
-                    {lineItemStats.totalsMatch ? 'Matches invoice' : `Off by £${lineItemStats.totalDifference.toFixed(2)}`}
-                  </div>
+                </div>
+                <div style={{ fontSize: '0.75rem', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
+                  {lineItemStats.totalsMatch ? 'Matches invoice' : `Off by £${lineItemStats.totalDifference.toFixed(2)}`}
                 </div>
               </div>
 
               {/* Portions Check */}
               <div style={{
                 flex: 1,
-                padding: '10px',
+                padding: '12px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.withoutPortions === 0 ? '#c3e6cb' : '#ffc107'}`,
                 background: lineItemStats.withoutPortions === 0 ? '#d4edda' : '#fff3cd',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                gap: '8px',
+                textAlign: 'center',
                 fontSize: '0.85rem'
               }}>
-                <span style={{ fontSize: '1.2rem' }}>📦</span>
-                <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <span style={{ fontSize: '1.1rem' }}>📦</span>
                   <div style={{ fontWeight: '600', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
                     Portions
                   </div>
-                  <div style={{ fontSize: '0.75rem', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
-                    {lineItemStats.withPortions} / {lineItemStats.total}
-                  </div>
+                </div>
+                <div style={{ fontSize: '0.75rem', color: lineItemStats.withoutPortions === 0 ? '#155724' : '#856404' }}>
+                  {lineItemStats.withPortions} / {lineItemStats.total}
                 </div>
               </div>
 
               {/* Missing Data Check */}
               <div style={{
                 flex: 1,
-                padding: '10px',
+                padding: '12px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.missingData === 0 ? '#c3e6cb' : '#f8d7da'}`,
                 background: lineItemStats.missingData === 0 ? '#d4edda' : '#f8d7da',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                gap: '8px',
+                textAlign: 'center',
                 fontSize: '0.85rem'
               }}>
-                <span style={{ fontSize: '1.2rem' }}>
-                  {lineItemStats.missingData === 0 ? '✓' : '❌'}
-                </span>
-                <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <span style={{ fontSize: '1.1rem' }}>
+                    {lineItemStats.missingData === 0 ? '✓' : '❌'}
+                  </span>
                   <div style={{ fontWeight: '600', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
                     Missing Data
                   </div>
-                  <div style={{ fontSize: '0.75rem', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
-                    {lineItemStats.missingData} item{lineItemStats.missingData !== 1 ? 's' : ''}
-                  </div>
+                </div>
+                <div style={{ fontSize: '0.75rem', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
+                  {lineItemStats.missingData} item{lineItemStats.missingData !== 1 ? 's' : ''}
                 </div>
               </div>
 
               {/* Non-Stock Check */}
               <div style={{
                 flex: 1,
-                padding: '10px',
+                padding: '12px',
                 borderRadius: '4px',
                 border: `1px solid ${lineItemStats.nonStock === 0 ? '#c3e6cb' : '#ffc107'}`,
                 background: lineItemStats.nonStock === 0 ? '#d4edda' : '#fff3cd',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                gap: '8px',
+                textAlign: 'center',
                 fontSize: '0.85rem'
               }}>
-                <span style={{ fontSize: '1.2rem' }}>🚫</span>
-                <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                  <span style={{ fontSize: '1.1rem' }}>🚫</span>
                   <div style={{ fontWeight: '600', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
                     Non-Stock
                   </div>
-                  <div style={{ fontSize: '0.75rem', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
-                    {lineItemStats.nonStock} item{lineItemStats.nonStock !== 1 ? 's' : ''}
-                  </div>
+                </div>
+                <div style={{ fontSize: '0.75rem', color: lineItemStats.nonStock === 0 ? '#155724' : '#856404' }}>
+                  {lineItemStats.nonStock} item{lineItemStats.nonStock !== 1 ? 's' : ''}
                 </div>
               </div>
             </div>
@@ -2201,7 +2211,7 @@ export default function Review() {
                                 ⚠️
                               </span>
                             )}
-                            {item.description || '—'}
+                            {getFirstLineOfDescription(item.description) || '—'}
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
                           <td style={styles.td}>{item.quantity?.toFixed(2) || '—'}</td>
