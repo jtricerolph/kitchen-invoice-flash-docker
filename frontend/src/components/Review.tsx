@@ -1738,41 +1738,42 @@ export default function Review() {
             <p style={{ margin: 0, fontSize: '0.85rem', color: '#999' }}>To be implemented...</p>
           </div> */}
 
-          {/* Small Delete | Small OCR */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '15px' }}>
-            <button
-              onClick={() => setShowDeleteModal(true)}
-              style={{
-                padding: '0.4rem 0.8rem',
-                fontSize: '0.8rem',
-                background: '#dc3545',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer'
-              }}
-            >
-              Delete
+          {/* Back to Invoices | Delete | OCR */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '15px' }}>
+            <button onClick={() => navigate('/invoices')} style={styles.backBtn}>
+              ← Back to Invoices
             </button>
-            <button
-              onClick={() => setShowRawOcrModal(true)}
-              style={{
-                padding: '0.4rem 0.8rem',
-                fontSize: '0.8rem',
-                background: '#6c757d',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer'
-              }}
-            >
-              OCR Data
-            </button>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={() => setShowDeleteModal(true)}
+                style={{
+                  padding: '0.4rem 0.8rem',
+                  fontSize: '0.8rem',
+                  background: '#dc3545',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Delete
+              </button>
+              <button
+                onClick={() => setShowRawOcrModal(true)}
+                style={{
+                  padding: '0.4rem 0.8rem',
+                  fontSize: '0.8rem',
+                  background: '#6c757d',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                OCR Data
+              </button>
+            </div>
           </div>
-
-          <button onClick={() => navigate('/invoices')} style={{ ...styles.backBtn, marginTop: '15px' }}>
-            ← Back to Invoices
-          </button>
         </div>
       </div>
 
