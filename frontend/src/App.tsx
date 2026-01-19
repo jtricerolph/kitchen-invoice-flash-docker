@@ -224,9 +224,11 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               <span style={styles.navLink}>Invoices ▾</span>
               {invoicesOpen && (
                 <div style={styles.dropdown}>
-                  {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Pending Invoices</a>}
-                  {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
-                  {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
+                  <div style={styles.dropdownContent}>
+                    {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Pending Invoices</a>}
+                    {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
+                    {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
+                  </div>
                 </div>
               )}
             </div>
@@ -240,9 +242,11 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               <span style={styles.navLink}>Search ▾</span>
               {searchOpen && (
                 <div style={styles.dropdown}>
-                  <a href="/search/invoices" style={styles.dropdownLink}>Invoices</a>
-                  <a href="/search/line-items" style={styles.dropdownLink}>Line Items</a>
-                  <a href="/search/definitions" style={styles.dropdownLink}>Product Definitions</a>
+                  <div style={styles.dropdownContent}>
+                    <a href="/search/invoices" style={styles.dropdownLink}>Invoices</a>
+                    <a href="/search/line-items" style={styles.dropdownLink}>Line Items</a>
+                    <a href="/search/definitions" style={styles.dropdownLink}>Product Definitions</a>
+                  </div>
                 </div>
               )}
             </div>
@@ -256,7 +260,9 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               <span style={styles.navLink}>Reports ▾</span>
               {reportsOpen && (
                 <div style={styles.dropdown}>
-                  {showNavItem('/gp-report') && <a href="/gp" style={styles.dropdownLink}>Kitchen Flash Report</a>}
+                  <div style={styles.dropdownContent}>
+                    {showNavItem('/gp-report') && <a href="/gp" style={styles.dropdownLink}>Kitchen Flash Report</a>}
+                  </div>
                 </div>
               )}
             </div>
@@ -307,13 +313,16 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute',
     top: '100%',
     left: 0,
-    marginTop: '0.5rem',
+    paddingTop: '0.5rem',
+    background: 'transparent',
+    minWidth: '180px',
+    zIndex: 100,
+  },
+  dropdownContent: {
     background: '#2d2d44',
     borderRadius: '4px',
     padding: '0.5rem 0',
-    minWidth: '180px',
     boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-    zIndex: 100,
   },
   dropdownLink: {
     display: 'block',
