@@ -606,8 +606,10 @@ export default function Settings() {
       setCustomFieldMapping(resosSettings.resos_custom_field_mapping || {})
       // Ensure all mapping items have service_type property
       const mapping = (resosSettings.resos_opening_hours_mapping || []).map(m => ({
-        ...m,
-        service_type: m.service_type || ''
+        resos_id: m.resos_id,
+        display_name: m.display_name,
+        actual_end: m.actual_end,
+        service_type: (m as any).service_type || ''
       }))
       setOpeningHoursMapping(mapping)
 
