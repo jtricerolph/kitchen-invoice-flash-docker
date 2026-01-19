@@ -1100,6 +1100,57 @@ export default function Review() {
     return filtered
   }, [lineItems, lineItemSortColumn, lineItemSortDirection, lineItemPriceFilter, lineItemSearchText, lineItemPortionsFilter, lineItemMissingDataFilter])
 
+  // Calculate line item statistics for checks section
+  const lineItemStats = useMemo(() => {
+    if (!lineItems) return { total: 0, withPortions: 0, withoutPortions: 0, missingData: 0 }
+
+    const withPortions = lineItems.filter(item =>
+      item.portions_per_unit != null && item.portions_per_unit > 0
+    ).length
+
+    const missingData = lineItems.filter(item => {
+      const missingQty = item.quantity == null || item.quantity === 0
+      const missingPrice = item.unit_price == null || item.unit_price === 0
+      const missingAmount = item.amount == null || item.amount === 0
+      return missingQty || missingPrice || missingAmount
+    }).length
+
+    return {
+      total: lineItems.length,
+      withPortions,
+      withoutPortions: lineItems.length - withPortions,
+      missingData
+    }
+  }, [lineItems])
+
+  // Calculate filter option counts for disabling
+  const filterOptionCounts = useMemo(() => {
+    if (!lineItems) return {
+      consistent: 0,
+      amber: 0,
+      red: 0,
+      no_history: 0,
+      withPortions: 0,
+      withoutPortions: 0,
+      missingData: 0
+    }
+
+    return {
+      consistent: lineItems.filter(item => item.price_status === 'consistent').length,
+      amber: lineItems.filter(item => item.price_status === 'amber').length,
+      red: lineItems.filter(item => item.price_status === 'red').length,
+      no_history: lineItems.filter(item => item.price_status === 'no_history').length,
+      withPortions: lineItems.filter(item => item.portions_per_unit != null && item.portions_per_unit > 0).length,
+      withoutPortions: lineItems.filter(item => !(item.portions_per_unit != null && item.portions_per_unit > 0)).length,
+      missingData: lineItems.filter(item => {
+        const missingQty = item.quantity == null || item.quantity === 0
+        const missingPrice = item.unit_price == null || item.unit_price === 0
+        const missingAmount = item.amount == null || item.amount === 0
+        return missingQty || missingPrice || missingAmount
+      }).length
+    }
+  }, [lineItems])
+
   const handleLineItemSort = (column: string) => {
     if (lineItemSortColumn === column) {
       setLineItemSortDirection(lineItemSortDirection === 'asc' ? 'desc' : 'asc')
@@ -1732,11 +1783,20 @@ export default function Review() {
             </button>
           </div>
 
-          {/* Checks Section (to come) */}
-          {/* <div style={{ marginTop: '20px', padding: '15px', background: '#f8f9fa', borderRadius: '4px' }}>
-            <h4 style={{ margin: '0 0 10px 0', fontSize: '0.9rem', color: '#6b7280' }}>Checks Summary</h4>
-            <p style={{ margin: 0, fontSize: '0.85rem', color: '#999' }}>To be implemented...</p>
-          </div> */}
+          {/* Checks Section */}
+          {lineItems && lineItems.length > 0 && (
+            <div style={{ marginTop: '15px', padding: '12px', background: '#f8f9fa', borderRadius: '4px', display: 'flex', gap: '20px', fontSize: '0.85rem' }}>
+              <div>
+                <strong>Line Items:</strong> {lineItemStats.total}
+              </div>
+              <div>
+                <strong>Portions:</strong> {lineItemStats.withPortions} yes / {lineItemStats.withoutPortions} none
+              </div>
+              <div>
+                <strong>Missing Key Data:</strong> {lineItemStats.missingData}
+              </div>
+            </div>
+          )}
 
           {/* Back to Invoices | Delete | OCR */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', marginTop: '15px' }}>
@@ -1747,30 +1807,34 @@ export default function Review() {
               <button
                 onClick={() => setShowDeleteModal(true)}
                 style={{
-                  padding: '0.4rem 0.8rem',
+                  padding: '0.4rem 1.2rem',
                   fontSize: '0.8rem',
                   background: '#dc3545',
                   color: 'white',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: 'pointer'
+                  cursor: 'pointer',
+                  minWidth: '110px',
+                  whiteSpace: 'nowrap'
                 }}
               >
-                Delete
+                Delete Invoice
               </button>
               <button
                 onClick={() => setShowRawOcrModal(true)}
                 style={{
-                  padding: '0.4rem 0.8rem',
+                  padding: '0.4rem 1.2rem',
                   fontSize: '0.8rem',
                   background: '#6c757d',
                   color: 'white',
                   border: 'none',
                   borderRadius: '4px',
-                  cursor: 'pointer'
+                  cursor: 'pointer',
+                  minWidth: '120px',
+                  whiteSpace: 'nowrap'
                 }}
               >
-                OCR Data
+                View OCR Data
               </button>
             </div>
           </div>
@@ -1782,18 +1846,18 @@ export default function Review() {
         <div style={{ marginBottom: '10px' }}>
           <h3 style={{ margin: '0 0 10px 0' }}>Line Items</h3>
           {lineItems && lineItems.length > 0 && (
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
               <input
                 type="text"
                 placeholder="Search by code or description..."
                 value={lineItemSearchText}
                 onChange={(e) => setLineItemSearchText(e.target.value)}
                 style={{
+                  flex: 1,
                   padding: '4px 8px',
                   borderRadius: '4px',
                   border: '1px solid #d1d5db',
-                  fontSize: '0.9rem',
-                  minWidth: '200px'
+                  fontSize: '0.9rem'
                 }}
               />
               <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
@@ -1804,10 +1868,10 @@ export default function Review() {
                   style={{ marginLeft: '5px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
                 >
                   <option value="">All</option>
-                  <option value="consistent">✓ Consistent</option>
-                  <option value="amber">? Changed</option>
-                  <option value="red">! Large change</option>
-                  <option value="no_history">No history</option>
+                  <option value="consistent" disabled={filterOptionCounts.consistent === 0}>✓ Consistent</option>
+                  <option value="amber" disabled={filterOptionCounts.amber === 0}>? Changed</option>
+                  <option value="red" disabled={filterOptionCounts.red === 0}>! Large change</option>
+                  <option value="no_history" disabled={filterOptionCounts.no_history === 0}>No history</option>
                 </select>
               </label>
               <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
@@ -1818,8 +1882,8 @@ export default function Review() {
                   style={{ marginLeft: '5px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
                 >
                   <option value="">All</option>
-                  <option value="yes">📦 Yes</option>
-                  <option value="no">○ No</option>
+                  <option value="yes" disabled={filterOptionCounts.withPortions === 0}>📦 Yes</option>
+                  <option value="no" disabled={filterOptionCounts.withoutPortions === 0}>○ No</option>
                 </select>
               </label>
               <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
@@ -1830,7 +1894,7 @@ export default function Review() {
                   style={{ marginLeft: '5px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
                 >
                   <option value="">All</option>
-                  <option value="missing">⚠ Missing key data</option>
+                  <option value="missing" disabled={filterOptionCounts.missingData === 0}>⚠ Missing key data</option>
                 </select>
               </label>
               {(lineItemSortColumn || lineItemPriceFilter || lineItemSearchText || lineItemPortionsFilter || lineItemMissingDataFilter) && (
