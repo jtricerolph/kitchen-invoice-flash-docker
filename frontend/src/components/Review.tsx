@@ -1329,7 +1329,11 @@ export default function Review() {
 
     // Count items with price calculation errors (qty × price ≠ total)
     const priceCalcErrors = lineItems.filter(item => {
-      if (item.quantity == null || item.unit_price == null || item.amount == null) return false
+      // Missing data check
+      if (item.unit_price == null || item.amount == null) return false
+      // If there's an amount but no quantity (or zero), that's an error
+      if (item.quantity == null || item.quantity === 0) return true
+      // Check if qty × price matches amount (with 2p tolerance)
       return Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02
     }).length
 
@@ -2401,10 +2405,10 @@ export default function Review() {
                   !item.is_non_stock // Current item is marked as stock, but was previously non-stock
 
                 // Check for price calculation mismatch: qty × unit_price should equal amount
-                const hasPriceCalcError = item.quantity != null &&
-                  item.unit_price != null &&
+                const hasPriceCalcError = item.unit_price != null &&
                   item.amount != null &&
-                  Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02 // Allow 2p tolerance for rounding
+                  (item.quantity == null || item.quantity === 0 ||
+                   Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02) // Allow 2p tolerance for rounding
 
                 // OCR warning takes priority (darker amber), high quantity is lighter
                 const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : undefined

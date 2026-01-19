@@ -274,15 +274,6 @@ class PriceHistoryService:
                 if future_price and future_price != 0:
                     future_change_percent = float((future_price - current_price) / current_price * 100)
 
-        # If there's a future price change, suppress regular price change indicator
-        # (only show the grey future price indicator)
-        if future_price and future_change_percent is not None:
-            return PriceStatus(
-                status="consistent",  # Hide regular indicator
-                future_price=future_price,
-                future_change_percent=future_change_percent
-            )
-
         if not previous_prices:
             return PriceStatus(
                 status="no_history",
@@ -298,6 +289,18 @@ class PriceHistoryService:
             change_percent = float((current_price - previous_price) / previous_price * 100)
         else:
             change_percent = 0.0
+
+        # If there's a future price change, suppress regular price change indicator
+        # (only show the grey future price indicator)
+        # But still include previous_price/change_percent so price history button works
+        if future_price and future_change_percent is not None:
+            return PriceStatus(
+                status="consistent",  # Hide regular indicator
+                previous_price=previous_price,
+                change_percent=change_percent,
+                future_price=future_price,
+                future_change_percent=future_change_percent
+            )
 
         abs_change = abs(change_percent)
 
