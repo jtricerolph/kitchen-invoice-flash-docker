@@ -755,6 +755,7 @@ export default function Review() {
       queryClient.invalidateQueries({ queryKey: ['invoice', id] })  // Refresh stock_total
       setEditingLineItem(null)
       setLineItemEdits({})
+      setExpandedLineItem(null)  // Close line item preview
     },
   })
 
@@ -994,6 +995,10 @@ export default function Review() {
       amount: item.amount,
       is_non_stock: item.is_non_stock,
     })
+    // Open line item preview
+    setExpandedLineItem(item.id)
+    setHighlightedField(null)
+    resetZoom()
   }
 
   const saveLineItemEdit = (itemId: number) => {
@@ -2514,7 +2519,7 @@ export default function Review() {
                           </td>
                           <td style={styles.td}>
                             <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
-                            <button onClick={() => setEditingLineItem(null)} style={styles.smallBtnCancel}>X</button>
+                            <button onClick={() => { setEditingLineItem(null); setExpandedLineItem(null) }} style={styles.smallBtnCancel}>X</button>
                           </td>
                         </>
                       ) : (
