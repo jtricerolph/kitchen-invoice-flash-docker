@@ -75,7 +75,7 @@ interface LineItem {
   // OCR warnings for values that needed correction
   ocr_warnings: string | null
   // Price change tracking
-  price_status: string | null  // "consistent", "amber", "red", "no_history", "acknowledged"
+  price_change_status: string | null  // "consistent", "amber", "red", "no_history", "acknowledged"
   price_change_percent: number | null
   previous_price: number | null
 }
@@ -1211,10 +1211,10 @@ export default function Review() {
     // Filter by price change status
     if (lineItemPriceFilter) {
       filtered = filtered.filter(item => {
-        if (lineItemPriceFilter === 'consistent') return item.price_status === 'consistent'
-        if (lineItemPriceFilter === 'amber') return item.price_status === 'amber'
-        if (lineItemPriceFilter === 'red') return item.price_status === 'red'
-        if (lineItemPriceFilter === 'no_history') return item.price_status === 'no_history'
+        if (lineItemPriceFilter === 'consistent') return item.price_change_status === 'consistent'
+        if (lineItemPriceFilter === 'amber') return item.price_change_status === 'amber'
+        if (lineItemPriceFilter === 'red') return item.price_change_status === 'red'
+        if (lineItemPriceFilter === 'no_history') return item.price_change_status === 'no_history'
         return true
       })
     }
@@ -1380,10 +1380,10 @@ export default function Review() {
     }
 
     return {
-      consistent: lineItems.filter(item => item.price_status === 'consistent').length,
-      amber: lineItems.filter(item => item.price_status === 'amber').length,
-      red: lineItems.filter(item => item.price_status === 'red').length,
-      no_history: lineItems.filter(item => item.price_status === 'no_history').length,
+      consistent: lineItems.filter(item => item.price_change_status === 'consistent').length,
+      amber: lineItems.filter(item => item.price_change_status === 'amber').length,
+      red: lineItems.filter(item => item.price_change_status === 'red').length,
+      no_history: lineItems.filter(item => item.price_change_status === 'no_history').length,
       withPortions: lineItems.filter(item => item.portions_per_unit != null && item.portions_per_unit > 0).length,
       withoutPortions: lineItems.filter(item => !(item.portions_per_unit != null && item.portions_per_unit > 0)).length,
       missingData: lineItems.filter(item => {
@@ -2569,14 +2569,14 @@ export default function Review() {
                               <div>
                                 {item.unit_price != null ? `£${item.unit_price.toFixed(2)}` : '—'}
                                 {/* Show green tick inline for consistent prices */}
-                                {item.price_status === 'consistent' && (
+                                {item.price_change_status === 'consistent' && (
                                   <span style={{ marginLeft: '6px', color: '#22c55e', fontWeight: 'bold' }}>
                                     ✓
                                   </span>
                                 )}
                               </div>
                               {/* Show arrow and percentage below for price changes */}
-                              {item.price_status && item.price_status !== 'no_history' && item.price_status !== 'consistent' && item.price_change_percent !== null && item.price_change_percent !== 0 && (() => {
+                              {item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_status !== 'consistent' && item.price_change_percent !== null && item.price_change_percent !== 0 && (() => {
                                 const isIncrease = item.price_change_percent > 0
                                 const arrow = isIncrease ? '▲' : '▼'
                                 const color = isIncrease ? '#ef4444' : '#22c55e'
@@ -2644,18 +2644,18 @@ export default function Review() {
                                 🔍
                               </button>
                               <button
-                                onClick={() => item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null && openPriceHistoryModal(item)}
+                                onClick={() => item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null && openPriceHistoryModal(item)}
                                 style={{
                                   ...styles.iconBtn,
-                                  opacity: (item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null) ? 1 : 0.5,
-                                  cursor: (item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null) ? 'pointer' : 'not-allowed'
+                                  opacity: (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null) ? 1 : 0.5,
+                                  cursor: (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null) ? 'pointer' : 'not-allowed'
                                 }}
                                 title={
-                                  (item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null)
+                                  (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null)
                                     ? "View price history"
                                     : "No price history available"
                                 }
-                                disabled={!(item.price_status && item.price_status !== 'no_history' && item.price_change_percent !== null)}
+                                disabled={!(item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null)}
                               >
                                 📊
                               </button>

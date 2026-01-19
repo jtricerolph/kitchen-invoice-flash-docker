@@ -60,7 +60,7 @@ class LineItemResponse(BaseModel):
     # OCR warnings for values that needed correction
     ocr_warnings: str | None
     # Price change detection
-    price_status: str | None = None  # "consistent", "amber", "red", "no_history", "acknowledged"
+    price_change_status: str | None = None  # "consistent", "amber", "red", "no_history", "acknowledged"
     price_change_percent: float | None = None
     previous_price: float | None = None
 
@@ -1315,7 +1315,7 @@ async def get_line_items(
     responses = []
     for item in items:
         # Calculate price status if item has unit_price and supplier
-        price_status = None
+        price_change_status = None
         price_change_percent = None
         previous_price = None
 
@@ -1329,7 +1329,7 @@ async def get_line_items(
                     unit=item.unit,
                     current_invoice_id=invoice_id
                 )
-                price_status = status.status
+                price_change_status = status.status
                 price_change_percent = status.change_percent
                 previous_price = float(status.previous_price) if status.previous_price else None
             except Exception as e:
@@ -1356,7 +1356,7 @@ async def get_line_items(
             cost_per_item=float(item.cost_per_item) if item.cost_per_item else None,
             cost_per_portion=float(item.cost_per_portion) if item.cost_per_portion else None,
             ocr_warnings=item.ocr_warnings,
-            price_status=price_status,
+            price_change_status=price_change_status,
             price_change_percent=price_change_percent,
             previous_price=previous_price
         ))
