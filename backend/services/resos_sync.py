@@ -270,16 +270,22 @@ class ResosSyncService:
 
         Returns summary dict with counts
         """
+        logger.info(f"Starting Resos sync: kitchen_id={self.kitchen_id}, from={date_from}, to={date_to}, forecast={is_forecast}")
+
         log = await self._log_sync('forecast' if is_forecast else 'historical', date_from, date_to)
 
         try:
             settings = await self._get_settings()
+            logger.info(f"Retrieved settings, API key configured: {bool(settings.resos_api_key)}")
 
+            logger.info(f"Creating Resos API client...")
             async with await self._get_client() as client:
+                logger.info(f"Fetching bookings from Resos API...")
                 bookings = await client.get_bookings(date_from, date_to)
 
             total_fetched = len(bookings)
             total_flagged = 0
+            logger.info(f"Fetched {total_fetched} bookings from Resos API")
 
             # Get custom field mapping from settings
             field_mapping = settings.resos_custom_field_mapping or {}
@@ -382,11 +388,15 @@ class ResosSyncService:
                 await self.db.execute(stmt)
 
             await self.db.commit()
+            logger.info(f"Committed {total_fetched} bookings to database")
 
             # Aggregate into daily stats
+            logger.info(f"Aggregating daily stats for {date_from} to {date_to}...")
             await self._aggregate_daily_stats(date_from, date_to, is_forecast)
+            logger.info(f"Daily stats aggregation complete")
 
             await self._complete_sync(log, total_fetched, total_flagged)
+            logger.info(f"Resos sync completed successfully")
 
             return {
                 'bookings_fetched': total_fetched,
@@ -409,6 +419,7 @@ class ResosSyncService:
         """
         Aggregate bookings into daily stats
         """
+        logger.info(f"_aggregate_daily_stats: Querying bookings for aggregation...")
         # Query bookings grouped by date and service period
         result = await self.db.execute(
             select(
@@ -431,6 +442,7 @@ class ResosSyncService:
 
         # Build daily stats
         daily_data = {}
+        logger.info(f"_aggregate_daily_stats: Building daily stats from query results...")
         for row in result:
             booking_date = row.booking_date
             if booking_date not in daily_data:

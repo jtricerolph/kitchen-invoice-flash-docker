@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 
 interface MonthlyPurchaseInvoice {
@@ -93,6 +94,7 @@ const getMonthOptions = (): { label: string; year: number; month: number }[] => 
 
 export default function Purchases() {
   const { token } = useAuth()
+  const navigate = useNavigate()
   const printRef = useRef<HTMLDivElement>(null)
 
   // Get initial dates (from session or defaults)
@@ -203,9 +205,6 @@ export default function Purchases() {
     }
   }
 
-  // Modal state
-  const [selectedInvoice, setSelectedInvoice] = useState<MonthlyPurchaseInvoice | null>(null)
-  const [selectedSupplierName, setSelectedSupplierName] = useState<string>('')
   const [showPrintView, setShowPrintView] = useState(false)
 
   const { data, isLoading, error } = useQuery<DateRangePurchasesResponse>({
@@ -474,10 +473,7 @@ export default function Purchases() {
                                       {invoices.map((inv) => (
                                         <button
                                           key={inv.id}
-                                          onClick={() => {
-                                            setSelectedInvoice(inv)
-                                            setSelectedSupplierName(supplier.supplier_name)
-                                          }}
+                                          onClick={() => navigate(`/invoice/${inv.id}`)}
                                           style={{
                                             ...styles.invoiceBtn,
                                             ...(inv.supplier_match_type === 'fuzzy' ? styles.fuzzyInvoice : {}),
@@ -537,66 +533,6 @@ export default function Purchases() {
         </>
       )}
 
-      {/* Invoice Detail Modal */}
-      {selectedInvoice && (
-        <div style={styles.modal} onClick={() => setSelectedInvoice(null)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Invoice Details</h3>
-              <button onClick={() => setSelectedInvoice(null)} style={styles.modalClose}>×</button>
-            </div>
-
-            {/* PDF Preview */}
-            <div style={styles.previewContainer}>
-              <iframe
-                src={`/api/invoices/${selectedInvoice.id}/file?token=${encodeURIComponent(token || '')}#toolbar=0&navpanes=0&view=FitH`}
-                style={styles.previewFrame}
-                title="Invoice Preview"
-              />
-            </div>
-
-            {/* Invoice Breakdown */}
-            <div style={styles.invoiceBreakdown}>
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Supplier:</span>
-                <span style={styles.breakdownValue}>{selectedSupplierName}</span>
-              </div>
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Invoice #:</span>
-                <span style={styles.breakdownValue}>{selectedInvoice.invoice_number || '-'}</span>
-              </div>
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Date:</span>
-                <span style={styles.breakdownValue}>{selectedInvoice.invoice_date || '-'}</span>
-              </div>
-              <div style={styles.breakdownDivider} />
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Net Stock:</span>
-                <span style={styles.breakdownValue}>£{Number(selectedInvoice.net_stock ?? 0).toFixed(2)}</span>
-              </div>
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Gross Stock:</span>
-                <span style={styles.breakdownValue}>£{Number(selectedInvoice.gross_stock ?? 0).toFixed(2)}</span>
-              </div>
-              <div style={styles.breakdownDivider} />
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Net Total:</span>
-                <span style={styles.breakdownValue}>£{Number(selectedInvoice.net_total ?? 0).toFixed(2)}</span>
-              </div>
-              <div style={styles.breakdownRow}>
-                <span style={styles.breakdownLabel}>Gross Total:</span>
-                <span style={styles.breakdownValue}>£{Number(selectedInvoice.total ?? 0).toFixed(2)}</span>
-              </div>
-            </div>
-
-            <div style={styles.modalActions}>
-              <a href={`/invoice/${selectedInvoice.id}`} style={styles.viewFullBtn}>
-                View Full Invoice →
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -944,89 +880,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: '1rem',
     fontSize: '1.1rem',
     color: '#e94560',
-  },
-
-  // Modal
-  modal: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
-  modalContent: {
-    background: 'white',
-    borderRadius: '12px',
-    width: '90%',
-    maxWidth: '800px',
-    maxHeight: '90vh',
-    overflow: 'auto',
-  },
-  modalHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '1rem 1.5rem',
-    borderBottom: '1px solid #eee',
-  },
-  modalTitle: {
-    margin: 0,
-    color: '#1a1a2e',
-  },
-  modalClose: {
-    background: 'none',
-    border: 'none',
-    fontSize: '2rem',
-    cursor: 'pointer',
-    color: '#666',
-    lineHeight: 1,
-  },
-  previewContainer: {
-    height: '400px',
-    background: '#f8f9fa',
-    borderBottom: '1px solid #eee',
-  },
-  previewFrame: {
-    width: '100%',
-    height: '100%',
-    border: 'none',
-  },
-  invoiceBreakdown: {
-    padding: '1.5rem',
-  },
-  breakdownRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    padding: '0.5rem 0',
-  },
-  breakdownLabel: {
-    color: '#666',
-  },
-  breakdownValue: {
-    fontWeight: '500',
-  },
-  breakdownDivider: {
-    borderTop: '1px solid #eee',
-    margin: '0.5rem 0',
-  },
-  modalActions: {
-    padding: '1rem 1.5rem',
-    borderTop: '1px solid #eee',
-    textAlign: 'right',
-  },
-  viewFullBtn: {
-    display: 'inline-block',
-    padding: '0.5rem 1rem',
-    background: '#e94560',
-    color: 'white',
-    borderRadius: '6px',
-    textDecoration: 'none',
-    fontWeight: '500',
   },
 
   // Print styles
