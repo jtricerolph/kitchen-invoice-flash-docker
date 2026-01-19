@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import * as pdfjsLib from 'pdfjs-dist'
-import { getPriceStatusConfig, formatPercent } from '../utils/searchHelpers'
+import { getPriceStatusConfig } from '../utils/searchHelpers'
 import LineItemHistoryModal from './LineItemHistoryModal'
 
 // Use local worker file from public directory

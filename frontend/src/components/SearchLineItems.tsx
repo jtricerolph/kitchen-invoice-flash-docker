@@ -11,7 +11,6 @@ import {
   getDefaultDateRange,
   formatDateForDisplay,
   formatCurrency,
-  formatPercent,
   formatQuantity,
   getPriceStatusConfig,
   SEARCH_STORAGE_KEYS,

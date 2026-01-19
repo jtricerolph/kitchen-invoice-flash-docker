@@ -233,7 +233,7 @@ export default function Settings() {
   const [customFields, setCustomFields] = useState<Array<{_id: string; name: string}>>([])
   const [openingHours, setOpeningHours] = useState<Array<{_id: string; name: string; startTime: string; endTime: string}>>([])
   const [customFieldMapping, setCustomFieldMapping] = useState<Record<string, string>>({})
-  const [openingHoursMapping, setOpeningHoursMapping] = useState<Array<{resos_id: string; display_name: string; actual_end: string}>>([])
+  const [openingHoursMapping, setOpeningHoursMapping] = useState<Array<{resos_id: string; display_name: string; actual_end: string; service_type: string}>>([])
   const [showHistoricalResosModal, setShowHistoricalResosModal] = useState(false)
   const [historicalResosDateFrom, setHistoricalResosDateFrom] = useState(yesterdayStr)
   const [historicalResosDateTo, setHistoricalResosDateTo] = useState(yesterdayStr)
@@ -2566,7 +2566,6 @@ export default function Settings() {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: '2px solid #ddd' }}>
-                      <th style={{ padding: '0.5rem', textAlign: 'left' }}>Day</th>
                       <th style={{ padding: '0.5rem', textAlign: 'left' }}>Period Name</th>
                       <th style={{ padding: '0.5rem', textAlign: 'left' }}>Start Time</th>
                       <th style={{ padding: '0.5rem', textAlign: 'left' }}>End Time (Resos)</th>
@@ -2581,14 +2580,13 @@ export default function Settings() {
 
                       return (
                         <tr key={hour._id} style={{ borderBottom: '1px solid #eee' }}>
-                          <td style={{ padding: '0.5rem' }}>{hour.dayName || '-'}</td>
                           <td style={{ padding: '0.5rem' }}>{hour.name}</td>
                           <td style={{ padding: '0.5rem' }}>{hour.startTime || '-'}</td>
                           <td style={{ padding: '0.5rem' }}>{hour.endTime || '-'}</td>
                           <td style={{ padding: '0.5rem' }}>
                             <input
                               type="time"
-                              value={mapping?.actual_end || hour.actualEnd || ''}
+                              value={mapping?.actual_end || ''}
                               onChange={(e) => {
                                 const newMapping = openingHoursMapping.filter(m => m.resos_id !== hour._id)
                                 newMapping.push({
@@ -2612,7 +2610,7 @@ export default function Settings() {
                                 newMapping.push({
                                   resos_id: hour._id,
                                   display_name: e.target.value,
-                                  actual_end: mapping?.actual_end || hour.actualEnd || '',
+                                  actual_end: mapping?.actual_end || '',
                                   service_type: mapping?.service_type || ''
                                 })
                                 setOpeningHoursMapping(newMapping)
@@ -2629,7 +2627,7 @@ export default function Settings() {
                                 newMapping.push({
                                   resos_id: hour._id,
                                   display_name: mapping?.display_name || hour.name,
-                                  actual_end: mapping?.actual_end || hour.actualEnd || '',
+                                  actual_end: mapping?.actual_end || '',
                                   service_type: e.target.value
                                 })
                                 setOpeningHoursMapping(newMapping)
