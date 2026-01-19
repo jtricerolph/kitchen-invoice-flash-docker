@@ -284,6 +284,9 @@ export default function Review() {
   const [lineItemSortColumn, setLineItemSortColumn] = useState<string>('')
   const [lineItemSortDirection, setLineItemSortDirection] = useState<'asc' | 'desc'>('asc')
   const [lineItemPriceFilter, setLineItemPriceFilter] = useState<string>('')
+  const [lineItemSearchText, setLineItemSearchText] = useState<string>('')
+  const [lineItemPortionsFilter, setLineItemPortionsFilter] = useState<string>('')
+  const [lineItemMissingDataFilter, setLineItemMissingDataFilter] = useState<string>('')
 
   // Price history modal state
   const [historyModal, setHistoryModal] = useState<{
@@ -1006,6 +1009,16 @@ export default function Review() {
     // Add original index to each item so we can look up bounding boxes correctly
     let filtered = lineItems.map((item, originalIndex) => ({ ...item, _originalIndex: originalIndex }))
 
+    // Filter by search text (product code or description)
+    if (lineItemSearchText) {
+      const searchLower = lineItemSearchText.toLowerCase()
+      filtered = filtered.filter(item => {
+        const code = (item.product_code || '').toLowerCase()
+        const desc = (item.description || '').toLowerCase()
+        return code.includes(searchLower) || desc.includes(searchLower)
+      })
+    }
+
     // Filter by price change status
     if (lineItemPriceFilter) {
       filtered = filtered.filter(item => {
@@ -1014,6 +1027,26 @@ export default function Review() {
         if (lineItemPriceFilter === 'red') return item.price_status === 'red'
         if (lineItemPriceFilter === 'no_history') return item.price_status === 'no_history'
         return true
+      })
+    }
+
+    // Filter by portions definition
+    if (lineItemPortionsFilter) {
+      filtered = filtered.filter(item => {
+        const hasPortions = item.portions_per_unit != null && item.portions_per_unit > 0
+        if (lineItemPortionsFilter === 'yes') return hasPortions
+        if (lineItemPortionsFilter === 'no') return !hasPortions
+        return true
+      })
+    }
+
+    // Filter by missing key data
+    if (lineItemMissingDataFilter === 'missing') {
+      filtered = filtered.filter(item => {
+        const missingQty = item.quantity == null || item.quantity === 0
+        const missingPrice = item.unit_price == null || item.unit_price === 0
+        const missingAmount = item.amount == null || item.amount === 0
+        return missingQty || missingPrice || missingAmount
       })
     }
 
@@ -1065,7 +1098,7 @@ export default function Review() {
     }
 
     return filtered
-  }, [lineItems, lineItemSortColumn, lineItemSortDirection, lineItemPriceFilter])
+  }, [lineItems, lineItemSortColumn, lineItemSortDirection, lineItemPriceFilter, lineItemSearchText, lineItemPortionsFilter, lineItemMissingDataFilter])
 
   const handleLineItemSort = (column: string) => {
     if (lineItemSortColumn === column) {
@@ -1725,12 +1758,25 @@ export default function Review() {
 
       {/* Full-width Line Items Section */}
       <div style={styles.lineItemsSection}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-          <h3 style={{ margin: 0 }}>Line Items</h3>
+        <div style={{ marginBottom: '10px' }}>
+          <h3 style={{ margin: '0 0 10px 0' }}>Line Items</h3>
           {lineItems && lineItems.length > 0 && (
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                placeholder="Search by code or description..."
+                value={lineItemSearchText}
+                onChange={(e) => setLineItemSearchText(e.target.value)}
+                style={{
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  border: '1px solid #d1d5db',
+                  fontSize: '0.9rem',
+                  minWidth: '200px'
+                }}
+              />
               <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
-                Filter by price:
+                Price:
                 <select
                   value={lineItemPriceFilter}
                   onChange={(e) => setLineItemPriceFilter(e.target.value)}
@@ -1743,11 +1789,37 @@ export default function Review() {
                   <option value="no_history">No history</option>
                 </select>
               </label>
-              {(lineItemSortColumn || lineItemPriceFilter) && (
+              <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
+                Portions:
+                <select
+                  value={lineItemPortionsFilter}
+                  onChange={(e) => setLineItemPortionsFilter(e.target.value)}
+                  style={{ marginLeft: '5px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                >
+                  <option value="">All</option>
+                  <option value="yes">📦 Yes</option>
+                  <option value="no">○ No</option>
+                </select>
+              </label>
+              <label style={{ fontSize: '0.9rem', color: '#6b7280' }}>
+                Data:
+                <select
+                  value={lineItemMissingDataFilter}
+                  onChange={(e) => setLineItemMissingDataFilter(e.target.value)}
+                  style={{ marginLeft: '5px', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}
+                >
+                  <option value="">All</option>
+                  <option value="missing">⚠ Missing key data</option>
+                </select>
+              </label>
+              {(lineItemSortColumn || lineItemPriceFilter || lineItemSearchText || lineItemPortionsFilter || lineItemMissingDataFilter) && (
                 <button
                   onClick={() => {
                     setLineItemSortColumn('')
                     setLineItemPriceFilter('')
+                    setLineItemSearchText('')
+                    setLineItemPortionsFilter('')
+                    setLineItemMissingDataFilter('')
                   }}
                   style={{
                     padding: '4px 10px',
