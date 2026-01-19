@@ -168,12 +168,14 @@ export default function SearchLineItems() {
     if (!priceChangeFilter) return data.items
 
     return data.items.filter((item) => {
-      if (priceChangeFilter === 'amber_or_red') {
-        return item.price_change_status === 'amber' || item.price_change_status === 'red'
-      } else if (priceChangeFilter === 'amber') {
-        return item.price_change_status === 'amber'
-      } else if (priceChangeFilter === 'red') {
-        return item.price_change_status === 'red'
+      if (priceChangeFilter === 'no_history') {
+        return item.price_change_status === 'no_history'
+      } else if (priceChangeFilter === 'no_change') {
+        return item.price_change_status === 'consistent' || item.price_change_status === 'acknowledged'
+      } else if (priceChangeFilter === 'increase') {
+        return item.price_change_percent !== null && item.price_change_percent > 0
+      } else if (priceChangeFilter === 'decrease') {
+        return item.price_change_percent !== null && item.price_change_percent < 0
       }
       return true
     })
@@ -346,9 +348,10 @@ export default function SearchLineItems() {
           style={{ padding: '8px', border: '1px solid #d1d5db', borderRadius: '4px' }}
         >
           <option value="">All Price Changes</option>
-          <option value="amber_or_red">⚠️ Amber or Red Only</option>
-          <option value="amber">? Amber Only</option>
-          <option value="red">! Red Only</option>
+          <option value="no_history">No History</option>
+          <option value="no_change">✓ No Change</option>
+          <option value="increase">▲ Price Increase</option>
+          <option value="decrease">▼ Price Decrease</option>
         </select>
 
         <select
@@ -409,10 +412,10 @@ export default function SearchLineItems() {
           <span style={{ color: '#22c55e', fontWeight: 'bold' }}>✓</span> Price consistent
         </span>
         <span>
-          <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>?</span> Price changed
+          <span style={{ color: '#ef4444', fontWeight: 'bold' }}>▲</span> Price increase
         </span>
         <span>
-          <span style={{ color: '#ef4444', fontWeight: 'bold' }}>!</span> Large change {searchSettings && `(>${searchSettings.price_change_red_threshold}%)`}
+          <span style={{ color: '#22c55e', fontWeight: 'bold' }}>▼</span> Price decrease
         </span>
         <span>
           <span style={{ color: '#8b5cf6' }}>📦</span> Has portions defined
