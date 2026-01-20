@@ -13,6 +13,8 @@ import GPReport from './components/GPReport'
 import SearchInvoices from './components/SearchInvoices'
 import SearchLineItems from './components/SearchLineItems'
 import SearchDefinitions from './components/SearchDefinitions'
+import ResidentsTableChart from './pages/ResidentsTableChart'
+import BookingsStats from './pages/BookingsStats'
 
 interface User {
   id: number
@@ -164,6 +166,18 @@ function App() {
               }
             />
             <Route
+              path="/resos-stats"
+              element={
+                token ? (isPageAccessible('/resos') ? <BookingsStats /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/residents-table-chart"
+              element={
+                token ? (isPageAccessible('/resos') ? <ResidentsTableChart /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/search/invoices"
               element={
                 token ? (isPageAccessible('/search') ? <SearchInvoices /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -192,6 +206,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
   const [reportsOpen, setReportsOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [invoicesOpen, setInvoicesOpen] = useState(false)
+  const [bookingsOpen, setBookingsOpen] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   // Check if a page should be shown in nav
   const showNavItem = (path: string) => {
@@ -201,6 +217,9 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
 
   // Check if invoices dropdown should be shown
   const showInvoices = showNavItem('/invoices') || showNavItem('/purchases')
+
+  // Check if bookings dropdown should be shown
+  const showBookings = showNavItem('/resos')
 
   // Check if reports dropdown should be shown (at least one report accessible)
   const showReports = showNavItem('/gp-report')
@@ -212,7 +231,17 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
     <header style={styles.header}>
       <div style={styles.headerContent}>
         <h1 style={styles.logo}>Kitchen Flash App</h1>
-        <nav style={styles.nav}>
+        <button
+          style={styles.hamburger}
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-label="Toggle menu"
+        >
+          ☰
+        </button>
+        <nav
+          className={mobileMenuOpen ? 'mobile-open' : 'mobile-closed'}
+          style={styles.nav}
+        >
           <a href="/" style={styles.navLink}>Dashboard</a>
           {showNavItem('/upload') && <a href="/upload" style={styles.navLink}>Upload</a>}
           {showInvoices && (
@@ -228,6 +257,24 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                     {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Pending Invoices</a>}
                     {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
                     {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {showBookings && (
+            <div
+              style={styles.dropdownContainer}
+              onMouseEnter={() => setBookingsOpen(true)}
+              onMouseLeave={() => setBookingsOpen(false)}
+            >
+              <span style={styles.navLink}>Bookings ▾</span>
+              {bookingsOpen && (
+                <div style={styles.dropdown}>
+                  <div style={styles.dropdownContent}>
+                    {showNavItem('/resos') && <a href="/resos" style={styles.dropdownLink}>Bookings Calendar</a>}
+                    {showNavItem('/resos') && <a href="/resos-stats" style={styles.dropdownLink}>Bookings Stats</a>}
+                    {showNavItem('/resos') && <a href="/residents-table-chart" style={styles.dropdownLink}>Residents Table Chart</a>}
                   </div>
                 </div>
               )}
@@ -290,21 +337,35 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: '2rem',
+    gap: '1rem',
+    flexWrap: 'wrap',
+    position: 'relative',
   },
   logo: {
     fontSize: '1.5rem',
     fontWeight: 'bold',
+    flex: '1 1 auto',
+  },
+  hamburger: {
+    display: 'none',
+    background: 'none',
+    border: 'none',
+    color: 'white',
+    fontSize: '1.5rem',
+    cursor: 'pointer',
+    padding: '0.5rem',
   },
   nav: {
     display: 'flex',
     gap: '1.5rem',
     marginLeft: 'auto',
+    flexWrap: 'wrap',
   },
   navLink: {
     color: 'white',
     textDecoration: 'none',
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   dropdownContainer: {
     position: 'relative',
@@ -336,6 +397,65 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '0 auto',
     padding: '2rem',
   },
+}
+
+// Add global styles for responsive behavior
+const styleTag = document.createElement('style')
+styleTag.innerHTML = `
+  @media (max-width: 768px) {
+    button[aria-label="Toggle menu"] {
+      display: block !important;
+      order: 2;
+    }
+
+    nav {
+      order: 3;
+      width: 100%;
+      flex-direction: column !important;
+      background: #2d2d44;
+      padding: 1rem;
+      border-radius: 4px;
+      margin-top: 0.5rem;
+      gap: 0.5rem !important;
+    }
+
+    nav.mobile-closed {
+      display: none !important;
+    }
+
+    nav a, nav > div {
+      width: 100%;
+      padding: 0.5rem;
+    }
+
+    nav > div[style*="position: relative"] {
+      position: static !important;
+    }
+
+    nav > div > div {
+      position: static !important;
+      margin-top: 0.5rem;
+      padding-top: 0 !important;
+    }
+  }
+
+  @media (max-width: 480px) {
+    h1 {
+      font-size: 1.2rem !important;
+    }
+
+    nav {
+      gap: 0.25rem !important;
+    }
+
+    main {
+      padding: 1rem !important;
+    }
+  }
+`
+if (!document.head.querySelector('style[data-mobile-nav]')) {
+  styleTag.setAttribute('data-mobile-nav', 'true')
+  document.head.appendChild(styleTag)
 }
 
 export default App
