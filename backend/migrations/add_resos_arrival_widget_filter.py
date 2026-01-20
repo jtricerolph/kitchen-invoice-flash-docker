@@ -9,6 +9,9 @@ Run this script once after deploying the new code.
 """
 import asyncio
 import logging
+import sys
+sys.path.insert(0, '/app')
+
 from sqlalchemy import text
 from database import engine
 

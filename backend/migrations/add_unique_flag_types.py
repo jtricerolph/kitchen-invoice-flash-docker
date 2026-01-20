@@ -3,6 +3,9 @@ Migration script to add unique_flag_types column to resos_daily_stats table
 """
 import asyncio
 import logging
+import sys
+sys.path.insert(0, '/app')
+
 from sqlalchemy import text
 from database import engine
 
