@@ -771,6 +771,101 @@ class NewbookAPIClient:
             logger.info(f"Sample guest counts: {sample_dates}")
         return guests_by_date
 
+    def process_bookings_for_arrivals(
+        self,
+        bookings: list[dict],
+        included_room_types: list[str] = None,
+        category_id_to_type: dict[str, str] = None
+    ) -> dict[str, dict]:
+        """
+        Process bookings to extract arrival information per check-in date.
+
+        Args:
+            bookings: List of bookings from get_bookings()
+            included_room_types: Optional room type filter (same as guest count filtering)
+            category_id_to_type: Mapping from category_id to room type name
+
+        Returns dict keyed by check-in date string with:
+            {
+                "2026-01-20": {
+                    "count": 6,
+                    "ids": ["12345", "12346", ...],
+                    "details": [
+                        {
+                            "booking_id": "12345",
+                            "booking_reference": "NB-001",
+                            "num_guests": 2,
+                            "room_type": "Standard",
+                            "status": "confirmed"
+                        },
+                        ...
+                    ]
+                }
+            }
+        """
+        from datetime import datetime
+
+        arrivals_by_date = {}
+        category_id_to_type = category_id_to_type or {}
+
+        logger.info(f"Processing {len(bookings)} bookings for arrival tracking")
+        if included_room_types:
+            logger.info(f"Filtering to room types: {included_room_types}")
+
+        for booking in bookings:
+            # Apply room type filter (consistent with guest count filtering)
+            category_id = booking.get("category_id", "")
+            room_type = category_id_to_type.get(category_id, booking.get("room_type", category_id))
+
+            if included_room_types and room_type not in included_room_types:
+                continue
+
+            # Skip cancelled bookings
+            if booking.get("status", "").lower() == "cancelled":
+                continue
+
+            # Get check-in date (this is the arrival date)
+            check_in = booking.get("check_in_date")
+            if not check_in:
+                continue
+
+            # Parse to date string
+            if isinstance(check_in, str):
+                try:
+                    check_in_date = datetime.fromisoformat(check_in.split("T")[0]).date()
+                except ValueError:
+                    continue
+            else:
+                check_in_date = check_in
+
+            date_str = check_in_date.isoformat()
+
+            # Initialize date entry if needed
+            if date_str not in arrivals_by_date:
+                arrivals_by_date[date_str] = {
+                    "count": 0,
+                    "ids": [],
+                    "details": []
+                }
+
+            # Add arrival
+            arrivals_by_date[date_str]["count"] += 1
+            arrivals_by_date[date_str]["ids"].append(str(booking.get("booking_id", "")))
+            arrivals_by_date[date_str]["details"].append({
+                "booking_id": str(booking.get("booking_id", "")),
+                "booking_reference": booking.get("booking_reference", ""),
+                "num_guests": booking.get("num_guests", 0),
+                "room_type": room_type,
+                "status": booking.get("status", "")
+            })
+
+        logger.info(f"Found arrivals for {len(arrivals_by_date)} dates")
+        if arrivals_by_date:
+            sample = list(arrivals_by_date.items())[:3]
+            logger.info(f"Sample arrivals: {sample}")
+
+        return arrivals_by_date
+
     async def get_charges_list(
         self,
         date_from: date,

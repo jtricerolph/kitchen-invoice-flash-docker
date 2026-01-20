@@ -420,3 +420,181 @@ async def get_group_codes(
         return [GroupCodeResponse(name=gc["name"]) for gc in group_codes]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch group codes: {str(e)}")
+
+
+# ============ GL Codes Endpoints (Phase 8) ============
+
+class GLCodeResponse(BaseModel):
+    code: str
+
+
+class GLCodesUpdate(BaseModel):
+    food_codes: list[str]
+    beverage_codes: list[str]
+
+
+@router.get("/gl-codes", response_model=list[GLCodeResponse])
+async def get_gl_codes(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch all unique GL codes from ProductTag custom tags for food/beverage classification"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    if not all([
+        settings.sambapos_db_host,
+        settings.sambapos_db_name,
+        settings.sambapos_db_username,
+        settings.sambapos_db_password
+    ]):
+        raise HTTPException(status_code=400, detail="SambaPOS database credentials not configured")
+
+    client = SambaPOSClient(
+        host=settings.sambapos_db_host,
+        port=settings.sambapos_db_port or 1433,
+        database=settings.sambapos_db_name,
+        username=settings.sambapos_db_username,
+        password=settings.sambapos_db_password
+    )
+
+    try:
+        gl_codes = await client.get_gl_codes()
+        return [GLCodeResponse(code=gc["code"]) for gc in gl_codes]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch GL codes: {str(e)}")
+
+
+@router.get("/gl-codes/selected")
+async def get_selected_gl_codes(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get currently selected food and beverage GL codes"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    # Parse food GL codes from comma-separated string
+    food_codes = []
+    if settings.sambapos_food_gl_codes:
+        food_codes = [c.strip() for c in settings.sambapos_food_gl_codes.split(',') if c.strip()]
+
+    # Parse beverage GL codes from comma-separated string
+    beverage_codes = []
+    if settings.sambapos_beverage_gl_codes:
+        beverage_codes = [c.strip() for c in settings.sambapos_beverage_gl_codes.split(',') if c.strip()]
+
+    return {
+        "food_codes": food_codes,
+        "beverage_codes": beverage_codes
+    }
+
+
+@router.patch("/gl-codes")
+async def update_gl_codes(
+    update: GLCodesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update food and beverage GL code selections"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    # Store as comma-separated strings
+    settings.sambapos_food_gl_codes = ','.join(update.food_codes)
+    settings.sambapos_beverage_gl_codes = ','.join(update.beverage_codes)
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "food_codes": update.food_codes,
+        "beverage_codes": update.beverage_codes
+    }
+
+
+@router.get("/debug/custom-tags")
+async def debug_custom_tags(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to see sample CustomTags from MenuItems"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    if not all([
+        settings.sambapos_db_host,
+        settings.sambapos_db_name,
+        settings.sambapos_db_username,
+        settings.sambapos_db_password
+    ]):
+        raise HTTPException(status_code=400, detail="SambaPOS database credentials not configured")
+
+    client = SambaPOSClient(
+        host=settings.sambapos_db_host,
+        port=settings.sambapos_db_port or 1433,
+        database=settings.sambapos_db_name,
+        username=settings.sambapos_db_username,
+        password=settings.sambapos_db_password
+    )
+
+    try:
+        return await client.debug_menu_items()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to debug custom tags: {str(e)}")
+
+
+@router.get("/debug/table-schema")
+async def debug_table_schema(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to inspect column names in SambaPOS tables"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    if not all([
+        settings.sambapos_db_host,
+        settings.sambapos_db_name,
+        settings.sambapos_db_username,
+        settings.sambapos_db_password
+    ]):
+        raise HTTPException(status_code=400, detail="SambaPOS database credentials not configured")
+
+    client = SambaPOSClient(
+        host=settings.sambapos_db_host,
+        port=settings.sambapos_db_port or 1433,
+        database=settings.sambapos_db_name,
+        username=settings.sambapos_db_username,
+        password=settings.sambapos_db_password
+    )
+
+    try:
+        return await client.debug_table_schema()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to debug schema: {str(e)}")

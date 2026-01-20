@@ -21,6 +21,7 @@ class ResosBooking(Base):
 
     # Guest info (non-PII)
     seating_area: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    table_name: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Phase 8.1: Table from Resos
 
     # Custom fields
     hotel_booking_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -72,6 +73,10 @@ class ResosDailyStats(Base):
 
     # Flags
     flagged_booking_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Unique flag types present on this day (JSONB list)
+    # Format: ["allergies", "large_group", "note_keyword_birthday"]
+    unique_flag_types: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     # Consolidated booking data for quick access (JSONB)
     # Format: [{"time": "19:00", "people": 2, "period": "Dinner", "booked_at": "2026-01-15T10:30:00", "is_flagged": true, "status": "confirmed"}, ...]

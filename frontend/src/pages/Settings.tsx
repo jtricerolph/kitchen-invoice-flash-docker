@@ -49,6 +49,11 @@ interface ResosSettingsData {
   resos_custom_field_mapping: Record<string, string> | null
   resos_opening_hours_mapping: Array<{resos_id: string; display_name: string; actual_end: string}> | null
   resos_restaurant_table_entities: string | null
+  resos_arrival_widget_service_filter: string | null
+  resos_enable_manual_breakfast: boolean
+  resos_manual_breakfast_periods: Array<{day: number; start: string; end: string}> | null
+  sambapos_food_gl_codes: string | null  // Phase 8.1
+  sambapos_beverage_gl_codes: string | null  // Phase 8.1
 }
 
 interface GLAccount {
@@ -101,6 +106,10 @@ interface SambaPOSCategory {
 
 interface SambaPOSGroupCode {
   name: string
+}
+
+interface SambaPOSGLCode {
+  code: string
 }
 
 interface NextcloudSettingsData {
@@ -225,6 +234,7 @@ export default function Settings() {
 
   // Resos state
   const [resosApiKey, setResosApiKey] = useState('')
+  const [resosAutoSyncEnabled, setResosAutoSyncEnabled] = useState(false)
   const [resosLargeGroupThreshold, setResosLargeGroupThreshold] = useState(8)
   const [resosNoteKeywords, setResosNoteKeywords] = useState('')
   const [resosAllergyKeywords, setResosAllergyKeywords] = useState('')
@@ -234,6 +244,9 @@ export default function Settings() {
   const [openingHours, setOpeningHours] = useState<Array<{_id: string; name: string; startTime: string; endTime: string}>>([])
   const [customFieldMapping, setCustomFieldMapping] = useState<Record<string, string>>({})
   const [openingHoursMapping, setOpeningHoursMapping] = useState<Array<{resos_id: string; display_name: string; actual_end: string; service_type: string}>>([])
+  const [resosArrivalWidgetServiceFilter, setResosArrivalWidgetServiceFilter] = useState<string | null>(null)
+  const [resosEnableManualBreakfast, setResosEnableManualBreakfast] = useState(false)
+  const [resosManualBreakfastPeriods, setResosManualBreakfastPeriods] = useState<Array<{day: number; start: string; end: string}>>([])
   const [showHistoricalResosModal, setShowHistoricalResosModal] = useState(false)
   const [historicalResosDateFrom, setHistoricalResosDateFrom] = useState(yesterdayStr)
   const [historicalResosDateTo, setHistoricalResosDateTo] = useState(yesterdayStr)
@@ -250,6 +263,10 @@ export default function Settings() {
   const [sambaSelectedCourses, setSambaSelectedCourses] = useState<string[]>([])
   // Excluded menu items
   const [sambaExcludedItems, setSambaExcludedItems] = useState<Set<string>>(new Set())
+  // GL codes for food/beverage classification (Phase 8)
+  const [sambaFoodGLCodes, setSambaFoodGLCodes] = useState<Set<string>>(new Set())
+  const [sambaBeverageGLCodes, setSambaBeverageGLCodes] = useState<Set<string>>(new Set())
+  const [sambaGLCodesSaveMessage, setSambaGLCodesSaveMessage] = useState<string | null>(null)
 
   // Nextcloud state
   const [nextcloudHost, setNextcloudHost] = useState('')
@@ -417,6 +434,36 @@ export default function Settings() {
     },
     enabled: !!token && !!sambaSettings?.sambapos_db_host && !!sambaSettings?.sambapos_db_password_set,
     retry: false,
+  })
+
+  // Fetch SambaPOS GL codes for food/beverage classification (Phase 8)
+  const { data: sambaGLCodes, refetch: refetchSambaGLCodes, isLoading: sambaGLCodesLoading } = useQuery<SambaPOSGLCode[]>({
+    queryKey: ['sambapos-gl-codes'],
+    queryFn: async () => {
+      const res = await fetch('/api/sambapos/gl-codes', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to fetch GL codes')
+      }
+      return res.json()
+    },
+    enabled: !!token && !!sambaSettings?.sambapos_db_host && !!sambaSettings?.sambapos_db_password_set,
+    retry: false,
+  })
+
+  // Fetch selected GL codes
+  const { data: selectedGLCodes } = useQuery<{ food_codes: string[]; beverage_codes: string[] }>({
+    queryKey: ['sambapos-selected-gl-codes'],
+    queryFn: async () => {
+      const res = await fetch('/api/sambapos/gl-codes/selected', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch selected GL codes')
+      return res.json()
+    },
+    enabled: !!token,
   })
 
   // Fetch page restrictions
@@ -598,12 +645,24 @@ export default function Settings() {
     }
   }, [sambaSettings])
 
+  // Populate GL codes from selected GL codes query (Phase 8)
+  useEffect(() => {
+    if (selectedGLCodes) {
+      setSambaFoodGLCodes(new Set(selectedGLCodes.food_codes || []))
+      setSambaBeverageGLCodes(new Set(selectedGLCodes.beverage_codes || []))
+    }
+  }, [selectedGLCodes])
+
   useEffect(() => {
     if (resosSettings) {
+      setResosAutoSyncEnabled(resosSettings.resos_auto_sync_enabled || false)
       setResosLargeGroupThreshold(resosSettings.resos_large_group_threshold || 8)
       setResosNoteKeywords(resosSettings.resos_note_keywords || '')
       setResosAllergyKeywords(resosSettings.resos_allergy_keywords || '')
       setCustomFieldMapping(resosSettings.resos_custom_field_mapping || {})
+      setResosArrivalWidgetServiceFilter(resosSettings.resos_arrival_widget_service_filter || null)
+      setResosEnableManualBreakfast(resosSettings.resos_enable_manual_breakfast || false)
+      setResosManualBreakfastPeriods(resosSettings.resos_manual_breakfast_periods || [])
       // Ensure all mapping items have service_type property
       const mapping = (resosSettings.resos_opening_hours_mapping || []).map(m => ({
         resos_id: m.resos_id,
@@ -1115,6 +1174,29 @@ export default function Settings() {
     },
   })
 
+  const saveGLCodesMutation = useMutation({
+    mutationFn: async (data: { food_codes: string[]; beverage_codes: string[] }) => {
+      const res = await fetch('/api/sambapos/gl-codes', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to save GL codes')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sambapos-selected-gl-codes'] })
+      setSambaGLCodesSaveMessage('GL codes saved successfully')
+      setTimeout(() => setSambaGLCodesSaveMessage(null), 3000)
+    },
+    onError: (error) => {
+      setSambaGLCodesSaveMessage(`Error: ${error.message}`)
+    },
+  })
+
   // Nextcloud mutations
   const saveNextcloudMutation = useMutation({
     mutationFn: async (data: Record<string, unknown>) => {
@@ -1434,6 +1516,46 @@ export default function Settings() {
     saveExcludedItemsMutation.mutate(Array.from(sambaExcludedItems))
   }
 
+  // Toggle GL codes (Phase 8)
+  const toggleFoodGLCode = (code: string) => {
+    const newSet = new Set(sambaFoodGLCodes)
+    if (newSet.has(code)) {
+      newSet.delete(code)
+    } else {
+      newSet.add(code)
+      // Remove from beverage if it was there
+      if (sambaBeverageGLCodes.has(code)) {
+        const newBevSet = new Set(sambaBeverageGLCodes)
+        newBevSet.delete(code)
+        setSambaBeverageGLCodes(newBevSet)
+      }
+    }
+    setSambaFoodGLCodes(newSet)
+  }
+
+  const toggleBeverageGLCode = (code: string) => {
+    const newSet = new Set(sambaBeverageGLCodes)
+    if (newSet.has(code)) {
+      newSet.delete(code)
+    } else {
+      newSet.add(code)
+      // Remove from food if it was there
+      if (sambaFoodGLCodes.has(code)) {
+        const newFoodSet = new Set(sambaFoodGLCodes)
+        newFoodSet.delete(code)
+        setSambaFoodGLCodes(newFoodSet)
+      }
+    }
+    setSambaBeverageGLCodes(newSet)
+  }
+
+  const handleSaveGLCodes = () => {
+    saveGLCodesMutation.mutate({
+      food_codes: Array.from(sambaFoodGLCodes),
+      beverage_codes: Array.from(sambaBeverageGLCodes)
+    })
+  }
+
   const sambaConnectionConfigured = sambaSettings?.sambapos_db_host && sambaSettings?.sambapos_db_password_set
 
   if (isLoading) {
@@ -1507,14 +1629,65 @@ export default function Settings() {
         {activeSection === 'account' && (
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Account</h2>
-            <div style={styles.infoGrid}>
-              <p><strong>Email:</strong> {user?.email}</p>
-              <p><strong>Name:</strong> {user?.name}</p>
-              <p><strong>Kitchen:</strong> {user?.kitchen_name}</p>
-              {user?.is_admin && <p><strong>Role:</strong> Admin</p>}
+
+            {/* Account Information Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Account Information</h3>
+              <div style={styles.infoGrid}>
+                <p><strong>Email:</strong> {user?.email}</p>
+                <p><strong>Name:</strong> {user?.name}</p>
+                <p><strong>Kitchen:</strong> {user?.kitchen_name}</p>
+                {user?.is_admin && <p><strong>Role:</strong> Admin</p>}
+              </div>
             </div>
 
-            <div style={{ marginTop: '2rem', marginBottom: '2rem' }}>
+            {/* Change Password Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Change Password</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Current Password
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    style={styles.input}
+                  />
+                </label>
+                <label style={styles.label}>
+                  New Password
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    style={styles.input}
+                  />
+                </label>
+                <label style={styles.label}>
+                  Confirm New Password
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    style={styles.input}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Actions - outside blocks */}
+            <div style={{ marginBottom: '1rem' }}>
+              <button onClick={handlePasswordChange} style={styles.btn} disabled={passwordMutation.isPending}>
+                {passwordMutation.isPending ? 'Changing...' : 'Change Password'}
+              </button>
+              {passwordMessage && (
+                <div style={{ ...styles.statusMessage, background: passwordMessage.startsWith('Error') ? '#fee' : '#efe', marginTop: '0.5rem' }}>
+                  {passwordMessage}
+                </div>
+              )}
+            </div>
+
+            <div>
               <button onClick={() => {
                 if (window.confirm('Are you sure you want to logout?')) {
                   logout()
@@ -1533,45 +1706,6 @@ export default function Settings() {
                 Logout
               </button>
             </div>
-
-            <h3 style={styles.subsectionTitle}>Change Password</h3>
-            <div style={styles.form}>
-              <label style={styles.label}>
-                Current Password
-                <input
-                  type="password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  style={styles.input}
-                />
-              </label>
-              <label style={styles.label}>
-                New Password
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  style={styles.input}
-                />
-              </label>
-              <label style={styles.label}>
-                Confirm New Password
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  style={styles.input}
-                />
-              </label>
-              <button onClick={handlePasswordChange} style={styles.btn} disabled={passwordMutation.isPending}>
-                {passwordMutation.isPending ? 'Changing...' : 'Change Password'}
-              </button>
-              {passwordMessage && (
-                <div style={{ ...styles.statusMessage, background: passwordMessage.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {passwordMessage}
-                </div>
-              )}
-            </div>
           </div>
         )}
 
@@ -1580,69 +1714,74 @@ export default function Settings() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>User Management</h2>
             <p style={styles.hint}>Manage users who have access to this kitchen.</p>
-            {users && users.length > 0 && (
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Email</th>
-                    <th style={styles.th}>Name</th>
-                    <th style={styles.th}>Status</th>
-                    <th style={styles.th}>Role</th>
-                    <th style={styles.th}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map((u) => (
-                    <tr key={u.id} style={!u.is_active ? styles.disabledRow : undefined}>
-                      <td style={styles.td}>{u.email}</td>
-                      <td style={styles.td}>{u.name || '-'}</td>
-                      <td style={styles.td}>
-                        <span style={u.is_active ? styles.activeStatus : styles.inactiveStatus}>
-                          {u.is_active ? 'Active' : 'Disabled'}
-                        </span>
-                      </td>
-                      <td style={styles.td}>{u.is_admin ? 'Admin' : 'User'}</td>
-                      <td style={styles.td}>
-                        {u.id !== user.id ? (
-                          <div style={styles.actionButtons}>
-                            <button
-                              onClick={() => toggleUserMutation.mutate(u.id)}
-                              style={u.is_active ? styles.disableBtn : styles.enableBtn}
-                            >
-                              {u.is_active ? 'Disable' : 'Enable'}
-                            </button>
-                            <button
-                              onClick={() => {
-                                if (confirm(`${u.is_admin ? 'Remove admin rights from' : 'Make admin'} ${u.email}?`)) {
-                                  toggleAdminMutation.mutate(u.id)
-                                }
-                              }}
-                              style={u.is_admin ? styles.demoteBtn : styles.promoteBtn}
-                            >
-                              {u.is_admin ? 'Demote' : 'Make Admin'}
-                            </button>
-                            {!u.is_admin && (
+
+            {/* Users List Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Users</h3>
+              {users && users.length > 0 && (
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Email</th>
+                      <th style={styles.th}>Name</th>
+                      <th style={styles.th}>Status</th>
+                      <th style={styles.th}>Role</th>
+                      <th style={styles.th}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map((u) => (
+                      <tr key={u.id} style={!u.is_active ? styles.disabledRow : undefined}>
+                        <td style={styles.td}>{u.email}</td>
+                        <td style={styles.td}>{u.name || '-'}</td>
+                        <td style={styles.td}>
+                          <span style={u.is_active ? styles.activeStatus : styles.inactiveStatus}>
+                            {u.is_active ? 'Active' : 'Disabled'}
+                          </span>
+                        </td>
+                        <td style={styles.td}>{u.is_admin ? 'Admin' : 'User'}</td>
+                        <td style={styles.td}>
+                          {u.id !== user.id ? (
+                            <div style={styles.actionButtons}>
+                              <button
+                                onClick={() => toggleUserMutation.mutate(u.id)}
+                                style={u.is_active ? styles.disableBtn : styles.enableBtn}
+                              >
+                                {u.is_active ? 'Disable' : 'Enable'}
+                              </button>
                               <button
                                 onClick={() => {
-                                  if (confirm(`Delete user ${u.email}?`)) {
-                                    deleteUserMutation.mutate(u.id)
+                                  if (confirm(`${u.is_admin ? 'Remove admin rights from' : 'Make admin'} ${u.email}?`)) {
+                                    toggleAdminMutation.mutate(u.id)
                                   }
                                 }}
-                                style={styles.deleteBtn}
+                                style={u.is_admin ? styles.demoteBtn : styles.promoteBtn}
                               >
-                                Delete
+                                {u.is_admin ? 'Demote' : 'Make Admin'}
                               </button>
-                            )}
-                          </div>
-                        ) : (
-                          <span style={styles.youLabel}>(You)</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+                              {!u.is_admin && (
+                                <button
+                                  onClick={() => {
+                                    if (confirm(`Delete user ${u.email}?`)) {
+                                      deleteUserMutation.mutate(u.id)
+                                    }
+                                  }}
+                                  style={styles.deleteBtn}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={styles.youLabel}>(You)</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         )}
 
@@ -1654,93 +1793,103 @@ export default function Settings() {
               Restrict pages to admin users only. Non-admin users will not see restricted pages in the navigation.
             </p>
 
-            <h3 style={styles.subsectionTitle}>Invoice & Data</h3>
-            <div style={styles.checkboxGroup}>
-              {[
-                { path: '/upload', label: 'Upload Invoices' },
-                { path: '/invoices', label: 'Invoice List' },
-                { path: '/suppliers', label: 'Suppliers' },
-                { path: '/purchases', label: 'Purchases' },
-              ].map(({ path, label }) => (
-                <label key={path} style={styles.checkboxLabel}>
-                  <input
-                    type="checkbox"
-                    checked={restrictedPages.has(path)}
-                    onChange={() => {
-                      const newSet = new Set(restrictedPages)
-                      if (newSet.has(path)) {
-                        newSet.delete(path)
-                      } else {
-                        newSet.add(path)
-                      }
-                      setRestrictedPages(newSet)
-                    }}
-                  />
-                  {label}
-                </label>
-              ))}
+            {/* Invoice & Data Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Invoice & Data</h3>
+              <div style={styles.checkboxGroup}>
+                {[
+                  { path: '/upload', label: 'Upload Invoices' },
+                  { path: '/invoices', label: 'Invoice List' },
+                  { path: '/suppliers', label: 'Suppliers' },
+                  { path: '/purchases', label: 'Purchases' },
+                ].map(({ path, label }) => (
+                  <label key={path} style={styles.checkboxLabel}>
+                    <input
+                      type="checkbox"
+                      checked={restrictedPages.has(path)}
+                      onChange={() => {
+                        const newSet = new Set(restrictedPages)
+                        if (newSet.has(path)) {
+                          newSet.delete(path)
+                        } else {
+                          newSet.add(path)
+                        }
+                        setRestrictedPages(newSet)
+                      }}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
 
-            <h3 style={styles.subsectionTitle}>Reports</h3>
-            <div style={styles.checkboxGroup}>
-              {[
-                { path: '/gp-report', label: 'GP Report' },
-                { path: '/newbook', label: 'Newbook Data' },
-                { path: '/resos', label: 'Resos Booking Data' },
-              ].map(({ path, label }) => (
-                <label key={path} style={styles.checkboxLabel}>
-                  <input
-                    type="checkbox"
-                    checked={restrictedPages.has(path)}
-                    onChange={() => {
-                      const newSet = new Set(restrictedPages)
-                      if (newSet.has(path)) {
-                        newSet.delete(path)
-                      } else {
-                        newSet.add(path)
-                      }
-                      setRestrictedPages(newSet)
-                    }}
-                  />
-                  {label}
-                </label>
-              ))}
+            {/* Reports Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Reports</h3>
+              <div style={styles.checkboxGroup}>
+                {[
+                  { path: '/gp-report', label: 'GP Report' },
+                  { path: '/newbook', label: 'Newbook Data' },
+                  { path: '/resos', label: 'Resos Booking Data' },
+                ].map(({ path, label }) => (
+                  <label key={path} style={styles.checkboxLabel}>
+                    <input
+                      type="checkbox"
+                      checked={restrictedPages.has(path)}
+                      onChange={() => {
+                        const newSet = new Set(restrictedPages)
+                        if (newSet.has(path)) {
+                          newSet.delete(path)
+                        } else {
+                          newSet.add(path)
+                        }
+                        setRestrictedPages(newSet)
+                      }}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
 
-            <h3 style={styles.subsectionTitle}>Settings Sections</h3>
-            <div style={styles.checkboxGroup}>
-              {[
-                { path: '/settings', label: 'Settings Page (entire page)' },
-                { path: '/settings-users', label: 'Users Management' },
-                { path: '/settings-display', label: 'Display Settings' },
-                { path: '/settings-azure', label: 'Azure OCR' },
-                { path: '/settings-newbook', label: 'Newbook PMS' },
-                { path: '/settings-resos', label: 'Resos Bookings' },
-                { path: '/settings-sambapos', label: 'SambaPOS EPOS' },
-                { path: '/settings-suppliers', label: 'Suppliers' },
-                { path: '/settings-nextcloud', label: 'Nextcloud Storage' },
-                { path: '/settings-backup', label: 'Backup & Restore' },
-                { path: '/settings-data', label: 'Data Management' },
-              ].map(({ path, label }) => (
-                <label key={path} style={styles.checkboxLabel}>
-                  <input
-                    type="checkbox"
-                    checked={restrictedPages.has(path)}
-                    onChange={() => {
-                      const newSet = new Set(restrictedPages)
-                      if (newSet.has(path)) {
-                        newSet.delete(path)
-                      } else {
-                        newSet.add(path)
-                      }
-                      setRestrictedPages(newSet)
-                    }}
-                  />
-                  {label}
-                </label>
-              ))}
+            {/* Settings Sections Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Settings Sections</h3>
+              <div style={styles.checkboxGroup}>
+                {[
+                  { path: '/settings', label: 'Settings Page (entire page)' },
+                  { path: '/settings-users', label: 'Users Management' },
+                  { path: '/settings-display', label: 'Display Settings' },
+                  { path: '/settings-azure', label: 'Azure OCR' },
+                  { path: '/settings-newbook', label: 'Newbook PMS' },
+                  { path: '/settings-resos', label: 'Resos Bookings' },
+                  { path: '/settings-sambapos', label: 'SambaPOS EPOS' },
+                  { path: '/settings-suppliers', label: 'Suppliers' },
+                  { path: '/settings-nextcloud', label: 'Nextcloud Storage' },
+                  { path: '/settings-backup', label: 'Backup & Restore' },
+                  { path: '/settings-data', label: 'Data Management' },
+                ].map(({ path, label }) => (
+                  <label key={path} style={styles.checkboxLabel}>
+                    <input
+                      type="checkbox"
+                      checked={restrictedPages.has(path)}
+                      onChange={() => {
+                        const newSet = new Set(restrictedPages)
+                        if (newSet.has(path)) {
+                          newSet.delete(path)
+                        } else {
+                          newSet.add(path)
+                        }
+                        setRestrictedPages(newSet)
+                      }}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
 
+            {/* Save Button - outside blocks */}
             <div style={{ marginTop: '1.5rem' }}>
               <button
                 onClick={() => savePageRestrictionsMutation.mutate(Array.from(restrictedPages))}
@@ -1768,45 +1917,52 @@ export default function Settings() {
         {activeSection === 'display' && (
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Display Settings</h2>
-            <div style={styles.form}>
-              <label style={styles.label}>
-                Currency Symbol
-                <select value={currencySymbol} onChange={(e) => setCurrencySymbol(e.target.value)} style={styles.input}>
-                  <option value="£">£ (GBP)</option>
-                  <option value="$">$ (USD)</option>
-                  <option value="€">€ (EUR)</option>
-                </select>
-              </label>
-              <label style={styles.label}>
-                Date Format
-                <select value={dateFormat} onChange={(e) => setDateFormat(e.target.value)} style={styles.input}>
-                  <option value="DD/MM/YYYY">DD/MM/YYYY</option>
-                  <option value="MM/DD/YYYY">MM/DD/YYYY</option>
-                  <option value="YYYY-MM-DD">YYYY-MM-DD</option>
-                </select>
-              </label>
-              <label style={styles.label}>
-                High Quantity Warning Threshold
-                <input
-                  type="number"
-                  min="1"
-                  value={highQuantityThreshold}
-                  onChange={(e) => setHighQuantityThreshold(parseInt(e.target.value) || 100)}
-                  style={styles.input}
-                />
-                <span style={{ fontSize: '0.85rem', color: '#666' }}>
-                  Line items with quantity above this value will be highlighted amber
-                </span>
-              </label>
-              <button onClick={handleSaveSettings} style={styles.saveBtn} disabled={updateMutation.isPending}>
-                {updateMutation.isPending ? 'Saving...' : 'Save Settings'}
-              </button>
-              {saveMessage && (
-                <div style={{ ...styles.statusMessage, background: saveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {saveMessage}
-                </div>
-              )}
+
+            {/* Display Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Display Configuration</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Currency Symbol
+                  <select value={currencySymbol} onChange={(e) => setCurrencySymbol(e.target.value)} style={styles.input}>
+                    <option value="£">£ (GBP)</option>
+                    <option value="$">$ (USD)</option>
+                    <option value="€">€ (EUR)</option>
+                  </select>
+                </label>
+                <label style={styles.label}>
+                  Date Format
+                  <select value={dateFormat} onChange={(e) => setDateFormat(e.target.value)} style={styles.input}>
+                    <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                    <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                    <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                  </select>
+                </label>
+                <label style={styles.label}>
+                  High Quantity Warning Threshold
+                  <input
+                    type="number"
+                    min="1"
+                    value={highQuantityThreshold}
+                    onChange={(e) => setHighQuantityThreshold(parseInt(e.target.value) || 100)}
+                    style={styles.input}
+                  />
+                  <span style={{ fontSize: '0.85rem', color: '#666' }}>
+                    Line items with quantity above this value will be highlighted amber
+                  </span>
+                </label>
+              </div>
             </div>
+
+            {/* Save Button - outside blocks */}
+            <button onClick={handleSaveSettings} style={styles.saveBtn} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? 'Saving...' : 'Save Settings'}
+            </button>
+            {saveMessage && (
+              <div style={{ ...styles.statusMessage, background: saveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                {saveMessage}
+              </div>
+            )}
           </div>
         )}
 
@@ -1815,42 +1971,49 @@ export default function Settings() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Azure Document Intelligence</h2>
             <p style={styles.hint}>Configure Azure credentials for invoice OCR processing.</p>
-            <div style={styles.form}>
-              <label style={styles.label}>
-                Endpoint URL
-                <input
-                  type="text"
-                  value={azureEndpoint}
-                  onChange={(e) => setAzureEndpoint(e.target.value)}
-                  style={styles.input}
-                  placeholder="https://your-resource.cognitiveservices.azure.com/"
-                />
-              </label>
-              <label style={styles.label}>
-                API Key
-                <input
-                  type="password"
-                  value={azureKey}
-                  onChange={(e) => setAzureKey(e.target.value)}
-                  style={styles.input}
-                  placeholder={settings?.azure_key_set ? '••••••••••••••••' : 'Enter your API key'}
-                />
-                {settings?.azure_key_set && !azureKey && <span style={styles.keyStatus}>Key is configured</span>}
-              </label>
-              <div style={styles.buttonRow}>
-                <button onClick={() => azureTestMutation.mutate()} style={styles.testBtn} disabled={!settings?.azure_key_set}>
-                  Test Connection
-                </button>
-                <button onClick={handleSaveSettings} style={styles.saveBtn} disabled={updateMutation.isPending}>
-                  Save
-                </button>
+
+            {/* API Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>API Configuration</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Endpoint URL
+                  <input
+                    type="text"
+                    value={azureEndpoint}
+                    onChange={(e) => setAzureEndpoint(e.target.value)}
+                    style={styles.input}
+                    placeholder="https://your-resource.cognitiveservices.azure.com/"
+                  />
+                </label>
+                <label style={styles.label}>
+                  API Key
+                  <input
+                    type="password"
+                    value={azureKey}
+                    onChange={(e) => setAzureKey(e.target.value)}
+                    style={styles.input}
+                    placeholder={settings?.azure_key_set ? '••••••••••••••••' : 'Enter your API key'}
+                  />
+                  {settings?.azure_key_set && !azureKey && <span style={styles.keyStatus}>Key is configured</span>}
+                </label>
               </div>
-              {azureTestStatus && (
-                <div style={{ ...styles.statusMessage, background: azureTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {azureTestStatus}
-                </div>
-              )}
             </div>
+
+            {/* Actions - outside blocks */}
+            <div style={styles.buttonRow}>
+              <button onClick={() => azureTestMutation.mutate()} style={styles.testBtn} disabled={!settings?.azure_key_set}>
+                Test Connection
+              </button>
+              <button onClick={handleSaveSettings} style={styles.saveBtn} disabled={updateMutation.isPending}>
+                Save
+              </button>
+            </div>
+            {azureTestStatus && (
+              <div style={{ ...styles.statusMessage, background: azureTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                {azureTestStatus}
+              </div>
+            )}
           </div>
         )}
 
@@ -1859,77 +2022,85 @@ export default function Settings() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Email Configuration (SMTP)</h2>
             <p style={styles.hint}>Configure SMTP settings for sending emails.</p>
-            <div style={styles.form}>
-              <label style={styles.label}>
-                SMTP Server
-                <input
-                  type="text"
-                  value={smtpHost}
-                  onChange={(e) => setSmtpHost(e.target.value)}
-                  style={styles.input}
-                  placeholder="smtp.gmail.com"
-                />
-              </label>
-              <label style={styles.label}>
-                SMTP Port
-                <input
-                  type="number"
-                  value={smtpPort}
-                  onChange={(e) => setSmtpPort(e.target.value)}
-                  style={styles.input}
-                  placeholder="587"
-                />
-              </label>
-              <label style={styles.label}>
-                Username
-                <input
-                  type="text"
-                  value={smtpUsername}
-                  onChange={(e) => setSmtpUsername(e.target.value)}
-                  style={styles.input}
-                  placeholder="your-email@example.com"
-                />
-              </label>
-              <label style={styles.label}>
-                Password
-                <input
-                  type="password"
-                  value={smtpPassword}
-                  onChange={(e) => setSmtpPassword(e.target.value)}
-                  style={styles.input}
-                  placeholder={settings?.smtp_password_set ? '••••••••••••••••' : 'Enter password'}
-                />
-                {settings?.smtp_password_set && !smtpPassword && <span style={styles.keyStatus}>Password is configured</span>}
-              </label>
-              <label style={styles.label}>
-                <input
-                  type="checkbox"
-                  checked={smtpUseTls}
-                  onChange={(e) => setSmtpUseTls(e.target.checked)}
-                />
-                Use TLS/STARTTLS
-              </label>
-              <label style={styles.label}>
-                From Email
-                <input
-                  type="email"
-                  value={smtpFromEmail}
-                  onChange={(e) => setSmtpFromEmail(e.target.value)}
-                  style={styles.input}
-                  placeholder="invoices@yourcompany.com"
-                />
-              </label>
-              <label style={styles.label}>
-                From Name
-                <input
-                  type="text"
-                  value={smtpFromName}
-                  onChange={(e) => setSmtpFromName(e.target.value)}
-                  style={styles.input}
-                  placeholder="Kitchen Invoice System"
-                />
-              </label>
-              <div style={styles.buttonRow}>
+
+            {/* SMTP Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>SMTP Settings</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  SMTP Server
+                  <input
+                    type="text"
+                    value={smtpHost}
+                    onChange={(e) => setSmtpHost(e.target.value)}
+                    style={styles.input}
+                    placeholder="smtp.gmail.com"
+                  />
+                </label>
+                <label style={styles.label}>
+                  SMTP Port
+                  <input
+                    type="number"
+                    value={smtpPort}
+                    onChange={(e) => setSmtpPort(e.target.value)}
+                    style={styles.input}
+                    placeholder="587"
+                  />
+                </label>
+                <label style={styles.label}>
+                  Username
+                  <input
+                    type="text"
+                    value={smtpUsername}
+                    onChange={(e) => setSmtpUsername(e.target.value)}
+                    style={styles.input}
+                    placeholder="your-email@example.com"
+                  />
+                </label>
+                <label style={styles.label}>
+                  Password
+                  <input
+                    type="password"
+                    value={smtpPassword}
+                    onChange={(e) => setSmtpPassword(e.target.value)}
+                    style={styles.input}
+                    placeholder={settings?.smtp_password_set ? '••••••••••••••••' : 'Enter password'}
+                  />
+                  {settings?.smtp_password_set && !smtpPassword && <span style={styles.keyStatus}>Password is configured</span>}
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={smtpUseTls}
+                    onChange={(e) => setSmtpUseTls(e.target.checked)}
+                  />
+                  Use TLS/STARTTLS
+                </label>
+                <label style={styles.label}>
+                  From Email
+                  <input
+                    type="email"
+                    value={smtpFromEmail}
+                    onChange={(e) => setSmtpFromEmail(e.target.value)}
+                    style={styles.input}
+                    placeholder="invoices@yourcompany.com"
+                  />
+                </label>
+                <label style={styles.label}>
+                  From Name
+                  <input
+                    type="text"
+                    value={smtpFromName}
+                    onChange={(e) => setSmtpFromName(e.target.value)}
+                    style={styles.input}
+                    placeholder="Kitchen Invoice System"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Actions - outside blocks */}
+            <div style={styles.buttonRow}>
                 <button
                   onClick={async () => {
                     // Save settings first, then test
@@ -2027,17 +2198,16 @@ export default function Settings() {
                   Save
                 </button>
               </div>
-              {smtpTestStatus && (
-                <div style={{ ...styles.statusMessage, background: smtpTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {smtpTestStatus}
-                </div>
-              )}
-              {smtpSaveMessage && (
-                <div style={{ ...styles.statusMessage, background: smtpSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {smtpSaveMessage}
-                </div>
-              )}
-            </div>
+            {smtpTestStatus && (
+              <div style={{ ...styles.statusMessage, background: smtpTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                {smtpTestStatus}
+              </div>
+            )}
+            {smtpSaveMessage && (
+              <div style={{ ...styles.statusMessage, background: smtpSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                {smtpSaveMessage}
+              </div>
+            )}
           </div>
         )}
 
@@ -2046,94 +2216,101 @@ export default function Settings() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Dext Integration</h2>
             <p style={styles.hint}>Configure automatic invoice submission to Dext.</p>
-            <div style={styles.form}>
-              <label style={styles.label}>
-                Dext Email Address
-                <input
-                  type="email"
-                  value={dextEmail}
-                  onChange={(e) => setDextEmail(e.target.value)}
-                  style={styles.input}
-                  placeholder="yourcompany@dext.com"
-                />
-                <small style={{ color: '#666', fontSize: '0.9em' }}>Invoices will be sent to this email address</small>
-              </label>
-              <label style={styles.label}>
-                <input
-                  type="checkbox"
-                  checked={dextIncludeNotes}
-                  onChange={(e) => setDextIncludeNotes(e.target.checked)}
-                />
-                Include invoice notes in email body
-              </label>
-              <label style={styles.label}>
-                <input
-                  type="checkbox"
-                  checked={dextIncludeNonStock}
-                  onChange={(e) => setDextIncludeNonStock(e.target.checked)}
-                />
-                Include non-stock items table in email body
-              </label>
-              <label style={styles.label}>
-                <input
-                  type="checkbox"
-                  checked={dextAutoSendEnabled}
-                  onChange={(e) => setDextAutoSendEnabled(e.target.checked)}
-                />
-                Automatically send to Dext when invoice is confirmed
-                <small style={{ color: '#e67e22', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
-                  ⚠️ Leave disabled for testing. Enable only when ready for production.
-                </small>
-              </label>
-              <label style={styles.label}>
-                <input
-                  type="checkbox"
-                  checked={dextManualSendEnabled}
-                  onChange={(e) => setDextManualSendEnabled(e.target.checked)}
-                />
-                Enable manual "Send to Dext" button on invoice review page
-                <small style={{ color: '#666', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
-                  When disabled, only the send status will be displayed (without send/resend buttons)
-                </small>
-              </label>
-              <button
-                onClick={async () => {
-                  try {
-                    const res = await fetch('/api/settings/', {
-                      method: 'PATCH',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`
-                      },
-                      body: JSON.stringify({
-                        dext_email: dextEmail || null,
-                        dext_include_notes: dextIncludeNotes,
-                        dext_include_non_stock: dextIncludeNonStock,
-                        dext_auto_send_enabled: dextAutoSendEnabled,
-                        dext_manual_send_enabled: dextManualSendEnabled
-                      })
-                    })
-                    if (res.ok) {
-                      setDextSaveMessage('✓ Saved successfully')
-                      queryClient.invalidateQueries({ queryKey: ['settings'] })
-                      setTimeout(() => setDextSaveMessage(null), 3000)
-                    } else {
-                      setDextSaveMessage('Error: Failed to save')
-                    }
-                  } catch (err) {
-                    setDextSaveMessage(`Error: ${err}`)
-                  }
-                }}
-                style={styles.saveBtn}
-              >
-                Save Settings
-              </button>
-              {dextSaveMessage && (
-                <div style={{ ...styles.statusMessage, background: dextSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {dextSaveMessage}
-                </div>
-              )}
+
+            {/* Dext Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Dext Settings</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Dext Email Address
+                  <input
+                    type="email"
+                    value={dextEmail}
+                    onChange={(e) => setDextEmail(e.target.value)}
+                    style={styles.input}
+                    placeholder="yourcompany@dext.com"
+                  />
+                  <small style={{ color: '#666', fontSize: '0.9em' }}>Invoices will be sent to this email address</small>
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={dextIncludeNotes}
+                    onChange={(e) => setDextIncludeNotes(e.target.checked)}
+                  />
+                  Include invoice notes in email body
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={dextIncludeNonStock}
+                    onChange={(e) => setDextIncludeNonStock(e.target.checked)}
+                  />
+                  Include non-stock items table in email body
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={dextAutoSendEnabled}
+                    onChange={(e) => setDextAutoSendEnabled(e.target.checked)}
+                  />
+                  Automatically send to Dext when invoice is confirmed
+                  <small style={{ color: '#e67e22', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
+                    ⚠️ Leave disabled for testing. Enable only when ready for production.
+                  </small>
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={dextManualSendEnabled}
+                    onChange={(e) => setDextManualSendEnabled(e.target.checked)}
+                  />
+                  Enable manual "Send to Dext" button on invoice review page
+                  <small style={{ color: '#666', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
+                    When disabled, only the send status will be displayed (without send/resend buttons)
+                  </small>
+                </label>
+              </div>
             </div>
+
+            {/* Save Button - outside blocks */}
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/settings/', {
+                    method: 'PATCH',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      Authorization: `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                      dext_email: dextEmail || null,
+                      dext_include_notes: dextIncludeNotes,
+                      dext_include_non_stock: dextIncludeNonStock,
+                      dext_auto_send_enabled: dextAutoSendEnabled,
+                      dext_manual_send_enabled: dextManualSendEnabled
+                    })
+                  })
+                  if (res.ok) {
+                    setDextSaveMessage('✓ Saved successfully')
+                    queryClient.invalidateQueries({ queryKey: ['settings'] })
+                    setTimeout(() => setDextSaveMessage(null), 3000)
+                  } else {
+                    setDextSaveMessage('Error: Failed to save')
+                  }
+                } catch (err) {
+                  setDextSaveMessage(`Error: ${err}`)
+                }
+              }}
+              style={styles.saveBtn}
+            >
+              Save Settings
+            </button>
+            {dextSaveMessage && (
+              <div style={{ ...styles.statusMessage, background: dextSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                {dextSaveMessage}
+              </div>
+            )}
           </div>
         )}
 
@@ -2146,9 +2323,10 @@ export default function Settings() {
             {newbookLoading && <div style={{ padding: '0.5rem', background: '#fff3cd', borderRadius: '4px', marginBottom: '1rem' }}>Loading Newbook settings...</div>}
             {newbookError && <div style={{ padding: '0.5rem', background: '#f8d7da', borderRadius: '4px', marginBottom: '1rem' }}>Error loading settings: {(newbookError as Error).message}</div>}
 
-            {/* API Credentials */}
-            <h3 style={styles.subsectionTitle}>API Credentials</h3>
-            <div style={styles.form}>
+            {/* API Credentials Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>API Credentials</h3>
+              <div style={styles.form}>
               <label style={styles.label}>
                 Username
                 <input
@@ -2197,35 +2375,39 @@ export default function Settings() {
                   placeholder="Property/Hotel ID"
                 />
               </label>
-              <div style={styles.buttonRow}>
-                <button onClick={() => newbookTestMutation.mutate()} style={styles.testBtn} disabled={newbookTestMutation.isPending}>
-                  Test Connection
-                </button>
-                <button onClick={handleSaveNewbook} style={styles.saveBtn} disabled={updateNewbookMutation.isPending}>
-                  Save Credentials
-                </button>
-              </div>
-              {newbookTestStatus && (
-                <div style={{ ...styles.statusMessage, background: newbookTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {newbookTestStatus}
+                <div style={styles.buttonRow}>
+                  <button onClick={() => newbookTestMutation.mutate()} style={styles.testBtn} disabled={newbookTestMutation.isPending}>
+                    Test Connection
+                  </button>
+                  <button onClick={handleSaveNewbook} style={styles.saveBtn} disabled={updateNewbookMutation.isPending}>
+                    Save Credentials
+                  </button>
                 </div>
-              )}
+                {newbookTestStatus && (
+                  <div style={{ ...styles.statusMessage, background: newbookTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                    {newbookTestStatus}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* GL Account Tracking */}
-            <h3 style={styles.subsectionTitle}>GL Account Tracking (for Revenue)</h3>
-            <div style={styles.buttonRow}>
+            {/* GL Account Tracking Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>GL Account Tracking (for Revenue)</h3>
+              <div style={styles.buttonRow}>
               <button onClick={() => fetchGLAccountsMutation.mutate()} style={styles.actionBtn} disabled={fetchGLAccountsMutation.isPending}>
                 {fetchGLAccountsMutation.isPending ? 'Fetching...' : 'Fetch GL Accounts'}
               </button>
               <button onClick={() => setShowGLModal(true)} style={styles.actionBtn} disabled={!glAccounts?.length}>
                 Select Accounts ({glAccounts?.filter((a) => a.is_tracked).length || 0} selected)
               </button>
+              </div>
             </div>
 
-            {/* Meal Allocation GL Mapping */}
-            <h3 style={styles.subsectionTitle}>Meal Allocation GL Mapping</h3>
-            <p style={styles.hint}>Select from tracked GL accounts above to map meal allocations.</p>
+            {/* Meal Allocation GL Mapping Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Meal Allocation GL Mapping</h3>
+              <p style={styles.hint}>Select from tracked GL accounts above to map meal allocations.</p>
             {(() => {
               const trackedAccounts = glAccounts?.filter((a) => a.is_tracked) || []
               const breakfastCodes = newbookBreakfastGLCodes ? newbookBreakfastGLCodes.split(',').map((c) => c.trim()) : []
@@ -2292,10 +2474,12 @@ export default function Settings() {
                 </div>
               )
             })()}
+            </div>
 
-            {/* VAT Rates */}
-            <h3 style={styles.subsectionTitle}>VAT Rates</h3>
-            <p style={styles.hint}>Set VAT rates to calculate net values from gross amounts in Newbook inventory items.</p>
+            {/* VAT Rates Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>VAT Rates</h3>
+              <p style={styles.hint}>Set VAT rates to calculate net values from gross amounts in Newbook inventory items.</p>
             <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
               <label style={{ ...styles.label, flex: 1, minWidth: '150px' }}>
                 Breakfast VAT Rate (%)
@@ -2334,10 +2518,12 @@ export default function Settings() {
                 />
               </label>
             </div>
+            </div>
 
-            {/* Room Categories (for Occupancy/Guest Filtering) */}
-            <h3 style={styles.subsectionTitle}>Room Categories (for Occupancy)</h3>
-            <p style={styles.hint}>Select which room types to include in occupancy and guest calculations. Exclude overflow rooms etc.</p>
+            {/* Room Categories Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Room Categories (for Occupancy)</h3>
+              <p style={styles.hint}>Select which room types to include in occupancy and guest calculations. Exclude overflow rooms etc.</p>
             <div style={styles.buttonRow}>
               <button onClick={() => fetchRoomCategoriesMutation.mutate()} style={styles.actionBtn} disabled={fetchRoomCategoriesMutation.isPending}>
                 {fetchRoomCategoriesMutation.isPending ? 'Fetching...' : 'Fetch Room Categories'}
@@ -2346,9 +2532,11 @@ export default function Settings() {
                 Select Types ({roomCategories?.filter((c) => c.is_included).reduce((sum, c) => sum + (c.room_count || 0), 0) || 0} rooms in {roomCategories?.filter((c) => c.is_included).length || 0} types)
               </button>
             </div>
+            </div>
 
-            {/* Data Sync */}
-            <h3 style={styles.subsectionTitle}>Data Sync</h3>
+            {/* Data Sync Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Data Sync</h3>
             <p style={styles.hint}>
               Last sync: {newbookSettings?.newbook_last_sync ? new Date(newbookSettings.newbook_last_sync).toLocaleString() : 'Never'}
             </p>
@@ -2368,15 +2556,17 @@ export default function Settings() {
               />
               Enable automatic daily sync (4:00 AM)
             </label>
+            </div>
 
+            {/* Status Message - outside blocks */}
             {newbookSaveMessage && (
               <div style={{ ...styles.statusMessage, background: newbookSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
                 {newbookSaveMessage}
               </div>
             )}
 
-            {/* View Newbook Data Link */}
-            <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid #e0e0e0' }}>
+            {/* View Newbook Data Link - outside blocks */}
+            <div style={{ marginTop: '1rem', paddingTop: '1.5rem', borderTop: '1px solid #e0e0e0' }}>
               <a
                 href="/newbook"
                 style={{
@@ -2405,46 +2595,51 @@ export default function Settings() {
             {resosLoading && <div style={{ padding: '0.5rem', background: '#fff3cd', borderRadius: '4px', marginBottom: '1rem' }}>Loading Resos settings...</div>}
             {resosError && <div style={{ padding: '0.5rem', background: '#f8d7da', color: '#721c24', borderRadius: '4px', marginBottom: '1rem' }}>Failed to load Resos settings</div>}
 
-            <h3 style={styles.subsectionTitle}>API Configuration</h3>
+            {/* API Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>API Configuration</h3>
 
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Resos API Key *</label>
-              <input
-                type="password"
-                value={resosApiKey}
-                onChange={(e) => setResosApiKey(e.target.value)}
-                placeholder={resosSettings?.resos_api_key_set ? '••••••••••••' : 'Enter API key'}
-                style={styles.input}
-              />
-              {resosSettings?.resos_api_key_set && <small style={styles.hint}>API key is configured (enter new value to update)</small>}
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Resos API Key *</label>
+                <input
+                  type="password"
+                  value={resosApiKey}
+                  onChange={(e) => setResosApiKey(e.target.value)}
+                  placeholder={resosSettings?.resos_api_key_set ? '••••••••••••' : 'Enter API key'}
+                  style={styles.input}
+                />
+                {resosSettings?.resos_api_key_set && <small style={styles.hint}>API key is configured (enter new value to update)</small>}
+              </div>
+
+              <button
+                onClick={async () => {
+                  try {
+                    setResosTestStatus('Testing...')
+                    const res = await fetch('/api/resos/test-connection', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` }
+                    })
+                    if (res.ok) {
+                      setResosTestStatus('✓ Connection successful')
+                    } else {
+                      const data = await res.json()
+                      setResosTestStatus(`✗ Connection failed: ${data.detail || 'Unknown error'}`)
+                    }
+                  } catch (error) {
+                    setResosTestStatus(`✗ Connection failed: ${error}`)
+                  }
+                  setTimeout(() => setResosTestStatus(null), 5000)
+                }}
+                style={styles.secondaryButton}
+              >
+                Test Connection
+              </button>
+              {resosTestStatus && <div style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>{resosTestStatus}</div>}
             </div>
 
-            <button
-              onClick={async () => {
-                try {
-                  setResosTestStatus('Testing...')
-                  const res = await fetch('/api/resos/test-connection', {
-                    method: 'POST',
-                    headers: { Authorization: `Bearer ${token}` }
-                  })
-                  if (res.ok) {
-                    setResosTestStatus('✓ Connection successful')
-                  } else {
-                    const data = await res.json()
-                    setResosTestStatus(`✗ Connection failed: ${data.detail || 'Unknown error'}`)
-                  }
-                } catch (error) {
-                  setResosTestStatus(`✗ Connection failed: ${error}`)
-                }
-                setTimeout(() => setResosTestStatus(null), 5000)
-              }}
-              style={styles.secondaryButton}
-            >
-              Test Connection
-            </button>
-            {resosTestStatus && <div style={{ marginTop: '0.5rem', fontSize: '0.9rem' }}>{resosTestStatus}</div>}
-
-            <h3 style={styles.subsectionTitle}>Flagging Configuration</h3>
+            {/* Flagging Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Flagging Configuration</h3>
 
             <div style={{ ...styles.formGroup, marginBottom: '1.5rem' }}>
               <label style={styles.label}>Large Group Threshold</label>
@@ -2480,9 +2675,12 @@ export default function Settings() {
               />
               <small style={{ ...styles.hint, display: 'block', marginTop: '0.5rem' }}>Additional allergy terms to detect in notes (for "Other Allergies" free-text field)</small>
             </div>
+            </div>
 
-            <h3 style={styles.subsectionTitle}>Custom Field Mapping</h3>
-            <p style={styles.hint}>Map Resos custom fields to system fields. Fetch from API to populate available fields.</p>
+            {/* Custom Field Mapping Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Custom Field Mapping</h3>
+              <p style={styles.hint}>Map Resos custom fields to system fields. Fetch from API to populate available fields.</p>
 
             <button
               onClick={async () => {
@@ -2537,16 +2735,34 @@ export default function Settings() {
                 ))}
               </div>
             )}
+            </div>
 
-            <h3 style={styles.subsectionTitle}>Opening Hours Mapping</h3>
-            <p style={styles.hint}>
-              Map regular service periods (excludes special/one-off periods). Resos extends closing times by the default booking length
-              to allow late bookings - the Actual End field shows the calculated time when kitchen closes for new arrivals.
-            </p>
+            {/* Opening Hours Mapping Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Opening Hours Mapping</h3>
+              <p style={styles.hint}>
+                Map regular service periods (excludes special/one-off periods). Resos extends closing times by the default booking length
+                to allow late bookings - the Actual End field shows the calculated time when kitchen closes for new arrivals.
+              </p>
 
             <button
               onClick={async () => {
                 try {
+                  // First, sync opening hours to database (POST endpoint)
+                  const syncRes = await fetch('/api/resos/sync/opening-hours', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}` }
+                  })
+
+                  if (!syncRes.ok) {
+                    setResosSaveMessage('Failed to sync opening hours to database')
+                    setTimeout(() => setResosSaveMessage(null), 5000)
+                    return
+                  }
+
+                  const syncData = await syncRes.json()
+
+                  // Then, fetch opening hours for display (GET endpoint)
                   const res = await fetch('/api/resos/opening-hours', {
                     headers: { Authorization: `Bearer ${token}` }
                   })
@@ -2554,9 +2770,9 @@ export default function Settings() {
                     const data = await res.json()
                     // Backend API already filters special periods with onlySpecial=false parameter
                     setOpeningHours(data.opening_hours || [])
-                    setResosSaveMessage(`Opening hours fetched: ${data.opening_hours?.length || 0} service periods`)
+                    setResosSaveMessage(`Opening hours synced to database: ${syncData.count} service periods`)
                   } else {
-                    setResosSaveMessage('Failed to fetch opening hours')
+                    setResosSaveMessage('Synced to database but failed to fetch for display')
                   }
                 } catch (error) {
                   setResosSaveMessage(`Error: ${error}`)
@@ -2644,6 +2860,7 @@ export default function Settings() {
                               <option value="">-- Select --</option>
                               <option value="breakfast">Breakfast</option>
                               <option value="lunch">Lunch</option>
+                              <option value="afternoon">Afternoon</option>
                               <option value="dinner">Dinner</option>
                               <option value="other">Other</option>
                             </select>
@@ -2653,74 +2870,212 @@ export default function Settings() {
                     })}
                   </tbody>
                 </table>
-                <small style={{ ...styles.hint, display: 'block', marginTop: '0.75rem' }}>
-                  <strong>Actual End:</strong> Resos extends end times to allow late bookings. The system auto-calculates this by subtracting booking duration, or you can override manually.<br />
-                  <strong>Display Name:</strong> Customize how this period appears in reports (e.g., "Dinner Service" instead of "Dinner").<br />
-                  <strong>Service Type:</strong> Map periods to Breakfast/Lunch/Dinner for reporting and SambaPOS integration.
+              </div>
+            )}
+            </div>
+
+            {/* Manual Breakfast Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Manual Breakfast Configuration</h3>
+              <p style={styles.hint}>
+                Since breakfast bookings are not taken through Resos, you can define manual breakfast periods
+                to properly categorize early morning restaurant tickets. Configure different times for each day of the week.
+              </p>
+
+              <div style={styles.formGroup}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={resosEnableManualBreakfast}
+                    onChange={(e) => setResosEnableManualBreakfast(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: 'bold' }}>Enable Manual Breakfast Periods</span>
+                </label>
+              </div>
+
+              {resosEnableManualBreakfast && (
+                <div style={{ marginTop: '1rem' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid #ddd', background: '#f9f9f9' }}>
+                        <th style={{ padding: '0.5rem', textAlign: 'left' }}>Day</th>
+                        <th style={{ padding: '0.5rem', textAlign: 'left' }}>Start Time</th>
+                        <th style={{ padding: '0.5rem', textAlign: 'left' }}>End Time</th>
+                        <th style={{ padding: '0.5rem', textAlign: 'left' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map((dayName, idx) => {
+                        const dayNumber = idx + 1
+                        const period = resosManualBreakfastPeriods.find(p => p.day === dayNumber)
+
+                        return (
+                          <tr key={dayNumber} style={{ borderBottom: '1px solid #eee' }}>
+                            <td style={{ padding: '0.5rem', fontWeight: 'bold' }}>{dayName}</td>
+                            <td style={{ padding: '0.5rem' }}>
+                              <input
+                                type="time"
+                                value={period?.start || ''}
+                                onChange={(e) => {
+                                  const newPeriods = resosManualBreakfastPeriods.filter(p => p.day !== dayNumber)
+                                  if (e.target.value || period?.end) {
+                                    newPeriods.push({
+                                      day: dayNumber,
+                                      start: e.target.value,
+                                      end: period?.end || ''
+                                    })
+                                  }
+                                  setResosManualBreakfastPeriods(newPeriods)
+                                }}
+                                style={{ padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                              />
+                            </td>
+                            <td style={{ padding: '0.5rem' }}>
+                              <input
+                                type="time"
+                                value={period?.end || ''}
+                                onChange={(e) => {
+                                  const newPeriods = resosManualBreakfastPeriods.filter(p => p.day !== dayNumber)
+                                  if (e.target.value || period?.start) {
+                                    newPeriods.push({
+                                      day: dayNumber,
+                                      start: period?.start || '',
+                                      end: e.target.value
+                                    })
+                                  }
+                                  setResosManualBreakfastPeriods(newPeriods)
+                                }}
+                                style={{ padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                              />
+                            </td>
+                            <td style={{ padding: '0.5rem' }}>
+                              {period && (
+                                <button
+                                  onClick={() => {
+                                    setResosManualBreakfastPeriods(
+                                      resosManualBreakfastPeriods.filter(p => p.day !== dayNumber)
+                                    )
+                                  }}
+                                  style={{
+                                    padding: '0.25rem 0.5rem',
+                                    background: '#dc3545',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '0.85rem'
+                                  }}
+                                >
+                                  Clear
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                  <small style={{ ...styles.hint, display: 'block', marginTop: '0.5rem' }}>
+                    Leave times blank for days without breakfast service. Times are in 24-hour format (e.g., 07:00 - 11:00).
+                  </small>
+                </div>
+              )}
+            </div>
+
+            {/* Hotel Arrivals Widget Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Hotel Arrivals Widget Configuration</h3>
+
+              <div style={styles.formGroup}>
+                <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
+                  Service Filter for Arrivals Widget
+                </label>
+                <select
+                  value={resosArrivalWidgetServiceFilter || ''}
+                  onChange={(e) => setResosArrivalWidgetServiceFilter(e.target.value || null)}
+                  style={{ padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px', width: '300px' }}
+                >
+                  <option value="">All Services</option>
+                  {/* Extract unique service types from opening hours mapping */}
+                  {Array.from(new Set(openingHoursMapping.map(m => m.service_type).filter(st => st)))
+                    .sort()
+                    .map((serviceType) => (
+                      <option key={serviceType} value={serviceType}>
+                        {serviceType.charAt(0).toUpperCase() + serviceType.slice(1)}
+                      </option>
+                    ))}
+                </select>
+                <small style={{ ...styles.hint, display: 'block', marginTop: '0.5rem' }}>
+                  Filter the "Hotel Arrivals & Restaurant Bookings" dashboard widget to show only bookings for a specific service type (e.g., Dinner only). This filter spans all opening hours mapped to the selected service type across different days/times.
                 </small>
               </div>
-            )}
-
-            <h3 style={styles.subsectionTitle}>Sync Configuration</h3>
-
-            <div style={styles.formGroup}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="checkbox"
-                  checked={resosSettings?.resos_auto_sync_enabled || false}
-                  readOnly
-                />
-                Enable automatic daily sync (4:30 AM)
-              </label>
-              <small style={styles.hint}>This setting is saved with the main settings below</small>
             </div>
 
-            {resosSettings?.resos_last_sync && (
+            {/* Sync Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Sync Configuration</h3>
+
               <div style={styles.formGroup}>
-                <small style={styles.hint}>Last sync: {new Date(resosSettings.resos_last_sync).toLocaleString()}</small>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={resosAutoSyncEnabled}
+                    onChange={(e) => setResosAutoSyncEnabled(e.target.checked)}
+                  />
+                  Enable automatic daily sync (4:30 AM)
+                </label>
+                <small style={styles.hint}>This setting is saved with the main settings below</small>
               </div>
-            )}
 
-            <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-              <button
-                onClick={async () => {
-                  try {
-                    setResosSaveMessage('Syncing forecast...')
-                    const res = await fetch('/api/resos/sync/forecast', {
-                      method: 'POST',
-                      headers: { Authorization: `Bearer ${token}` }
-                    })
-                    if (res.ok) {
-                      const data = await res.json()
-                      setResosSaveMessage(`✓ Forecast synced: ${data.bookings_fetched} bookings`)
-                      queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
-                    } else {
-                      setResosSaveMessage('✗ Forecast sync failed')
+              {resosSettings?.resos_last_sync && (
+                <div style={styles.formGroup}>
+                  <small style={styles.hint}>Last sync: {new Date(resosSettings.resos_last_sync).toLocaleString()}</small>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+                <button
+                  onClick={async () => {
+                    try {
+                      setResosSaveMessage('Syncing forecast...')
+                      const res = await fetch('/api/resos/sync/forecast', {
+                        method: 'POST',
+                        headers: { Authorization: `Bearer ${token}` }
+                      })
+                      if (res.ok) {
+                        const data = await res.json()
+                        setResosSaveMessage(`✓ Forecast synced: ${data.bookings_fetched} bookings`)
+                        queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
+                      } else {
+                        setResosSaveMessage('✗ Forecast sync failed')
+                      }
+                    } catch (error) {
+                      setResosSaveMessage(`✗ Error: ${error}`)
                     }
-                  } catch (error) {
-                    setResosSaveMessage(`✗ Error: ${error}`)
-                  }
-                  setTimeout(() => setResosSaveMessage(null), 10000)
-                }}
-                style={styles.secondaryButton}
-              >
-                Sync Forecast (Next 60 Days)
-              </button>
+                    setTimeout(() => setResosSaveMessage(null), 10000)
+                  }}
+                  style={styles.secondaryButton}
+                >
+                  Sync Forecast (Next 60 Days)
+                </button>
 
-              <button
-                onClick={() => setShowHistoricalResosModal(true)}
-                style={styles.secondaryButton}
-              >
-                Sync Historical (Custom Range)
-              </button>
+                <button
+                  onClick={() => setShowHistoricalResosModal(true)}
+                  style={styles.secondaryButton}
+                >
+                  Sync Historical (Custom Range)
+                </button>
+              </div>
+
+              {resosSaveMessage && (
+                <div style={{ marginTop: '1rem', padding: '0.75rem', background: resosSaveMessage.includes('✓') ? '#d4edda' : '#f8d7da', borderRadius: '4px' }}>
+                  {resosSaveMessage}
+                </div>
+              )}
             </div>
 
-            {resosSaveMessage && (
-              <div style={{ marginTop: '1rem', padding: '0.75rem', background: resosSaveMessage.includes('✓') ? '#d4edda' : '#f8d7da', borderRadius: '4px' }}>
-                {resosSaveMessage}
-              </div>
-            )}
-
+            {/* Save Button */}
             <button
               onClick={async () => {
                 try {
@@ -2732,12 +3087,15 @@ export default function Settings() {
                     },
                     body: JSON.stringify({
                       resos_api_key: resosApiKey || undefined,
+                      resos_auto_sync_enabled: resosAutoSyncEnabled,
                       resos_large_group_threshold: resosLargeGroupThreshold,
                       resos_note_keywords: resosNoteKeywords,
                       resos_allergy_keywords: resosAllergyKeywords,
                       resos_custom_field_mapping: customFieldMapping,
                       resos_opening_hours_mapping: openingHoursMapping,
-                      resos_auto_sync_enabled: resosSettings?.resos_auto_sync_enabled
+                      resos_arrival_widget_service_filter: resosArrivalWidgetServiceFilter || null,
+                      resos_enable_manual_breakfast: resosEnableManualBreakfast,
+                      resos_manual_breakfast_periods: resosManualBreakfastPeriods
                     })
                   })
                   if (res.ok) {
@@ -2842,9 +3200,10 @@ export default function Settings() {
             <h2 style={styles.sectionTitle}>SambaPOS EPOS Settings</h2>
             <p style={styles.hint}>Connect to your SambaPOS MSSQL database to fetch kitchen courses and sales data for Top Sellers reports.</p>
 
-            {/* Database Connection */}
-            <h3 style={styles.subsectionTitle}>Database Connection</h3>
-            <div style={styles.form}>
+            {/* Database Connection Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Database Connection</h3>
+              <div style={styles.form}>
               <label style={styles.label}>
                 Server Host
                 <input
@@ -2918,15 +3277,17 @@ export default function Settings() {
                 </button>
               </div>
 
-              {sambaTestStatus && (
-                <div style={{ ...styles.statusMessage, background: sambaTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {sambaTestStatus}
-                </div>
-              )}
+                {sambaTestStatus && (
+                  <div style={{ ...styles.statusMessage, background: sambaTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                    {sambaTestStatus}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Kitchen Courses Selection */}
-            <h3 style={styles.subsectionTitle}>Kitchen Courses for Top Sellers</h3>
+            {/* Kitchen Courses Selection Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Kitchen Courses for Top Sellers</h3>
             <p style={styles.hint}>
               Select and order kitchen courses for the Top Sellers report. Use arrows to change the display order in reports.
             </p>
@@ -3046,9 +3407,11 @@ export default function Settings() {
                 No courses found. Please verify your SambaPOS menu items have the "Kitchen Course" product tag configured.
               </div>
             )}
+            </div>
 
-            {/* Excluded Menu Categories */}
-            <h3 style={{ ...styles.subsectionTitle, marginTop: '2rem' }}>Excluded Menu Categories</h3>
+            {/* Excluded Menu Categories Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Excluded Menu Categories</h3>
             <p style={styles.hint}>
               Select menu categories (GroupCode) to exclude from the Top Sellers report (e.g., "Drinks", "Extras").
             </p>
@@ -3103,9 +3466,115 @@ export default function Settings() {
               </div>
             )}
 
+            </div>
+
+            {/* Status Message - outside blocks */}
             {sambaSaveMessage && (
               <div style={{ ...styles.statusMessage, background: sambaSaveMessage.startsWith('Error') ? '#fee' : '#efe', marginTop: '1rem' }}>
                 {sambaSaveMessage}
+              </div>
+            )}
+
+            {/* GL Code Classification Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>GL Code Classification for Spend Analysis</h3>
+            <p style={styles.hint}>
+              Fetch unique GL codes from "NewBook GLA" custom tags and classify them as food or beverage.
+              Used to calculate average spend per cover and food/beverage split in the Bookings Stats Report.
+            </p>
+
+            {!sambaConnectionConfigured ? (
+              <div style={{ padding: '1.5rem', background: '#f8f9fa', borderRadius: '8px', color: '#666', textAlign: 'center' }}>
+                Configure your database connection above first.
+              </div>
+            ) : sambaGLCodesLoading ? (
+              <div style={{ padding: '1rem', textAlign: 'center', color: '#666' }}>Loading GL codes...</div>
+            ) : sambaGLCodes && sambaGLCodes.length > 0 ? (
+              <>
+                <div style={styles.buttonRow}>
+                  <button
+                    onClick={() => {
+                      setSambaFoodGLCodes(new Set())
+                      setSambaBeverageGLCodes(new Set())
+                    }}
+                    style={styles.actionBtn}
+                  >
+                    Clear Selections
+                  </button>
+                  <button
+                    onClick={handleSaveGLCodes}
+                    style={styles.saveBtn}
+                    disabled={saveGLCodesMutation.isPending}
+                  >
+                    {saveGLCodesMutation.isPending ? 'Saving...' : 'Save GL Codes'}
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', marginTop: '1.5rem' }}>
+                  {/* Food GL Codes */}
+                  <div>
+                    <h4 style={{ marginBottom: '1rem', color: '#374151', fontSize: '1rem' }}>
+                      Food GL Codes ({sambaFoodGLCodes.size} selected)
+                    </h4>
+                    <div style={{ ...styles.excludedItemsGrid, maxHeight: '400px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '0.75rem' }}>
+                      {sambaGLCodes.map((glCode) => (
+                        <label key={glCode.code} style={styles.excludedItem}>
+                          <input
+                            type="checkbox"
+                            checked={sambaFoodGLCodes.has(glCode.code)}
+                            onChange={() => toggleFoodGLCode(glCode.code)}
+                            disabled={sambaBeverageGLCodes.has(glCode.code)}
+                          />
+                          <span style={{ flex: 1, color: sambaBeverageGLCodes.has(glCode.code) ? '#999' : '#000' }}>
+                            {glCode.code}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Beverage GL Codes */}
+                  <div>
+                    <h4 style={{ marginBottom: '1rem', color: '#374151', fontSize: '1rem' }}>
+                      Beverage GL Codes ({sambaBeverageGLCodes.size} selected)
+                    </h4>
+                    <div style={{ ...styles.excludedItemsGrid, maxHeight: '400px', overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '0.75rem' }}>
+                      {sambaGLCodes.map((glCode) => (
+                        <label key={glCode.code} style={styles.excludedItem}>
+                          <input
+                            type="checkbox"
+                            checked={sambaBeverageGLCodes.has(glCode.code)}
+                            onChange={() => toggleBeverageGLCode(glCode.code)}
+                            disabled={sambaFoodGLCodes.has(glCode.code)}
+                          />
+                          <span style={{ flex: 1, color: sambaFoodGLCodes.has(glCode.code) ? '#999' : '#000' }}>
+                            {glCode.code}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '1rem', padding: '0.75rem', background: (sambaFoodGLCodes.size > 0 || sambaBeverageGLCodes.size > 0) ? '#dcfce7' : '#e8f4fd', borderRadius: '6px', textAlign: 'center', fontWeight: 500 }}>
+                  {sambaFoodGLCodes.size} food codes, {sambaBeverageGLCodes.size} beverage codes selected
+                </div>
+              </>
+            ) : (
+              <div style={{ padding: '1.5rem', background: '#f8f9fa', borderRadius: '8px', color: '#666', textAlign: 'center' }}>
+                No GL codes found in ProductTag custom tags.
+                <button onClick={() => refetchSambaGLCodes()} style={{ ...styles.actionBtn, marginLeft: '1rem' }}>
+                  Retry
+                </button>
+              </div>
+            )}
+
+            </div>
+
+            {/* GL Codes Status Message - outside blocks */}
+            {sambaGLCodesSaveMessage && (
+              <div style={{ ...styles.statusMessage, background: sambaGLCodesSaveMessage.startsWith('Error') ? '#fee' : '#efe', marginTop: '1rem' }}>
+                {sambaGLCodesSaveMessage}
               </div>
             )}
           </div>
@@ -3126,7 +3595,10 @@ export default function Settings() {
               Archive confirmed invoices to Nextcloud to reduce local storage. Files are organized by supplier, year, and month.
             </p>
 
-            <div style={styles.form}>
+            {/* Nextcloud Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Nextcloud Settings</h3>
+              <div style={styles.form}>
               <label style={styles.checkboxLabel}>
                 <input
                   type="checkbox"
@@ -3234,14 +3706,17 @@ export default function Settings() {
                 </div>
               )}
 
-              {nextcloudTestStatus && (
-                <div style={{ ...styles.statusMessage, background: nextcloudTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {nextcloudTestStatus}
-                </div>
-              )}
+                {nextcloudTestStatus && (
+                  <div style={{ ...styles.statusMessage, background: nextcloudTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                    {nextcloudTestStatus}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <h3 style={styles.subsectionTitle}>Manual Archive</h3>
+            {/* Manual Archive Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Manual Archive</h3>
             <p style={styles.hint}>
               Manually archive completed invoices that haven't been transferred to Nextcloud yet.
             </p>
@@ -3285,6 +3760,9 @@ export default function Settings() {
               </div>
             )}
 
+            </div>
+
+            {/* Archive Status Message - outside blocks */}
             {archiveMessage && (
               <div style={{ ...styles.statusMessage, background: archiveMessage.startsWith('Error') ? '#fee' : '#efe', marginTop: '1rem' }}>
                 {archiveMessage}
@@ -3298,13 +3776,15 @@ export default function Settings() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Search & Pricing</h2>
 
-            <h3 style={styles.subsectionTitle}>Price Change Detection</h3>
-            <p style={{ marginBottom: '1rem', color: '#666' }}>
-              Configure how price changes are detected and flagged on invoices.
-              When a line item's price differs from historical prices, it will be marked with a warning indicator.
-            </p>
+            {/* Price Change Detection Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Price Change Detection</h3>
+              <p style={{ marginBottom: '1rem', color: '#666' }}>
+                Configure how price changes are detected and flagged on invoices.
+                When a line item's price differs from historical prices, it will be marked with a warning indicator.
+              </p>
 
-            <div style={styles.form}>
+              <div style={styles.form}>
               <label style={styles.label}>
                 Lookback Period (days)
                 <input
@@ -3364,13 +3844,15 @@ export default function Settings() {
                 {saveSearchSettingsMutation.isPending ? 'Saving...' : 'Save Settings'}
               </button>
 
-              {searchSaveMessage && (
-                <div style={{ ...styles.statusMessage, background: searchSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {searchSaveMessage}
-                </div>
-              )}
+                {searchSaveMessage && (
+                  <div style={{ ...styles.statusMessage, background: searchSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                    {searchSaveMessage}
+                  </div>
+                )}
+              </div>
             </div>
 
+            {/* Price Status Legend - read-only info, can stay outside blocks or in its own block */}
             <h3 style={{ ...styles.subsectionTitle, marginTop: '2rem' }}>Price Status Legend</h3>
             <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3397,8 +3879,10 @@ export default function Settings() {
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Backup & Restore</h2>
 
-            <h3 style={styles.subsectionTitle}>Backup Settings</h3>
-            <div style={styles.form}>
+            {/* Backup Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Backup Settings</h3>
+              <div style={styles.form}>
               <label style={styles.label}>
                 Frequency
                 <select
@@ -3560,14 +4044,17 @@ export default function Settings() {
                 </button>
               </div>
 
-              {backupSaveMessage && (
-                <div style={{ ...styles.statusMessage, background: backupSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
-                  {backupSaveMessage}
-                </div>
-              )}
+                {backupSaveMessage && (
+                  <div style={{ ...styles.statusMessage, background: backupSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                    {backupSaveMessage}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <h3 style={styles.subsectionTitle}>Manual Backup</h3>
+            {/* Manual Backup Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Manual Backup</h3>
             <div style={styles.dataActions}>
               <div style={styles.dataAction}>
                 <div>
@@ -3593,14 +4080,18 @@ export default function Settings() {
                 </button>
               </div>
             </div>
+            </div>
 
+            {/* Backup Create Status - outside blocks */}
             {backupCreateMessage && (
               <div style={{ ...styles.statusMessage, background: backupCreateMessage.startsWith('Error') ? '#fee' : '#efe', marginTop: '1rem' }}>
                 {backupCreateMessage}
               </div>
             )}
 
-            <h3 style={styles.subsectionTitle}>Restore from File</h3>
+            {/* Restore from File Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Restore from File</h3>
             <div style={styles.dataActions}>
               <div style={styles.dataAction}>
                 <div>
@@ -3638,8 +4129,11 @@ export default function Settings() {
                 </label>
               </div>
             </div>
+            </div>
 
-            <h3 style={styles.subsectionTitle}>Backup History</h3>
+            {/* Backup History Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Backup History</h3>
             {backupHistory && backupHistory.length > 0 ? (
               <div style={{ overflowX: 'auto' }}>
                 <table style={styles.table}>
@@ -3729,6 +4223,7 @@ export default function Settings() {
             ) : (
               <p style={styles.hint}>No backups yet. Create your first backup above.</p>
             )}
+            </div>
           </div>
         )}
 
@@ -3738,7 +4233,10 @@ export default function Settings() {
             <h2 style={styles.sectionTitle}>Data Management</h2>
             <p style={styles.hint}>Tools for reprocessing invoices and fixing supplier matching issues.</p>
 
-            <div style={styles.dataActions}>
+            {/* Data Actions Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Data Actions</h3>
+              <div style={styles.dataActions}>
               <div style={styles.dataAction}>
                 <div>
                   <strong>Reprocess All Invoices</strong>
@@ -3773,8 +4271,10 @@ export default function Settings() {
                   {rematchFuzzyMutation.isPending ? 'Clearing...' : 'Clear Matches'}
                 </button>
               </div>
+              </div>
             </div>
 
+            {/* Data Status Message - outside blocks */}
             {dataMessage && (
               <div style={{ ...styles.statusMessage, background: dataMessage.startsWith('Error') ? '#fee' : '#efe' }}>
                 {dataMessage}
@@ -4421,5 +4921,27 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#eee',
     padding: '0.15rem 0.5rem',
     borderRadius: '10px',
+  },
+  settingsBlock: {
+    background: '#f8f9fa',
+    padding: '1.5rem',
+    borderRadius: '8px',
+    marginBottom: '1.5rem',
+    border: '1px solid #e0e0e0',
+  },
+  blockTitle: {
+    color: '#1a1a2e',
+    marginTop: 0,
+    marginBottom: '0.75rem',
+    fontSize: '1.1rem',
+    fontWeight: '600',
+    borderBottom: '2px solid #e94560',
+    paddingBottom: '0.5rem',
+  },
+  blockDivider: {
+    height: '2px',
+    background: 'linear-gradient(to right, #e94560, transparent)',
+    margin: '1.5rem 0',
+    border: 'none',
   },
 }

@@ -1,6 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from sqlalchemy import String, DateTime, Date, ForeignKey, Numeric, Boolean, Text, Integer, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -84,6 +85,11 @@ class NewbookDailyOccupancy(Base):
     breakfast_allocation_netvalue: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     dinner_allocation_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dinner_allocation_netvalue: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
+    # Arrival tracking (for cross-referencing with Resos table bookings)
+    arrival_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Number of bookings arriving this day
+    arrival_booking_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # List of booking IDs arriving
+    arrival_booking_details: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # Full arrival details with booking refs
 
     # Forecast indicator
     is_forecast: Mapped[bool] = mapped_column(Boolean, default=False)  # True for future booked dates

@@ -32,6 +32,7 @@ async def run_migration():
         "ALTER TABLE kitchen_settings ADD COLUMN resos_custom_field_mapping JSONB",
         "ALTER TABLE kitchen_settings ADD COLUMN resos_opening_hours_mapping JSONB",
         "ALTER TABLE kitchen_settings ADD COLUMN resos_restaurant_table_entities TEXT",
+        "ALTER TABLE kitchen_settings ADD COLUMN resos_flag_icon_mapping JSONB",
     ]
 
     for sql in settings_columns:
@@ -91,6 +92,7 @@ async def run_migration():
         total_covers INTEGER NOT NULL DEFAULT 0,
         service_breakdown JSONB,
         flagged_booking_count INTEGER DEFAULT 0,
+        unique_flag_types JSONB,
         bookings_summary JSONB,
         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         is_forecast BOOLEAN DEFAULT FALSE,
@@ -148,6 +150,49 @@ async def run_migration():
             logger.info("Created resos_sync_log table")
     except Exception as e:
         logger.warning(f"resos_sync_log table: {e}")
+
+    # Add unique_flag_types column to resos_daily_stats if it doesn't exist
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE resos_daily_stats ADD COLUMN unique_flag_types JSONB"))
+            logger.info("Added unique_flag_types column to resos_daily_stats")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("unique_flag_types column already exists")
+        else:
+            logger.warning(f"unique_flag_types column migration: {e}")
+
+    # Add table_name column to resos_bookings (Phase 8.1)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE resos_bookings ADD COLUMN table_name VARCHAR(100)"))
+            logger.info("Added table_name column to resos_bookings")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("table_name column already exists")
+        else:
+            logger.warning(f"table_name column migration: {e}")
+
+    # Add GL code columns for food/beverage split (Phase 8.1)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE kitchen_settings ADD COLUMN sambapos_food_gl_codes TEXT"))
+            logger.info("Added sambapos_food_gl_codes column to kitchen_settings")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("sambapos_food_gl_codes column already exists")
+        else:
+            logger.warning(f"sambapos_food_gl_codes column migration: {e}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE kitchen_settings ADD COLUMN sambapos_beverage_gl_codes TEXT"))
+            logger.info("Added sambapos_beverage_gl_codes column to kitchen_settings")
+    except Exception as e:
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+            logger.info("sambapos_beverage_gl_codes column already exists")
+        else:
+            logger.warning(f"sambapos_beverage_gl_codes column migration: {e}")
 
     # Create indexes
     indexes = [

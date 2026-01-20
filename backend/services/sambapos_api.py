@@ -175,6 +175,34 @@ class SambaPOSClient:
             logger.error(f"Debug MenuItems failed: {e}")
             raise
 
+    async def debug_table_schema(self) -> dict:
+        """
+        Debug method to inspect column names in key SambaPOS tables.
+        Used to identify correct column names for SQL queries.
+        """
+        try:
+            async with aioodbc.connect(dsn=self.connection_string) as conn:
+                async with conn.cursor() as cursor:
+                    result = {}
+
+                    # Check key tables used in restaurant spend query
+                    tables = ['Tickets', 'Orders', 'TicketEntities', 'MenuItems']
+
+                    for table in tables:
+                        await cursor.execute(f"""
+                            SELECT COLUMN_NAME, DATA_TYPE
+                            FROM INFORMATION_SCHEMA.COLUMNS
+                            WHERE TABLE_NAME = '{table}'
+                            ORDER BY ORDINAL_POSITION
+                        """)
+                        columns = [{"name": row[0], "type": row[1]} for row in await cursor.fetchall()]
+                        result[table] = columns
+
+                    return result
+        except Exception as e:
+            logger.error(f"Debug table schema failed: {e}")
+            raise
+
     async def get_product_tag_groups(self) -> list[dict]:
         """
         Discover available product tag groups from the CustomTags field.
@@ -456,4 +484,390 @@ class SambaPOSClient:
                     return result
         except Exception as e:
             logger.error(f"Failed to fetch MenuItems GroupCodes: {e}")
+            raise
+
+    async def get_gl_codes(self) -> list[dict]:
+        """
+        Fetch all unique GL codes from NewBook GLA custom tags.
+
+        NewBook GLA format in CustomTags: [{"TN":"NewBook GLA","TV":"3101"},...]
+
+        Returns:
+            List of dicts with 'code' for each unique GL code (sorted)
+        """
+        query = """
+            SELECT DISTINCT
+                GLACode
+            FROM (
+                SELECT
+                    CASE
+                        WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                        THEN SUBSTRING(CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                        ELSE NULL
+                    END as GLACode
+                FROM MenuItems
+                CROSS APPLY (
+                    SELECT CHARINDEX('"TN":"NewBook GLA"', CustomTags) as gla_pos
+                ) gla
+                CROSS APPLY (
+                    SELECT CASE WHEN gla.gla_pos > 0
+                                THEN CHARINDEX('"TV":"', CustomTags, gla.gla_pos) + 6
+                                ELSE 0 END as tv_start
+                ) tv
+                CROSS APPLY (
+                    SELECT CASE WHEN tv.tv_start > 6
+                                THEN CHARINDEX('"', CustomTags, tv.tv_start)
+                                ELSE 0 END as tv_end
+                ) pos
+                WHERE CustomTags LIKE '%"TN":"NewBook GLA"%'
+            ) sub
+            WHERE GLACode IS NOT NULL AND GLACode != ''
+            ORDER BY GLACode
+        """
+        try:
+            async with aioodbc.connect(dsn=self.connection_string) as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(query)
+                    rows = await cursor.fetchall()
+                    result = [{"code": row[0].strip()} for row in rows if row[0] and row[0].strip()]
+                    logger.info(f"Found {len(result)} unique GL codes from ProductTag: {[r['code'] for r in result][:10]}...")
+                    return result
+        except Exception as e:
+            logger.error(f"Failed to fetch GL codes from ProductTag: {e}")
+            raise
+
+    async def get_restaurant_spend(
+        self,
+        from_date: date,
+        to_date: date,
+        tracked_categories: list[str],
+        food_gl_codes: list[str],
+        beverage_gl_codes: list[str]
+    ) -> list[dict]:
+        """
+        Get restaurant spend data for Resos booking matching (Phase 8).
+
+        Filters tickets to restaurant tables with tracked course items,
+        extracts GL codes from NewBook GLA custom tags, and splits spend
+        by food/beverage categories.
+
+        Args:
+            from_date: Start date (inclusive)
+            to_date: End date (inclusive)
+            tracked_categories: Kitchen Course values to include (e.g., ['Starters', 'Mains'])
+            food_gl_codes: GL codes for food items (e.g., ['3101'])
+            beverage_gl_codes: GL codes for beverage items (e.g., ['2101', '2102'])
+
+        Returns:
+            List of ticket data dicts with:
+            - ticket_id: int
+            - ticket_date: date
+            - ticket_time: time
+            - table_name: str (for fallback matching)
+            - ticket_tag: str | None (for primary matching - "BOOKING_ID - Name")
+            - booking_id: str | None (extracted from ticket_tag)
+            - food_total: Decimal
+            - beverage_total: Decimal
+            - total_spend: Decimal
+            - service_period: str | None (based on timestamp)
+        """
+        if not tracked_categories:
+            logger.warning("get_restaurant_spend called with empty tracked_categories")
+            return []
+
+        # Build placeholders for categories
+        cat_placeholders = ','.join(['?' for _ in tracked_categories])
+
+        # Build GL code IN clauses
+        food_gl_placeholders = ','.join(['?' for _ in food_gl_codes]) if food_gl_codes else "''"
+        beverage_gl_placeholders = ','.join(['?' for _ in beverage_gl_codes]) if beverage_gl_codes else "''"
+
+        # Query tickets with table entities and tracked course items
+        # Calculate food and beverage spend separately based on GL codes
+        query = f"""
+            WITH FoodSpend AS (
+                SELECT
+                    t.Id,
+                    SUM(o.Price * o.Quantity) as FoodTotal
+                FROM Orders o
+                INNER JOIN Tickets t ON o.TicketId = t.Id
+                INNER JOIN MenuItems mi ON o.MenuItemId = mi.Id
+                CROSS APPLY (
+                    SELECT CHARINDEX('"TN":"NewBook GLA"', mi.CustomTags) as gla_pos
+                ) gla
+                CROSS APPLY (
+                    SELECT CASE WHEN gla.gla_pos > 0
+                                THEN CHARINDEX('"TV":"', mi.CustomTags, gla.gla_pos) + 6
+                                ELSE 0 END as tv_start
+                ) tv
+                CROSS APPLY (
+                    SELECT CASE WHEN tv.tv_start > 6
+                                THEN CHARINDEX('"', mi.CustomTags, tv.tv_start)
+                                ELSE 0 END as tv_end
+                ) pos
+                CROSS APPLY (
+                    SELECT CASE
+                        WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                        THEN SUBSTRING(mi.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                        ELSE NULL
+                    END as GLACode
+                ) tag
+                WHERE t.Date >= CAST(? AS DATE)
+                AND t.Date < DATEADD(day, 1, CAST(? AS DATE))
+                AND t.IsClosed = 1
+                AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Void"%')
+                AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Canceled"%')
+                AND tag.GLACode IN ({food_gl_placeholders})
+                GROUP BY t.Id
+            ),
+            BeverageSpend AS (
+                SELECT
+                    t.Id,
+                    SUM(o.Price * o.Quantity) as BeverageTotal
+                FROM Orders o
+                INNER JOIN Tickets t ON o.TicketId = t.Id
+                INNER JOIN MenuItems mi ON o.MenuItemId = mi.Id
+                CROSS APPLY (
+                    SELECT CHARINDEX('"TN":"NewBook GLA"', mi.CustomTags) as gla_pos
+                ) gla
+                CROSS APPLY (
+                    SELECT CASE WHEN gla.gla_pos > 0
+                                THEN CHARINDEX('"TV":"', mi.CustomTags, gla.gla_pos) + 6
+                                ELSE 0 END as tv_start
+                ) tv
+                CROSS APPLY (
+                    SELECT CASE WHEN tv.tv_start > 6
+                                THEN CHARINDEX('"', mi.CustomTags, tv.tv_start)
+                                ELSE 0 END as tv_end
+                ) pos
+                CROSS APPLY (
+                    SELECT CASE
+                        WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                        THEN SUBSTRING(mi.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                        ELSE NULL
+                    END as GLACode
+                ) tag
+                WHERE t.Date >= CAST(? AS DATE)
+                AND t.Date < DATEADD(day, 1, CAST(? AS DATE))
+                AND t.IsClosed = 1
+                AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Void"%')
+                AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Canceled"%')
+                AND tag.GLACode IN ({beverage_gl_placeholders})
+                GROUP BY t.Id
+            ),
+            MainCourseCount AS (
+                SELECT
+                    t.Id,
+                    COUNT(o.Id) as MainCourseCount
+                FROM Orders o
+                INNER JOIN Tickets t ON o.TicketId = t.Id
+                INNER JOIN MenuItems mi ON o.MenuItemId = mi.Id
+                CROSS APPLY (
+                    SELECT CHARINDEX('"TN":"Kitchen Course"', mi.CustomTags) as kc_pos
+                ) kc
+                CROSS APPLY (
+                    SELECT CASE WHEN kc.kc_pos > 0
+                                THEN CHARINDEX('"TV":"', mi.CustomTags, kc.kc_pos) + 6
+                                ELSE 0 END as tv_start
+                ) tv
+                CROSS APPLY (
+                    SELECT CASE WHEN tv.tv_start > 6
+                                THEN CHARINDEX('"', mi.CustomTags, tv.tv_start)
+                                ELSE 0 END as tv_end
+                ) pos
+                CROSS APPLY (
+                    SELECT CASE
+                        WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                        THEN SUBSTRING(mi.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                        ELSE NULL
+                    END as KitchenCourse
+                ) course
+                WHERE t.Date >= CAST(? AS DATE)
+                AND t.Date < DATEADD(day, 1, CAST(? AS DATE))
+                AND t.IsClosed = 1
+                AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Void"%')
+                AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Canceled"%')
+                AND course.KitchenCourse IN ({cat_placeholders})
+                GROUP BY t.Id
+            )
+            SELECT DISTINCT
+                t.Id as TicketId,
+                t.Date as TicketDate,
+                t.Date as TicketDateTime,
+                t.TicketTags as TicketTags,
+
+                -- Extract table name from TicketEntities
+                (
+                    SELECT TOP 1 EntityName
+                    FROM TicketEntities te
+                    WHERE te.Ticket_Id = t.Id
+                    AND te.EntityTypeId = 2
+                ) as TableName,
+
+                -- Check if ticket has a Room entity (EntityTypeId = 3)
+                -- If this returns a value, the customer selected their room = they're a resident
+                (
+                    SELECT TOP 1 EntityName
+                    FROM TicketEntities te
+                    WHERE te.Ticket_Id = t.Id
+                    AND te.EntityTypeId = 3
+                ) as RoomEntity,
+
+                -- Food and beverage spend from GL codes
+                ISNULL(fs.FoodTotal, 0) as FoodTotal,
+                ISNULL(bs.BeverageTotal, 0) as BeverageTotal,
+
+                -- Main course count for fallback cover estimation
+                ISNULL(mcc.MainCourseCount, 0) as MainCourseCount
+
+            FROM Tickets t
+            LEFT JOIN FoodSpend fs ON fs.Id = t.Id
+            LEFT JOIN BeverageSpend bs ON bs.Id = t.Id
+            LEFT JOIN MainCourseCount mcc ON mcc.Id = t.Id
+            WHERE t.Date >= CAST(? AS DATE)
+              AND t.Date < DATEADD(day, 1, CAST(? AS DATE))
+              AND t.IsClosed = 1
+              -- Must have table entity
+              AND EXISTS (
+                  SELECT 1 FROM TicketEntities te
+                  WHERE te.Ticket_Id = t.Id AND te.EntityTypeId = 2
+              )
+              -- Must have at least one tracked course item
+              AND EXISTS (
+                  SELECT 1
+                  FROM Orders ord
+                  JOIN Tickets tck ON ord.TicketId = tck.Id
+                  JOIN MenuItems mi2 ON ord.MenuItemId = mi2.Id
+                  CROSS APPLY (
+                      SELECT CHARINDEX('"TN":"Kitchen Course"', mi2.CustomTags) as kc_pos
+                  ) kc
+                  CROSS APPLY (
+                      SELECT CASE WHEN kc.kc_pos > 0
+                                  THEN CHARINDEX('"TV":"', mi2.CustomTags, kc.kc_pos) + 6
+                                  ELSE 0 END as tv_start
+                  ) tv
+                  CROSS APPLY (
+                      SELECT CASE WHEN tv.tv_start > 6
+                                  THEN CHARINDEX('"', mi2.CustomTags, tv.tv_start)
+                                  ELSE 0 END as tv_end
+                  ) pos
+                  CROSS APPLY (
+                      SELECT CASE
+                          WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                          THEN SUBSTRING(mi2.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                          ELSE NULL
+                      END as KitchenCourse
+                  ) course
+                  WHERE tck.Id = t.Id
+                  AND course.KitchenCourse IN ({cat_placeholders})
+                  AND (ord.OrderStates IS NULL OR ord.OrderStates NOT LIKE '%"S":"Void"%')
+                  AND (ord.OrderStates IS NULL OR ord.OrderStates NOT LIKE '%"S":"Canceled"%')
+              )
+            ORDER BY t.Date
+        """
+
+        # Build params:
+        # - FoodSpend CTE: from_date, to_date, food_gl_codes (if any)
+        # - BeverageSpend CTE: from_date, to_date, beverage_gl_codes (if any)
+        # - MainCourseCount CTE: from_date, to_date, tracked_categories
+        # - Main query: from_date, to_date, tracked_categories
+        params = [
+            from_date.isoformat(),  # FoodSpend CTE from_date
+            to_date.isoformat(),    # FoodSpend CTE to_date
+        ]
+        if food_gl_codes:
+            params.extend(food_gl_codes)  # FoodSpend CTE GL codes
+
+        params.extend([
+            from_date.isoformat(),  # BeverageSpend CTE from_date
+            to_date.isoformat(),    # BeverageSpend CTE to_date
+        ])
+        if beverage_gl_codes:
+            params.extend(beverage_gl_codes)  # BeverageSpend CTE GL codes
+
+        params.extend([
+            from_date.isoformat(),  # MainCourseCount CTE from_date
+            to_date.isoformat(),    # MainCourseCount CTE to_date
+        ])
+        params.extend(tracked_categories)  # MainCourseCount CTE Kitchen Course categories
+
+        params.extend([
+            from_date.isoformat(),  # Main query from_date
+            to_date.isoformat()     # Main query to_date
+        ])
+        params.extend(tracked_categories)  # Main query Kitchen Course categories
+
+        try:
+            async with aioodbc.connect(dsn=self.connection_string) as conn:
+                async with conn.cursor() as cursor:
+                    # Log the query for debugging
+                    logger.info(f"Executing restaurant spend query with {len(params)} parameters")
+                    logger.info(f"Params: {params}")
+                    logger.info(f"Query:\n{query}")
+                    await cursor.execute(query, params)
+                    rows = await cursor.fetchall()
+
+                    results = []
+                    for row in rows:
+                        ticket_id = row[0]
+                        ticket_date = row[1]
+                        ticket_datetime = row[2]
+                        ticket_tags = row[3] if row[3] else ""
+                        table_name = row[4]
+                        room_entity = row[5]  # Room entity name if customer selected their room
+                        food_total = Decimal(str(row[6])) if row[6] else Decimal("0")
+                        beverage_total = Decimal(str(row[7])) if row[7] else Decimal("0")
+                        main_course_count = int(row[8]) if row[8] else 0
+                        total_spend = food_total + beverage_total
+
+                        # Extract booking ID from ticket tags
+                        # Tag format: "BOOKING_ID - Guest Name" or similar
+                        booking_id = None
+                        # Placeholder for future implementation:
+                        # if " - " in ticket_tags:
+                        #     booking_id = ticket_tags.split(" - ")[0].strip()
+
+                        # Parse "Covers" from ticket tags (JSON array format)
+                        # Tags format: [{"TN":"Tag Name","TV":"Tag Value"}, ...]
+                        covers = 0
+                        if ticket_tags:
+                            import json
+                            try:
+                                tags_list = json.loads(ticket_tags)
+                                for tag in tags_list:
+                                    if tag.get('TN') == 'Covers':
+                                        covers = int(tag.get('TV', 0))
+                                        break
+                            except (json.JSONDecodeError, ValueError, KeyError):
+                                pass
+
+                        # Fallback to main course count if covers tag is 0 or not found
+                        if covers == 0 and main_course_count > 0:
+                            covers = main_course_count
+
+                        # Extract time from datetime for service period matching
+                        ticket_time = ticket_datetime.time() if ticket_datetime else None
+
+                        results.append({
+                            "ticket_id": ticket_id,
+                            "ticket_date": ticket_date,
+                            "ticket_time": ticket_time,
+                            "ticket_datetime": ticket_datetime,
+                            "table_name": table_name,
+                            "room_entity": room_entity,
+                            "has_room_entity": bool(room_entity),
+                            "ticket_tag": ticket_tags if ticket_tags else None,
+                            "booking_id": booking_id,
+                            "food_total": food_total,
+                            "beverage_total": beverage_total,
+                            "total_spend": total_spend,
+                            "estimated_covers": covers,  # NEW: Estimated covers from tags or main course count
+                            "main_course_count": main_course_count  # NEW: For debugging/validation
+                        })
+
+                    logger.info(f"SambaPOS restaurant spend: fetched {len(results)} tickets with table entities")
+                    return results
+
+        except Exception as e:
+            logger.error(f"Failed to fetch SambaPOS restaurant spend: {e}")
             raise

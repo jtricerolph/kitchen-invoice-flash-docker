@@ -1083,7 +1083,8 @@ async def get_daily_gp_data(
 ):
     """Get daily net sales and purchases for charting"""
     from models.line_item import LineItem
-    from sqlalchemy import or_
+    from models.resos import ResosDailyStats, ResosBooking
+    from sqlalchemy import or_, and_
     from datetime import timedelta
 
     # Validate date range
@@ -1132,6 +1133,19 @@ async def get_daily_gp_data(
     )
     purchases_by_date = {row[0]: row[1] or Decimal("0") for row in purchases_daily.all()}
 
+    # Get Resos booking data (covers by service period)
+    resos_daily = await db.execute(
+        select(ResosDailyStats)
+        .where(
+            and_(
+                ResosDailyStats.kitchen_id == current_user.kitchen_id,
+                ResosDailyStats.date >= from_date,
+                ResosDailyStats.date <= to_date
+            )
+        )
+    )
+    resos_stats = {stat.date: stat for stat in resos_daily.scalars().all()}
+
     # Build daily data points for the entire range
     data_points = []
     current_date = from_date
@@ -1140,10 +1154,33 @@ async def get_daily_gp_data(
                      manual_by_date.get(current_date, Decimal("0")))
         net_purchases = purchases_by_date.get(current_date, Decimal("0"))
 
+        # Extract Resos covers if available
+        lunch_covers = None
+        dinner_covers = None
+        total_covers = None
+
+        if current_date in resos_stats:
+            stat = resos_stats[current_date]
+            total_covers = stat.total_covers
+
+            # Extract lunch and dinner covers from service_breakdown
+            if stat.service_breakdown:
+                for service in stat.service_breakdown:
+                    period_name = service.get('period', '').lower()
+                    covers = service.get('covers', 0)
+
+                    if 'lunch' in period_name:
+                        lunch_covers = covers
+                    elif 'dinner' in period_name:
+                        dinner_covers = covers
+
         data_points.append(DailyDataPoint(
             date=current_date,
             net_sales=net_sales,
-            net_purchases=net_purchases
+            net_purchases=net_purchases,
+            lunch_covers=lunch_covers,
+            dinner_covers=dinner_covers,
+            total_covers=total_covers
         ))
         current_date += timedelta(days=1)
 

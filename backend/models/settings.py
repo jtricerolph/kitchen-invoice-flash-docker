@@ -53,6 +53,18 @@ class KitchenSettings(Base):
     # Resos SambaPOS Integration
     resos_restaurant_table_entities: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated entity names
 
+    # Manual Breakfast Configuration (not in Resos)
+    resos_enable_manual_breakfast: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Format: [{"day": 1, "start": "07:00", "end": "11:00"}, ...] where day: 1=Monday, 7=Sunday
+    resos_manual_breakfast_periods: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Resos Flag Icon Mapping (customizable icons for each flag type)
+    # Format: {"allergies": "🦀", "large_group": "⚠️", "birthday": "🎂", "anniversary": "💍", ...}
+    resos_flag_icon_mapping: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Resos Arrival Widget Service Filter (filter arrivals widget by service type from mapping)
+    resos_arrival_widget_service_filter: Mapped[str | None] = mapped_column(String(50), nullable=True)  # service_type: breakfast/lunch/dinner/other
+
     # SambaPOS MSSQL Connection
     sambapos_db_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sambapos_db_port: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1433)
@@ -63,6 +75,9 @@ class KitchenSettings(Base):
     sambapos_tracked_categories: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     # SambaPOS excluded menu items (comma-separated list of menu item names to exclude from reports)
     sambapos_excluded_items: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase 8.1: GL code configuration for food/beverage split
+    sambapos_food_gl_codes: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated GL codes for food items
+    sambapos_beverage_gl_codes: Mapped[str | None] = mapped_column(Text, nullable=True)  # Comma-separated GL codes for beverage items
 
     # SMTP email configuration
     smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)

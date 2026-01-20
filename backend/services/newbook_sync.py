@@ -332,6 +332,9 @@ class NewbookSyncService:
                         breakfast_vat_rate, dinner_vat_rate
                     )
 
+                # Process bookings for arrival tracking (also filtered by room type)
+                arrivals_by_date = client.process_bookings_for_arrivals(bookings, included_room_types, category_id_to_type)
+
             records_count = 0
             today = date.today()
 
@@ -356,6 +359,9 @@ class NewbookSyncService:
                 # Get guest count from bookings (filtered by room type)
                 guest_count = guests_by_date.get(str(entry_date), guests_by_date.get(entry["date"]))
 
+                # Get arrivals for this date
+                arrivals = arrivals_by_date.get(str(entry_date), arrivals_by_date.get(entry["date"], {}))
+
                 # Log first few entries for debugging
                 if records_count < 3:
                     logger.info(f"Occupancy entry: date={entry_date}, guest_count={guest_count}, occupied_rooms={entry.get('occupied_rooms')}, is_forecast={entry_is_forecast}")
@@ -374,6 +380,9 @@ class NewbookSyncService:
                         breakfast_allocation_netvalue=allocs.get("breakfast_netvalue"),
                         dinner_allocation_qty=allocs.get("dinner_qty"),
                         dinner_allocation_netvalue=allocs.get("dinner_netvalue"),
+                        arrival_count=arrivals.get("count"),
+                        arrival_booking_ids=arrivals.get("ids"),
+                        arrival_booking_details=arrivals.get("details"),
                         is_forecast=True,
                         fetched_at=datetime.utcnow()
                     ).on_conflict_do_update(
@@ -387,6 +396,9 @@ class NewbookSyncService:
                             "breakfast_allocation_netvalue": allocs.get("breakfast_netvalue"),
                             "dinner_allocation_qty": allocs.get("dinner_qty"),
                             "dinner_allocation_netvalue": allocs.get("dinner_netvalue"),
+                            "arrival_count": arrivals.get("count"),
+                            "arrival_booking_ids": arrivals.get("ids"),
+                            "arrival_booking_details": arrivals.get("details"),
                             "is_forecast": True,
                             "fetched_at": datetime.utcnow()
                         }
@@ -405,6 +417,9 @@ class NewbookSyncService:
                         breakfast_allocation_netvalue=allocs.get("breakfast_netvalue"),
                         dinner_allocation_qty=allocs.get("dinner_qty"),
                         dinner_allocation_netvalue=allocs.get("dinner_netvalue"),
+                        arrival_count=arrivals.get("count"),
+                        arrival_booking_ids=arrivals.get("ids"),
+                        arrival_booking_details=arrivals.get("details"),
                         is_forecast=False,
                         fetched_at=datetime.utcnow()
                     ).on_conflict_do_update(
@@ -542,6 +557,9 @@ class NewbookSyncService:
                         breakfast_vat_rate, dinner_vat_rate
                     )
 
+                # Process bookings for arrival tracking (also filtered by room type)
+                arrivals_by_date = client.process_bookings_for_arrivals(bookings, included_room_types, category_id_to_type)
+
             occupancy_count = 0
             for entry in occupancy_data:
                 entry_date = date.fromisoformat(entry["date"]) if isinstance(entry["date"], str) else entry["date"]
@@ -549,6 +567,9 @@ class NewbookSyncService:
 
                 # Get guest count from bookings (filtered by room type)
                 guest_count = guests_by_date.get(str(entry_date), guests_by_date.get(entry["date"]))
+
+                # Get arrivals for this date
+                arrivals = arrivals_by_date.get(str(entry_date), arrivals_by_date.get(entry["date"], {}))
 
                 # Log first few entries for debugging
                 if occupancy_count < 3:
@@ -567,6 +588,9 @@ class NewbookSyncService:
                     breakfast_allocation_netvalue=None,  # Historical: use earned_revenue for actual values
                     dinner_allocation_qty=allocs.get("dinner_qty"),
                     dinner_allocation_netvalue=None,  # Historical: use earned_revenue for actual values
+                    arrival_count=arrivals.get("count"),
+                    arrival_booking_ids=arrivals.get("ids"),
+                    arrival_booking_details=arrivals.get("details"),
                     is_forecast=False,
                     fetched_at=datetime.utcnow()
                 ).on_conflict_do_update(
@@ -580,6 +604,9 @@ class NewbookSyncService:
                         "breakfast_allocation_netvalue": None,
                         "dinner_allocation_qty": allocs.get("dinner_qty"),
                         "dinner_allocation_netvalue": None,
+                        "arrival_count": arrivals.get("count"),
+                        "arrival_booking_ids": arrivals.get("ids"),
+                        "arrival_booking_details": arrivals.get("details"),
                         "is_forecast": False,
                         "fetched_at": datetime.utcnow()
                     }

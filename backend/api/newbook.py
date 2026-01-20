@@ -3,7 +3,7 @@ Newbook API Endpoints
 
 Handles Newbook configuration, GL account management, and data sync operations.
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -17,6 +17,7 @@ from models.settings import KitchenSettings
 from models.newbook import (
     NewbookGLAccount, NewbookDailyRevenue, NewbookDailyOccupancy, NewbookSyncLog, NewbookRoomCategory
 )
+from models.resos import ResosBooking, ResosOpeningHour
 from auth.jwt import get_current_user
 from services.newbook_sync import NewbookSyncService
 from services.newbook_api import NewbookAPIClient, NewbookAPIError
@@ -808,3 +809,156 @@ async def get_sync_logs(
         .limit(limit)
     )
     return list(result.scalars().all())
+
+
+# ============ Dashboard Endpoints ============
+
+class ArrivalDayStats(BaseModel):
+    date: date
+    day_name: str  # "Today", "Tomorrow", day of week
+    arrival_count: int
+    arrival_guests: int
+    table_bookings: int
+    table_covers: int
+    matched_arrivals: int  # Arrivals with table bookings
+    unmatched_arrivals: int  # Arrivals without table bookings
+    opportunity_guests: int  # Guests from unmatched arrivals
+
+
+class ArrivalDashboardResponse(BaseModel):
+    days: list[ArrivalDayStats]
+    service_filter_name: str | None = None  # Name of service type being filtered (e.g., "Dinner")
+
+
+@router.get("/dashboard/arrivals", response_model=ArrivalDashboardResponse)
+async def get_arrival_dashboard(
+    days: int = 3,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get arrival statistics for dashboard widget (next N days)"""
+    today = date.today()
+    end_date = today + timedelta(days=days - 1)
+
+    # Fetch kitchen settings to get service filter
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+    service_filter_type = settings.resos_arrival_widget_service_filter if settings else None
+
+    # Get opening hour IDs that match the service type filter
+    service_filter_name = None
+    opening_hour_ids = []
+
+    if service_filter_type and settings and settings.resos_opening_hours_mapping:
+        # Find all opening hours mapped to this service type
+        for mapping in settings.resos_opening_hours_mapping:
+            if isinstance(mapping, dict) and mapping.get("service_type") == service_filter_type:
+                opening_hour_ids.append(mapping.get("resos_id"))
+
+        # Set display name to capitalized service type
+        if opening_hour_ids:
+            service_filter_name = service_filter_type.capitalize()
+
+    # Fetch occupancy data with arrival info
+    occupancy_result = await db.execute(
+        select(NewbookDailyOccupancy)
+        .where(
+            NewbookDailyOccupancy.kitchen_id == current_user.kitchen_id,
+            NewbookDailyOccupancy.date >= today,
+            NewbookDailyOccupancy.date <= end_date
+        )
+        .order_by(NewbookDailyOccupancy.date)
+    )
+    occupancy_by_date = {occ.date: occ for occ in occupancy_result.scalars().all()}
+
+    # Fetch restaurant bookings for the same period (with optional service filter)
+    bookings_query = select(ResosBooking).where(
+        ResosBooking.kitchen_id == current_user.kitchen_id,
+        ResosBooking.booking_date >= today,
+        ResosBooking.booking_date <= end_date,
+        ResosBooking.hotel_booking_number.isnot(None)
+    )
+
+    # Apply service filter if set - filter by ANY opening hour that matches the service type
+    if opening_hour_ids:
+        bookings_query = bookings_query.where(ResosBooking.opening_hour_id.in_(opening_hour_ids))
+
+    bookings_result = await db.execute(bookings_query)
+    bookings = list(bookings_result.scalars().all())
+
+    # Group bookings by date
+    bookings_by_date = {}
+    for booking in bookings:
+        if booking.booking_date not in bookings_by_date:
+            bookings_by_date[booking.booking_date] = []
+        bookings_by_date[booking.booking_date].append(booking)
+
+    # Build stats for each day
+    days_stats = []
+    day_names = ["Today", "Tomorrow"]
+
+    for i in range(days):
+        current_date = today + timedelta(days=i)
+        occupancy = occupancy_by_date.get(current_date)
+        day_bookings = bookings_by_date.get(current_date, [])
+
+        # Day name
+        if i < len(day_names):
+            day_name = day_names[i]
+        else:
+            day_name = current_date.strftime("%A")  # Day of week
+
+        # Default values
+        arrival_count = 0
+        arrival_guests = 0
+        matched_arrivals = 0
+        unmatched_arrivals = 0
+        opportunity_guests = 0
+
+        if occupancy and occupancy.arrival_count:
+            arrival_count = occupancy.arrival_count or 0
+            arrival_details = occupancy.arrival_booking_details or []
+
+            # Calculate total guests from arrivals
+            arrival_guests = sum(detail.get("num_guests", 0) for detail in arrival_details)
+
+            # Get hotel booking numbers from Resos
+            hotel_refs = {b.hotel_booking_number for b in day_bookings if b.hotel_booking_number}
+
+            # Match arrivals with table bookings
+            matched = []
+            unmatched = []
+
+            for detail in arrival_details:
+                booking_ref = detail.get("booking_reference", "")
+                booking_id = detail.get("booking_id", "")
+
+                # Check if this arrival has a matching table booking
+                if booking_ref in hotel_refs or booking_id in hotel_refs:
+                    matched.append(detail)
+                else:
+                    unmatched.append(detail)
+
+            matched_arrivals = len(matched)
+            unmatched_arrivals = len(unmatched)
+            opportunity_guests = sum(detail.get("num_guests", 0) for detail in unmatched)
+
+        # Table booking stats
+        table_bookings = len(day_bookings)
+        table_covers = sum(b.people for b in day_bookings)
+
+        days_stats.append(ArrivalDayStats(
+            date=current_date,
+            day_name=day_name,
+            arrival_count=arrival_count,
+            arrival_guests=arrival_guests,
+            table_bookings=table_bookings,
+            table_covers=table_covers,
+            matched_arrivals=matched_arrivals,
+            unmatched_arrivals=unmatched_arrivals,
+            opportunity_guests=opportunity_guests
+        ))
+
+    return ArrivalDashboardResponse(days=days_stats, service_filter_name=service_filter_name)
