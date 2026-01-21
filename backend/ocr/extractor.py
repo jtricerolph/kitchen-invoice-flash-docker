@@ -80,11 +80,14 @@ async def process_invoice_image(
         if not supplier_id and result.get("raw_text"):
             supplier_id, supplier_match_type = await identify_supplier(result["raw_text"], kitchen_id, db)
 
-        # Detect document type (invoice vs delivery note)
-        document_type = detect_document_type(
-            result.get("raw_text", ""),
-            result
-        )
+        # Use document_type from azure_extractor (already detected there)
+        # Fall back to detect_document_type only if not provided
+        document_type = result.get("document_type")
+        if not document_type:
+            document_type = detect_document_type(
+                result.get("raw_text", ""),
+                result
+            )
 
         logger.info(f"Processed invoice: number={result.get('invoice_number')}, "
                     f"type={document_type}, supplier_id={supplier_id}, match_type={supplier_match_type}")

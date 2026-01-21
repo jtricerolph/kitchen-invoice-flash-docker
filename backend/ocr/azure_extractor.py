@@ -608,12 +608,67 @@ async def process_invoice_with_azure(
                     except Exception as item_err:
                         logger.warning(f"Error processing line item {item_idx}: {item_err}")
 
-    # Calculate average confidence
-    confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
+    # Calculate average confidence from extracted fields
+    # Collect confidence scores from key fields that were actually extracted
+    confidence_scores = []
+
+    if "InvoiceId" in fields and fields["InvoiceId"] and hasattr(fields["InvoiceId"], 'confidence'):
+        confidence_scores.append(fields["InvoiceId"].confidence)
+
+    if "InvoiceDate" in fields and fields["InvoiceDate"] and hasattr(fields["InvoiceDate"], 'confidence'):
+        confidence_scores.append(fields["InvoiceDate"].confidence)
+
+    if "InvoiceTotal" in fields and fields["InvoiceTotal"] and hasattr(fields["InvoiceTotal"], 'confidence'):
+        confidence_scores.append(fields["InvoiceTotal"].confidence)
+
+    if "SubTotal" in fields and fields["SubTotal"] and hasattr(fields["SubTotal"], 'confidence'):
+        confidence_scores.append(fields["SubTotal"].confidence)
+
+    if "VendorName" in fields and fields["VendorName"] and hasattr(fields["VendorName"], 'confidence'):
+        confidence_scores.append(fields["VendorName"].confidence)
+
+    if "PurchaseOrder" in fields and fields["PurchaseOrder"] and hasattr(fields["PurchaseOrder"], 'confidence'):
+        confidence_scores.append(fields["PurchaseOrder"].confidence)
+
+    # Calculate average confidence from extracted fields
+    if confidence_scores:
+        confidence = sum(confidence_scores) / len(confidence_scores)
+        logger.debug(f"Average field confidence: {confidence:.2%} from {len(confidence_scores)} fields")
+    else:
+        # Fallback to document-level confidence if no field confidences available
+        confidence = invoice.confidence if hasattr(invoice, 'confidence') else 0.9
+        logger.debug(f"Using document confidence: {confidence:.2%} (no field confidences)")
+
+    # Detect document type (invoice vs credit note)
+    document_type = "invoice"  # default
+
+    # Check Azure's doc_type field
+    if hasattr(invoice, 'doc_type') and invoice.doc_type:
+        doc_type_str = str(invoice.doc_type).lower()
+        if 'credit' in doc_type_str:
+            document_type = "credit_note"
+            logger.debug(f"Detected credit note from Azure doc_type: {invoice.doc_type}")
+
+    # Check for negative total (strong indicator of credit note)
+    if total is not None and total < 0:
+        document_type = "credit_note"
+        logger.debug(f"Detected credit note from negative total: {total}")
+    elif net_total is not None and net_total < 0:
+        document_type = "credit_note"
+        logger.debug(f"Detected credit note from negative net_total: {net_total}")
+
+    # Check for credit note keywords in invoice number
+    if invoice_number:
+        inv_num_upper = invoice_number.upper()
+        credit_keywords = ['CREDIT', 'CR NOTE', 'CN', 'CREDIT NOTE', 'C/N']
+        if any(keyword in inv_num_upper for keyword in credit_keywords):
+            document_type = "credit_note"
+            logger.debug(f"Detected credit note from invoice number keywords: {invoice_number}")
 
     logger.info(f"Azure extracted: invoice_number={invoice_number}, date={invoice_date}, "
                 f"total={total}, net_total={net_total}, vendor={vendor_name}, order={order_number}, "
-                f"{len(line_items)} total line items from {doc_count} documents")
+                f"{len(line_items)} total line items from {doc_count} documents, "
+                f"document_type={document_type}, confidence={confidence:.2%}")
 
     return {
         "invoice_number": invoice_number,
@@ -622,6 +677,7 @@ async def process_invoice_with_azure(
         "net_total": net_total,
         "vendor_name": vendor_name,
         "order_number": order_number,
+        "document_type": document_type,
         "line_items": line_items,
         "raw_text": result.content or "",
         "raw_json": raw_json,

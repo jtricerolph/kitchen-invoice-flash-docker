@@ -121,19 +121,42 @@ class DuplicateDetector:
 
 def detect_document_type(raw_text: str, fields: dict) -> str:
     """
-    Detect if document is Invoice or Delivery Note based on OCR text.
+    Detect if document is Invoice, Credit Note, or Delivery Note based on OCR text.
 
     Args:
         raw_text: Full OCR text
         fields: Extracted fields dict from Azure
 
     Returns:
-        "invoice" or "delivery_note"
+        "invoice", "credit_note", or "delivery_note"
     """
     if not raw_text:
         return "invoice"
 
     text_upper = raw_text.upper()
+
+    # Check for credit note FIRST (highest priority)
+    credit_keywords = [
+        "CREDIT NOTE", "CREDIT MEMO", "CR NOTE", "C/N",
+        "CREDIT INVOICE", "CN NO", "CN:", "REFUND"
+    ]
+
+    # Check if invoice number contains credit note indicator
+    invoice_number = fields.get("invoice_number")
+    if invoice_number:
+        inv_num_upper = str(invoice_number).upper()
+        if any(kw in inv_num_upper for kw in ["CREDIT", "CR NOTE", "CN", "C/N"]):
+            return "credit_note"
+
+    # Check for credit note keywords in text
+    if any(kw in text_upper for kw in credit_keywords):
+        return "credit_note"
+
+    # Check for negative total (strong indicator of credit note)
+    total = fields.get("total")
+    net_total = fields.get("net_total")
+    if (total is not None and total < 0) or (net_total is not None and net_total < 0):
+        return "credit_note"
 
     # Keywords suggesting delivery note
     dn_keywords = [
