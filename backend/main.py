@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, resos_debug, calendar_events
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -140,7 +140,6 @@ app.include_router(sambapos.router, prefix="/api/sambapos", tags=["SambaPOS"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
 app.include_router(search.router, tags=["Search"])
 app.include_router(resos.router, prefix="/api/resos", tags=["Resos"])
-app.include_router(resos_debug.router, prefix="/api/resos-debug", tags=["Resos Debug"])
 app.include_router(calendar_events.router, prefix="/api/calendar-events", tags=["Calendar Events"])
 
 
