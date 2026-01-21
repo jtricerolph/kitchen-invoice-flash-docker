@@ -118,6 +118,27 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   })
 
+  const { data: upcomingEvents } = useQuery<{
+    total_count: number
+    upcoming_events: Array<{
+      id: number
+      event_date: string
+      event_type: string
+      title: string
+    }>
+  }>({
+    queryKey: ['upcoming-events'],
+    queryFn: async () => {
+      const res = await fetch('/api/calendar-events/dashboard/upcoming', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Failed to fetch upcoming events')
+      return res.json()
+    },
+    enabled: !!token,
+    staleTime: 5 * 60 * 1000 // Cache for 5 minutes
+  })
+
   // Helper function to get icon for a single flag type
   const getIconForFlag = (flag: string): string => {
     const iconMapping = resosSettings?.resos_flag_icon_mapping || {}
@@ -255,7 +276,7 @@ export default function Dashboard() {
                 <span>{resosCovers.today.total_bookings} bookings</span>
                 {resosCovers.today.service_breakdown.map((s) => (
                   <span key={s.period}>
-                    {s.period}: {s.covers}
+                    {s.period}: {s.bookings} : {s.covers}
                   </span>
                 ))}
               </div>
@@ -288,7 +309,7 @@ export default function Dashboard() {
                 <span>{resosCovers.tomorrow.total_bookings} bookings</span>
                 {resosCovers.tomorrow.service_breakdown.map((s) => (
                   <span key={s.period}>
-                    {s.period}: {s.covers}
+                    {s.period}: {s.bookings} : {s.covers}
                   </span>
                 ))}
               </div>
@@ -297,15 +318,37 @@ export default function Dashboard() {
             <p style={styles.noData}>No booking data</p>
           )}
         </div>
+
+        <div style={styles.card}>
+          <h3 style={styles.cardTitle}>Upcoming Events</h3>
+          {upcomingEvents && upcomingEvents.total_count > 0 ? (
+            <>
+              <div style={styles.gpValue}>{upcomingEvents.total_count}</div>
+              <div style={styles.details}>
+                {upcomingEvents.upcoming_events.map((event) => (
+                  <span key={event.id} style={{ fontSize: '0.85rem' }}>
+                    {event.event_date}: {event.title}
+                  </span>
+                ))}
+              </div>
+              <a href="/resos" style={styles.link}>View Calendar →</a>
+            </>
+          ) : (
+            <p style={styles.noData}>No upcoming events</p>
+          )}
+        </div>
       </div>
 
       {/* Hotel Arrivals & Restaurant Bookings */}
       {arrivalStats && arrivalStats.days && arrivalStats.days.length > 0 && (
         <div style={styles.wideCard}>
           <h3 style={styles.cardTitle}>
-            Hotel Arrivals & Restaurant Bookings
+            {arrivalStats.service_filter_name
+              ? `Hotel Arrivals & ${arrivalStats.service_filter_name} Bookings`
+              : 'Hotel Arrivals & Restaurant Bookings'
+            }
             {arrivalStats.service_filter_name && (
-              <span style={styles.serviceFilterInfo}> showing {arrivalStats.service_filter_name} tables only</span>
+              <span style={styles.serviceFilterInfo}> (showing {arrivalStats.service_filter_name} tables only)</span>
             )}
           </h3>
           <div style={styles.arrivalGrid}>

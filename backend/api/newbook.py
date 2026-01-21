@@ -874,11 +874,11 @@ async def get_arrival_dashboard(
     occupancy_by_date = {occ.date: occ for occ in occupancy_result.scalars().all()}
 
     # Fetch restaurant bookings for the same period (with optional service filter)
+    # Note: We fetch ALL bookings (not just guest-linked ones) to show total booking count
     bookings_query = select(ResosBooking).where(
         ResosBooking.kitchen_id == current_user.kitchen_id,
         ResosBooking.booking_date >= today,
-        ResosBooking.booking_date <= end_date,
-        ResosBooking.hotel_booking_number.isnot(None)
+        ResosBooking.booking_date <= end_date
     )
 
     # Apply service filter if set - filter by ANY opening hour that matches the service type

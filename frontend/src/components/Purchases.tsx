@@ -1,7 +1,28 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
+import { Line } from 'react-chartjs-2'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+)
 
 interface MonthlyPurchaseInvoice {
   id: number
@@ -40,6 +61,26 @@ interface DateRangePurchasesResponse {
   all_suppliers: string[]
   daily_totals: Record<string, number>
   period_total: number
+}
+
+interface DailyDataPoint {
+  date: string
+  net_sales: number
+  net_purchases: number
+}
+
+interface DailyGPChartResponse {
+  from_date: string
+  to_date: string
+  data: DailyDataPoint[]
+}
+
+interface WeeklyAggregate {
+  weekLabel: string
+  weekStart: string
+  weekEnd: string
+  totalPurchases: number
+  totalSales: number
 }
 
 // Helper to format date as YYYY-MM-DD for input fields and API
@@ -217,6 +258,275 @@ export default function Purchases() {
       return res.json()
     },
   })
+
+  // Calculate date range for last 24 weeks (for weekly comparison chart)
+  const weeklyChartDateRange = useMemo(() => {
+    const now = new Date()
+    // Find the most recent Sunday
+    const daysUntilSun = (7 - now.getDay()) % 7
+    const endDate = new Date(now)
+    endDate.setDate(now.getDate() + daysUntilSun)
+    // Go back 24 weeks (168 days) from the end date
+    const startDate = new Date(endDate)
+    startDate.setDate(endDate.getDate() - (24 * 7 - 1))
+    return {
+      from: formatDateForApi(startDate),
+      to: formatDateForApi(endDate)
+    }
+  }, [])
+
+  // Fetch daily GP data for the last 24 weeks
+  const { data: weeklyChartData, isLoading: weeklyChartLoading, error: weeklyChartError } = useQuery<DailyGPChartResponse>({
+    queryKey: ['weekly-chart-data', weeklyChartDateRange.from, weeklyChartDateRange.to],
+    queryFn: async () => {
+      const res = await fetch(`/api/reports/gp/daily?from_date=${weeklyChartDateRange.from}&to_date=${weeklyChartDateRange.to}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch weekly chart data')
+      return res.json()
+    },
+  })
+
+  // Aggregate daily data into weekly totals
+  const weeklyAggregates = useMemo<WeeklyAggregate[]>(() => {
+    if (!weeklyChartData?.data) return []
+
+    console.log('=== WEEKLY CHART DEBUG ===')
+    console.log('Date range:', weeklyChartDateRange)
+    console.log('Total data points:', weeklyChartData.data.length)
+    console.log('Sample data points (first 5):', weeklyChartData.data.slice(0, 5))
+    console.log('Sample data points (last 5):', weeklyChartData.data.slice(-5))
+
+    const weeks: WeeklyAggregate[] = []
+    const startDate = new Date(weeklyChartDateRange.from)
+
+    // Process each week
+    for (let weekIdx = 0; weekIdx < 24; weekIdx++) {
+      const weekStart = new Date(startDate)
+      weekStart.setDate(startDate.getDate() + (weekIdx * 7))
+      const weekEnd = new Date(weekStart)
+      weekEnd.setDate(weekStart.getDate() + 6)
+
+      const weekStartStr = formatDateForApi(weekStart)
+      const weekEndStr = formatDateForApi(weekEnd)
+
+      // Sum up daily values for this week
+      let totalPurchases = 0
+      let totalSales = 0
+      let matchedDays = 0
+
+      for (const point of weeklyChartData.data) {
+        if (point.date >= weekStartStr && point.date <= weekEndStr) {
+          totalPurchases += Number(point.net_purchases) || 0
+          totalSales += Number(point.net_sales) || 0
+          matchedDays++
+          if (weekIdx === 0 || weekIdx === 23) {
+            console.log(`Week ${weekIdx} matched day:`, point.date, 'purchases:', point.net_purchases, 'sales:', point.net_sales)
+          }
+        }
+      }
+
+      // Format week label
+      const weekStartDate = new Date(weekStartStr)
+      const weekEndDate = new Date(weekEndStr)
+      const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' }
+      const weekLabel = `${weekStartDate.toLocaleDateString('en-GB', opts)} - ${weekEndDate.toLocaleDateString('en-GB', opts)}`
+
+      if (weekIdx === 0 || weekIdx === 23) {
+        console.log(`Week ${weekIdx} (${weekLabel}):`, {
+          weekStart: weekStartStr,
+          weekEnd: weekEndStr,
+          matchedDays,
+          totalPurchases,
+          totalSales
+        })
+      }
+
+      weeks.push({
+        weekLabel,
+        weekStart: weekStartStr,
+        weekEnd: weekEndStr,
+        totalPurchases,
+        totalSales
+      })
+    }
+
+    console.log('Total weeks aggregated:', weeks.length)
+    console.log('First week aggregate:', weeks[0])
+    console.log('Last week aggregate:', weeks[23])
+    console.log('=== END DEBUG ===')
+
+    return weeks
+  }, [weeklyChartData, weeklyChartDateRange])
+
+  // Split into last 12 weeks and previous 12 weeks
+  const last12Weeks = weeklyAggregates.slice(12, 24)
+  const previous12Weeks = weeklyAggregates.slice(0, 12)
+
+  // Debug split
+  console.log('=== SPLIT DEBUG ===')
+  console.log('Last 12 weeks (indices 12-23):', last12Weeks.map(w => ({ label: w.weekLabel, purchases: w.totalPurchases, sales: w.totalSales })))
+  console.log('Previous 12 weeks (indices 0-11):', previous12Weeks.map(w => ({ label: w.weekLabel, purchases: w.totalPurchases, sales: w.totalSales })))
+  console.log('=== END SPLIT DEBUG ===')
+
+  // Prepare chart data
+  const weeklyComparisonChartData = useMemo(() => {
+    return {
+      labels: last12Weeks.map(w => w.weekLabel),
+      datasets: [
+        {
+          label: 'Purchases (Last 12 Weeks)',
+          data: last12Weeks.map(w => w.totalPurchases),
+          borderColor: '#e94560',
+          backgroundColor: 'rgba(233, 69, 96, 0.1)',
+          borderWidth: 2,
+          tension: 0.1,
+          pointRadius: 4,
+          pointBackgroundColor: '#e94560',
+          yAxisID: 'y',
+        },
+        {
+          label: 'Net Food Sales (Last 12 Weeks)',
+          data: last12Weeks.map(w => w.totalSales),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          borderWidth: 2,
+          tension: 0.1,
+          pointRadius: 4,
+          pointBackgroundColor: '#3b82f6',
+          yAxisID: 'y',
+        },
+        {
+          label: 'Purchases (Previous 12 Weeks)',
+          data: previous12Weeks.map(w => w.totalPurchases),
+          borderColor: 'rgba(233, 69, 96, 0.4)',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [5, 5],
+          tension: 0.1,
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(233, 69, 96, 0.4)',
+          yAxisID: 'y',
+        },
+        {
+          label: 'Net Food Sales (Previous 12 Weeks)',
+          data: previous12Weeks.map(w => w.totalSales),
+          borderColor: 'rgba(59, 130, 246, 0.4)',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [5, 5],
+          tension: 0.1,
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(59, 130, 246, 0.4)',
+          yAxisID: 'y',
+        },
+        {
+          label: 'GP % (Last 12 Weeks)',
+          data: last12Weeks.map(w => {
+            const gp = w.totalSales > 0 ? ((w.totalSales - w.totalPurchases) / w.totalSales) * 100 : 0
+            return gp
+          }),
+          borderColor: '#10b981',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [8, 4],
+          tension: 0.1,
+          pointRadius: 4,
+          pointBackgroundColor: '#10b981',
+          yAxisID: 'y1',
+        },
+        {
+          label: 'GP % (Previous 12 Weeks)',
+          data: previous12Weeks.map(w => {
+            const gp = w.totalSales > 0 ? ((w.totalSales - w.totalPurchases) / w.totalSales) * 100 : 0
+            return gp
+          }),
+          borderColor: 'rgba(16, 185, 129, 0.4)',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          borderDash: [8, 4],
+          tension: 0.1,
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(16, 185, 129, 0.4)',
+          yAxisID: 'y1',
+        },
+      ],
+    }
+  }, [last12Weeks, previous12Weeks])
+
+  const weeklyComparisonChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        position: 'top' as const,
+        labels: {
+          usePointStyle: true,
+          padding: 15,
+        },
+      },
+      title: {
+        display: true,
+        text: 'Weekly Purchases vs Net Food Sales (Last 12 Weeks with Previous 12 Weeks Comparison)',
+        font: {
+          size: 16,
+          weight: 'bold' as const,
+        },
+        padding: {
+          bottom: 20,
+        },
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context: any) {
+            if (context.dataset.yAxisID === 'y1') {
+              return `${context.dataset.label}: ${context.parsed.y.toFixed(1)}%`
+            }
+            return `${context.dataset.label}: £${context.parsed.y.toFixed(2)}`
+          }
+        }
+      }
+    },
+    scales: {
+      y: {
+        type: 'linear' as const,
+        position: 'left' as const,
+        beginAtZero: true,
+        ticks: {
+          callback: function(value: any) {
+            return '£' + value.toLocaleString()
+          }
+        },
+        title: {
+          display: true,
+          text: 'Amount (£)',
+        },
+      },
+      y1: {
+        type: 'linear' as const,
+        position: 'right' as const,
+        beginAtZero: true,
+        grid: {
+          drawOnChartArea: false,
+        },
+        ticks: {
+          callback: function(value: any) {
+            return value.toFixed(0) + '%'
+          }
+        },
+        title: {
+          display: true,
+          text: 'GP %',
+        },
+      },
+      x: {
+        title: {
+          display: true,
+          text: 'Week',
+        },
+      },
+    },
+  }
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr)
@@ -533,6 +843,33 @@ export default function Purchases() {
         </>
       )}
 
+      {/* Weekly Comparison Chart - Always show at bottom */}
+      <div style={styles.chartContainer}>
+        {weeklyChartLoading ? (
+          <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>
+            Loading weekly comparison chart...
+          </div>
+        ) : weeklyChartError ? (
+          <div style={{ textAlign: 'center', padding: '2rem', color: '#c00' }}>
+            Error loading chart: {(weeklyChartError as Error).message}
+          </div>
+        ) : weeklyAggregates.length > 0 ? (
+          <div style={{ height: '400px' }}>
+            <Line data={weeklyComparisonChartData} options={weeklyComparisonChartOptions} />
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>
+            <div>No data available for weekly comparison chart</div>
+            {weeklyChartData && (
+              <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
+                Debug: Date range {weeklyChartDateRange.from} to {weeklyChartDateRange.to}<br />
+                Data points received: {weeklyChartData.data?.length || 0}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
     </div>
   )
 }
@@ -666,6 +1003,13 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '1.5rem',
     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
     marginBottom: '2rem',
+  },
+  chartContainer: {
+    background: 'white',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+    marginTop: '2rem',
   },
   sectionTitle: {
     margin: '0 0 1rem 0',

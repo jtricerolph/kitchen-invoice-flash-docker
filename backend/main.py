@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, resos_debug, calendar_events
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -21,6 +21,7 @@ from migrations.add_admin_restricted_pages import run_migration as run_admin_pag
 from migrations.add_nextcloud_backup import run_migration as run_nextcloud_backup_migration
 from migrations.add_price_settings import run_migration as run_price_settings_migration
 from migrations.add_resos_integration import run_migration as run_resos_migration
+from migrations.add_calendar_events import run_migration as run_calendar_events_migration
 from scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Resos integration migration warning (may be expected): {e}")
 
+    # Run Calendar events migration
+    try:
+        await run_calendar_events_migration()
+        logger.info("Calendar events migration completed")
+    except Exception as e:
+        logger.warning(f"Calendar events migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -132,6 +140,8 @@ app.include_router(sambapos.router, prefix="/api/sambapos", tags=["SambaPOS"])
 app.include_router(backup.router, prefix="/api/backup", tags=["Backup"])
 app.include_router(search.router, tags=["Search"])
 app.include_router(resos.router, prefix="/api/resos", tags=["Resos"])
+app.include_router(resos_debug.router, prefix="/api/resos-debug", tags=["Resos Debug"])
+app.include_router(calendar_events.router, prefix="/api/calendar-events", tags=["Calendar Events"])
 
 
 @app.get("/")

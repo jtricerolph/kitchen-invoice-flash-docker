@@ -36,6 +36,15 @@ interface Booking {
   flag_reasons: string | null
 }
 
+interface CalendarEvent {
+  id: number
+  event_date: string
+  event_type: 'reminder' | 'event' | 'note'
+  title: string
+  description: string | null
+  created_at: string
+}
+
 interface OpeningHour {
   name: string
   service_type: string
@@ -71,6 +80,16 @@ export default function ResosData() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set())
   const [selectedServiceType, setSelectedServiceType] = useState<string>('all')
+
+  // Calendar events state
+  const [showEventModal, setShowEventModal] = useState(false)
+  const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null)
+  const [eventForm, setEventForm] = useState({
+    event_date: '',
+    event_type: 'reminder' as 'reminder' | 'event' | 'note',
+    title: '',
+    description: ''
+  })
 
   // Reset expanded notes when changing dates
   useEffect(() => {
@@ -124,6 +143,22 @@ export default function ResosData() {
       return res.json()
     },
     enabled: !!token,
+  })
+
+  // Fetch calendar events for the month
+  const { data: calendarEvents, refetch: refetchEvents } = useQuery<CalendarEvent[]>({
+    queryKey: ['calendar-events', year, month],
+    queryFn: async () => {
+      const firstDay = `${year}-${String(month).padStart(2, '0')}-01`
+      const lastDay = new Date(year, month, 0)
+      const toDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`
+      const res = await fetch(`/api/calendar-events/?from_date=${firstDay}&to_date=${toDate}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Failed to fetch calendar events')
+      return res.json()
+    },
+    enabled: !!token
   })
 
   // Fetch bookings for selected date
@@ -357,10 +392,43 @@ export default function ResosData() {
     calendarDays.push(new Date(year, month - 1, day))
   }
 
+  // Build events map for quick lookup
+  const eventsMap = new Map<string, CalendarEvent[]>()
+  calendarEvents?.forEach(event => {
+    const dateStr = event.event_date
+    if (!eventsMap.has(dateStr)) {
+      eventsMap.set(dateStr, [])
+    }
+    eventsMap.get(dateStr)!.push(event)
+  })
+
   return (
     <div style={styles.container}>
-      <h1 style={styles.title}>Resos Booking Data</h1>
-      <p style={styles.subtitle}>View synced booking data, covers, and flagged reservations from Resos</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+        <div>
+          <h1 style={styles.title}>Restaurant Calendar</h1>
+          <p style={styles.subtitle}>View synced booking data, covers, and flagged reservations from Resos</p>
+        </div>
+        <button
+          onClick={() => {
+            setEditingEvent(null)
+            setEventForm({
+              event_date: new Date().toISOString().split('T')[0],
+              event_type: 'reminder',
+              title: '',
+              description: ''
+            })
+            setShowEventModal(true)
+          }}
+          style={{
+            ...styles.todayButton,
+            padding: '0.75rem 1.5rem',
+            fontSize: '0.95rem'
+          }}
+        >
+          + Create Event
+        </button>
+      </div>
 
       {/* Month Navigation */}
       <div style={styles.navBar}>
@@ -394,6 +462,7 @@ export default function ResosData() {
               const stat = statsMap.get(dateStr)
               const isToday = dateStr === today.toISOString().split('T')[0]
               const hasFlaggedBookings = (stat?.flagged_booking_count || 0) > 0
+              const hasEvents = eventsMap.has(dateStr)
 
               return (
                 <div
@@ -409,6 +478,7 @@ export default function ResosData() {
                 >
                   <div style={styles.dayNumber}>
                     {day.getDate()}
+                    {hasEvents && <span style={{ marginLeft: '4px', fontSize: '0.9rem' }}>⭐</span>}
                     {hasFlaggedBookings && (
                       <span style={styles.flagIcon}>
                         {getFlagIcons(stat?.unique_flag_types || null).map((icon, idx) => (
@@ -777,6 +847,68 @@ export default function ResosData() {
             </div>
 
             <div style={styles.modalContent}>
+              {/* Events & Reminders for this date */}
+              {(() => {
+                const eventsForDate = eventsMap.get(selectedDate) || []
+
+                if (eventsForDate.length > 0) {
+                  return (
+                    <div style={{ marginBottom: '2rem' }}>
+                      <h3 style={{ marginBottom: '1rem' }}>Events & Reminders</h3>
+                      {eventsForDate.map(event => (
+                        <div key={event.id} style={{
+                          padding: '1rem',
+                          background: event.event_type === 'reminder' ? '#fff3cd' :
+                                     event.event_type === 'event' ? '#d1ecf1' : '#f8f9fa',
+                          borderLeft: `4px solid ${event.event_type === 'reminder' ? '#ffc107' :
+                                                  event.event_type === 'event' ? '#0dcaf0' : '#6c757d'}`,
+                          borderRadius: '4px',
+                          marginBottom: '0.5rem',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'start'
+                        }}>
+                          <div>
+                            <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>
+                              {event.event_type.toUpperCase()}: {event.title}
+                            </div>
+                            {event.description && (
+                              <div style={{ fontSize: '0.9rem', color: '#666' }}>
+                                {event.description}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => {
+                              setEditingEvent(event)
+                              setEventForm({
+                                event_date: event.event_date,
+                                event_type: event.event_type,
+                                title: event.title,
+                                description: event.description || ''
+                              })
+                              setShowEventModal(true)
+                            }}
+                            style={{
+                              padding: '0.5rem 1rem',
+                              background: '#667eea',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.85rem'
+                            }}
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                }
+                return null
+              })()}
+
               {/* Gantt Timeline Chart */}
               {(() => {
                 // Use GLOBAL time range for consistent chart size across all days
@@ -1054,8 +1186,8 @@ export default function ResosData() {
                             const keywordIcon = hasKeywords && matchedKeyword ? getIconForFlag(`note_keyword_${matchedKeyword}`) : ''
 
                             return (
-                              <>
-                                <tr key={booking.id}>
+                              <React.Fragment key={booking.id}>
+                                <tr>
                                   <td style={styles.td}>{booking.booking_time}</td>
                                   <td style={styles.td}>{booking.seating_area || '-'}</td>
                                   <td style={styles.td}>{booking.table_name || '-'}</td>
@@ -1100,7 +1232,7 @@ export default function ResosData() {
                                     </td>
                                   </tr>
                                 )}
-                              </>
+                              </React.Fragment>
                             )
                           })}
                         </tbody>
@@ -1108,6 +1240,140 @@ export default function ResosData() {
                     </div>
                   ))
                 })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Event Create/Edit Modal */}
+      {showEventModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowEventModal(false)}>
+          <div style={{ ...styles.modal, maxWidth: '600px' }} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h2>{editingEvent ? 'Edit Event' : 'Create Event'}</h2>
+              <button onClick={() => setShowEventModal(false)} style={styles.closeBtn}>×</button>
+            </div>
+
+            <div style={styles.modalContent}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Date</label>
+                  <input
+                    type="date"
+                    value={eventForm.event_date}
+                    onChange={(e) => setEventForm({ ...eventForm, event_date: e.target.value })}
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Type</label>
+                  <select
+                    value={eventForm.event_type}
+                    onChange={(e) => setEventForm({ ...eventForm, event_type: e.target.value as 'reminder' | 'event' | 'note' })}
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                  >
+                    <option value="reminder">Reminder</option>
+                    <option value="event">Event</option>
+                    <option value="note">Note</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Title</label>
+                  <input
+                    type="text"
+                    value={eventForm.title}
+                    onChange={(e) => setEventForm({ ...eventForm, title: e.target.value })}
+                    placeholder="Event title..."
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>Description</label>
+                  <textarea
+                    value={eventForm.description}
+                    onChange={(e) => setEventForm({ ...eventForm, description: e.target.value })}
+                    placeholder="Optional description..."
+                    rows={4}
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd', resize: 'vertical' }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+                  {editingEvent && (
+                    <button
+                      onClick={async () => {
+                        if (confirm('Delete this event?')) {
+                          await fetch(`/api/calendar-events/${editingEvent.id}`, {
+                            method: 'DELETE',
+                            headers: { Authorization: `Bearer ${token}` }
+                          })
+                          setShowEventModal(false)
+                          refetchEvents()
+                        }
+                      }}
+                      style={{
+                        padding: '0.75rem 1.5rem',
+                        background: '#dc3545',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setShowEventModal(false)}
+                    style={{
+                      padding: '0.75rem 1.5rem',
+                      background: '#6c757d',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const url = editingEvent
+                        ? `/api/calendar-events/${editingEvent.id}`
+                        : '/api/calendar-events/'
+                      const method = editingEvent ? 'PUT' : 'POST'
+
+                      await fetch(url, {
+                        method,
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                          'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(eventForm)
+                      })
+
+                      setShowEventModal(false)
+                      refetchEvents()
+                    }}
+                    disabled={!eventForm.title || !eventForm.event_date}
+                    style={{
+                      padding: '0.75rem 1.5rem',
+                      background: !eventForm.title || !eventForm.event_date ? '#ccc' : '#667eea',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: !eventForm.title || !eventForm.event_date ? 'not-allowed' : 'pointer',
+                      fontWeight: 'bold'
+                    }}
+                  >
+                    {editingEvent ? 'Update' : 'Create'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1536,3 +1802,4 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'inline-block',
   },
 }
+
