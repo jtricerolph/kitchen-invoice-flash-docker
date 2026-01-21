@@ -134,7 +134,7 @@ export default function GPReport() {
   const [fromDate, setFromDate] = useState(initialDates.from)
   const [toDate, setToDate] = useState(initialDates.to)
   const [selectedMonth, setSelectedMonth] = useState<string>('') // Empty means custom range
-  const [selectionMode, setSelectionMode] = useState<'last30' | 'month' | 'custom'>('custom')
+  const [selectionMode, setSelectionMode] = useState<'last30' | 'week' | 'month' | 'custom'>('custom')
 
   // Submitted state (actually used for queries - only changes on Generate click)
   const [submittedFromDate, setSubmittedFromDate] = useState(initialDates.from)
@@ -241,10 +241,50 @@ export default function GPReport() {
     setSelectionMode('month')
   }
 
+  const setThisWeek = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    // Calculate Monday of current week (0 = Sunday, 1 = Monday, etc.)
+    const monday = new Date(today)
+    monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
+    // End date is yesterday (today won't have confirmed sales)
+    const end = new Date()
+    end.setDate(end.getDate() - 1)
+    const startStr = formatDate(monday)
+    const endStr = formatDate(end)
+    setFromDate(startStr)
+    setToDate(endStr)
+    setSubmittedFromDate(startStr)
+    setSubmittedToDate(endStr)
+    setSelectedMonth('')
+    setSelectionMode('week')
+  }
+
+  const setLastWeek = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    // Calculate Monday of last week
+    const lastMonday = new Date(today)
+    lastMonday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1) - 7)
+    // Sunday of last week
+    const lastSunday = new Date(lastMonday)
+    lastSunday.setDate(lastMonday.getDate() + 6)
+    const startStr = formatDate(lastMonday)
+    const endStr = formatDate(lastSunday)
+    setFromDate(startStr)
+    setToDate(endStr)
+    setSubmittedFromDate(startStr)
+    setSubmittedToDate(endStr)
+    setSelectedMonth('')
+    setSelectionMode('week')
+  }
+
   // Get the period prefix based on selection mode
   const getPeriodPrefix = (): string => {
     if (selectionMode === 'last30') {
       return 'Last 30 Days: '
+    } else if (selectionMode === 'week') {
+      return 'Week: '
     } else if (selectionMode === 'month' && selectedMonth) {
       const [year, month] = selectedMonth.split('-').map(Number)
       const monthName = new Date(year, month, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
@@ -479,6 +519,8 @@ export default function GPReport() {
         </div>
         <div style={styles.presetRow}>
           <button onClick={setLast30Days} style={styles.presetBtn}>Last 30 Days</button>
+          <button onClick={setThisWeek} style={styles.presetBtn}>This Week</button>
+          <button onClick={setLastWeek} style={styles.presetBtn}>Last Week</button>
           <button onClick={setThisMonth} style={styles.presetBtn}>This Month</button>
           <button onClick={setLastMonth} style={styles.presetBtn}>Last Month</button>
           <button
