@@ -272,8 +272,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               {bookingsOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
-                    {showNavItem('/resos') && <a href="/resos" style={styles.dropdownLink}>Bookings Calendar</a>}
-                    {showNavItem('/resos') && <a href="/resos-stats" style={styles.dropdownLink}>Bookings Stats</a>}
+                    {showNavItem('/resos') && <a href="/resos" style={styles.dropdownLink}>Restaurant Calendar</a>}
+                    {showNavItem('/resos') && <a href="/resos-stats" style={styles.dropdownLink}>Restaurant Stats</a>}
                     {showNavItem('/resos') && <a href="/residents-table-chart" style={styles.dropdownLink}>Residents Table Chart</a>}
                   </div>
                 </div>
