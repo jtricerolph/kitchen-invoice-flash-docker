@@ -22,6 +22,7 @@ from migrations.add_nextcloud_backup import run_migration as run_nextcloud_backu
 from migrations.add_price_settings import run_migration as run_price_settings_migration
 from migrations.add_resos_integration import run_migration as run_resos_migration
 from migrations.add_calendar_events import run_migration as run_calendar_events_migration
+from migrations.add_resos_upcoming_sync import run_migration as run_resos_upcoming_sync_migration
 from scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,13 @@ async def lifespan(app: FastAPI):
         logger.info("Calendar events migration completed")
     except Exception as e:
         logger.warning(f"Calendar events migration warning (may be expected): {e}")
+
+    # Run Resos upcoming sync migration
+    try:
+        await run_resos_upcoming_sync_migration()
+        logger.info("Resos upcoming sync migration completed")
+    except Exception as e:
+        logger.warning(f"Resos upcoming sync migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()
