@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import { Line } from 'react-chartjs-2'
@@ -12,6 +12,7 @@ import {
   Tooltip,
   Legend
 } from 'chart.js'
+import annotationPlugin from 'chartjs-plugin-annotation'
 
 ChartJS.register(
   CategoryScale,
@@ -20,8 +21,33 @@ ChartJS.register(
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  annotationPlugin
 )
+
+// Session storage keys for persisting dates while tab is open
+const STORAGE_KEY_FROM = 'bookings-stats-from-date'
+const STORAGE_KEY_TO = 'bookings-stats-to-date'
+
+// Get initial dates - from sessionStorage if available, otherwise default to last 30 days
+const getInitialDates = () => {
+  const storedFrom = sessionStorage.getItem(STORAGE_KEY_FROM)
+  const storedTo = sessionStorage.getItem(STORAGE_KEY_TO)
+
+  if (storedFrom && storedTo) {
+    return { from: storedFrom, to: storedTo }
+  }
+
+  // Default: last 30 days
+  const today = new Date()
+  const thirtyDaysAgo = new Date(today)
+  thirtyDaysAgo.setDate(today.getDate() - 30)
+
+  return {
+    from: thirtyDaysAgo.toISOString().split('T')[0],
+    to: today.toISOString().split('T')[0]
+  }
+}
 
 interface StatsData {
   summary: {
@@ -92,19 +118,40 @@ interface Booking {
 
 export default function BookingsStats() {
   const { token } = useAuth()
-  const [fromDate, setFromDate] = useState(() => {
-    const date = new Date()
-    date.setDate(date.getDate() - 30)
-    return date.toISOString().split('T')[0]
-  })
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+
+  // Get initial dates (from session or defaults)
+  const initialDates = getInitialDates()
+
+  // Input state (for typing without triggering queries)
+  const [fromDate, setFromDate] = useState(initialDates.from)
+  const [toDate, setToDate] = useState(initialDates.to)
+
+  // Submitted state (actually used for queries - only changes on Generate click)
+  const [submittedFromDate, setSubmittedFromDate] = useState(initialDates.from)
+  const [submittedToDate, setSubmittedToDate] = useState(initialDates.to)
+
+  // Persist submitted dates to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem(STORAGE_KEY_FROM, submittedFromDate)
+    sessionStorage.setItem(STORAGE_KEY_TO, submittedToDate)
+  }, [submittedFromDate, submittedToDate])
+
+  // Track if dates have changed since last generation
+  const hasUnsavedChanges = fromDate !== submittedFromDate || toDate !== submittedToDate
+
+  // Generate report with current date selection
+  const handleGenerate = () => {
+    setSubmittedFromDate(fromDate)
+    setSubmittedToDate(toDate)
+  }
+
   const [showPreviousPeriod, setShowPreviousPeriod] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
 
   const { data: stats, isLoading } = useQuery<StatsData>({
-    queryKey: ['resos-stats', fromDate, toDate],
+    queryKey: ['resos-stats', submittedFromDate, submittedToDate],
     queryFn: async () => {
-      const res = await fetch(`/api/resos/stats?from_date=${fromDate}&to_date=${toDate}`, {
+      const res = await fetch(`/api/resos/stats?from_date=${submittedFromDate}&to_date=${submittedToDate}`, {
         headers: { Authorization: `Bearer ${token}` }
       })
       if (!res.ok) throw new Error('Failed to fetch stats')
@@ -115,8 +162,8 @@ export default function BookingsStats() {
 
   // Calculate previous period dates (matched by day of week)
   const getPreviousPeriodDates = () => {
-    const from = new Date(fromDate)
-    const to = new Date(toDate)
+    const from = new Date(submittedFromDate)
+    const to = new Date(submittedToDate)
     const daysDiff = Math.floor((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24))
 
     const prevTo = new Date(from)
@@ -132,7 +179,7 @@ export default function BookingsStats() {
   }
 
   const { data: previousStats } = useQuery<StatsData>({
-    queryKey: ['resos-stats-previous', fromDate, toDate],
+    queryKey: ['resos-stats-previous', submittedFromDate, submittedToDate],
     queryFn: async () => {
       const prevDates = getPreviousPeriodDates()
       const res = await fetch(`/api/resos/stats?from_date=${prevDates.from}&to_date=${prevDates.to}`, {
@@ -193,6 +240,11 @@ export default function BookingsStats() {
     }
 
     const labels = stats.daily_breakdown.map(d => formatDate(d.date))
+
+    // Check if today is in the date range
+    const today = new Date().toISOString().split('T')[0]
+    const todayIndex = stats.daily_breakdown.findIndex(d => d.date === today)
+    const isTodayInRange = todayIndex !== -1
 
     const datasets = [
       {
@@ -280,7 +332,31 @@ export default function BookingsStats() {
                   return label
                 }
               }
-            }
+            },
+            annotation: isTodayInRange ? {
+              annotations: {
+                todayLine: {
+                  type: 'line',
+                  xMin: todayIndex,
+                  xMax: todayIndex,
+                  borderColor: 'rgba(255, 99, 132, 0.8)',
+                  borderWidth: 2,
+                  borderDash: [5, 5],
+                  label: {
+                    display: true,
+                    content: 'Today',
+                    position: 'start',
+                    backgroundColor: 'rgba(255, 99, 132, 0.8)',
+                    color: 'white',
+                    padding: 4,
+                    font: {
+                      size: 11,
+                      weight: 'bold'
+                    }
+                  }
+                }
+              }
+            } : {}
           },
           scales: {
             y: {
@@ -445,6 +521,15 @@ export default function BookingsStats() {
           </div>
           <button onClick={setLast30Days} style={styles.button}>Last 30 Days</button>
           <button onClick={setLast90Days} style={styles.button}>Last 90 Days</button>
+          <button
+            onClick={handleGenerate}
+            style={{
+              ...styles.generateButton,
+              ...(hasUnsavedChanges ? styles.generateButtonActive : {})
+            }}
+          >
+            Generate Report{hasUnsavedChanges ? ' *' : ''}
+          </button>
         </div>
         <div style={styles.toolbarRow}>
           <label style={styles.checkbox}>
@@ -455,6 +540,11 @@ export default function BookingsStats() {
             />
             Show Previous Period Comparison
           </label>
+          {hasUnsavedChanges && (
+            <span style={{ color: '#d9534f', fontSize: '0.85rem', marginLeft: '1rem' }}>
+              Date range changed - click Generate Report to update
+            </span>
+          )}
         </div>
       </div>
 
@@ -714,6 +804,21 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
     fontSize: '0.9rem'
+  },
+  generateButton: {
+    padding: '0.5rem 1.5rem',
+    background: '#28a745',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+    fontWeight: 'bold' as const,
+    transition: 'all 0.2s'
+  },
+  generateButtonActive: {
+    background: '#dc3545',
+    animation: 'pulse 1.5s ease-in-out infinite'
   },
   checkbox: {
     display: 'flex',
