@@ -2363,11 +2363,14 @@ async def reprocess_invoice(
         if not supplier_id and invoice.ocr_raw_text:
             supplier_id, supplier_match_type = await identify_supplier(invoice.ocr_raw_text, current_user.kitchen_id, db)
 
-        # Re-detect document type
-        document_type = detect_document_type(
-            invoice.ocr_raw_text or "",
-            raw_json
-        )
+        # Use document_type from stored raw_json if available (from azure_extractor)
+        # Otherwise re-detect it
+        document_type = raw_json.get("document_type")
+        if not document_type:
+            document_type = detect_document_type(
+                invoice.ocr_raw_text or "",
+                raw_json
+            )
 
         # Update invoice fields
         invoice.supplier_id = supplier_id

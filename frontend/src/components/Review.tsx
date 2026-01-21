@@ -187,6 +187,30 @@ const dateWarningStyles: Record<DateWarning, React.CSSProperties> = {
 };
 
 function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems: LineItem[]; invoiceTotal: number; netTotal: number | null }) {
+  // Handle case when there are no line items
+  if (lineItems.length === 0) {
+    return (
+      <div style={{
+        marginTop: '1rem',
+        padding: '1rem',
+        background: '#fef2f2',
+        borderRadius: '6px',
+        border: '1px solid #fca5a5'
+      }}>
+        <div style={{ color: '#dc2626', fontWeight: '600', marginBottom: '0.5rem' }}>
+          ⚠️ No Line Items
+        </div>
+        <div style={{ color: '#991b1b', fontSize: '0.9rem' }}>
+          This invoice has no line items. It will NOT be included in GP calculations.
+          Use the "Edit Line Items" button above to manually add line items.
+        </div>
+        <div style={{ marginTop: '0.5rem', color: '#991b1b', fontSize: '0.9rem' }}>
+          <strong>Invoice Total:</strong> £{invoiceTotal.toFixed(2)}
+        </div>
+      </div>
+    );
+  }
+
   const lineItemsTotal = lineItems.reduce((sum, item) => sum + (item.amount || 0), 0);
   const stockItemsTotal = lineItems
     .filter(item => !item.is_non_stock)
@@ -272,6 +296,7 @@ export default function Review() {
   const [newSupplierName, setNewSupplierName] = useState('')
   const [editingLineItem, setEditingLineItem] = useState<number | null>(null)
   const [lineItemEdits, setLineItemEdits] = useState<Partial<LineItem>>({})
+  const [bulkEditMode, setBulkEditMode] = useState(false)
   const [highlightedField, setHighlightedField] = useState<string | null>(null)
   const [expandedLineItem, setExpandedLineItem] = useState<number | null>(null)
   const [expandedCostBreakdown, setExpandedCostBreakdown] = useState<number | null>(null)
@@ -759,6 +784,45 @@ export default function Review() {
     },
   })
 
+  const createLineItemMutation = useMutation({
+    mutationFn: async (data: Partial<LineItem>) => {
+      const res = await fetch(`/api/invoices/${id}/line-items`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to create line item')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchLineItems()
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+      setEditingLineItem(null)
+      setLineItemEdits({})
+    },
+  })
+
+  const deleteLineItemMutation = useMutation({
+    mutationFn: async (itemId: number) => {
+      const res = await fetch(`/api/invoices/${id}/line-items/${itemId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      if (!res.ok) throw new Error('Failed to delete line item')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchLineItems()
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+      setEditingLineItem(null)
+    },
+  })
+
   const saveDefinitionMutation = useMutation({
     mutationFn: async ({ itemId, portionDesc }: { itemId: number; portionDesc?: string }) => {
       const res = await fetch(`/api/invoices/${id}/line-items/${itemId}/save-definition`, {
@@ -841,6 +905,39 @@ export default function Review() {
       status,
     })
   }
+
+  // Auto-save when invoice details change (debounced)
+  useEffect(() => {
+    if (!invoice) return
+
+    const timeoutId = setTimeout(() => {
+      // Only auto-save if values have actually changed from the invoice
+      const hasChanges =
+        invoiceNumber !== (invoice.invoice_number || '') ||
+        invoiceDate !== (invoice.invoice_date || '') ||
+        total !== (invoice.total?.toString() || '') ||
+        netTotal !== (invoice.net_total?.toString() || '') ||
+        supplierId !== (invoice.supplier_id?.toString() || '') ||
+        category !== (invoice.category || 'food') ||
+        orderNumber !== (invoice.order_number || '') ||
+        documentType !== (invoice.document_type || 'invoice')
+
+      if (hasChanges) {
+        updateMutation.mutate({
+          invoice_number: invoiceNumber || null,
+          invoice_date: invoiceDate || null,
+          total: total ? parseFloat(total) : null,
+          net_total: netTotal ? parseFloat(netTotal) : null,
+          supplier_id: supplierId ? parseInt(supplierId) : null,
+          category,
+          order_number: orderNumber || null,
+          document_type: documentType,
+        })
+      }
+    }, 1000) // 1 second debounce
+
+    return () => clearTimeout(timeoutId)
+  }, [invoiceNumber, invoiceDate, total, netTotal, supplierId, category, orderNumber, documentType])
 
   const handleConfirm = async () => {
     await handleSave('CONFIRMED')
@@ -1002,7 +1099,55 @@ export default function Review() {
   }
 
   const saveLineItemEdit = (itemId: number) => {
-    updateLineItemMutation.mutate({ itemId, data: lineItemEdits })
+    if (itemId === -1) {
+      // This is a new line item - use POST
+      createLineItemMutation.mutate(lineItemEdits)
+    } else {
+      // Existing line item - use PATCH
+      updateLineItemMutation.mutate({ itemId, data: lineItemEdits })
+    }
+    // Clear edit state immediately after save
+    setEditingLineItem(null)
+    setLineItemEdits({})
+    setExpandedLineItem(null)
+  }
+
+  const cancelEditLineItem = () => {
+    setEditingLineItem(null)
+    setLineItemEdits({})
+    setExpandedLineItem(null)
+  }
+
+  const handleAddLineItem = () => {
+    // Create a temporary new line item with placeholder ID
+    const newItemId = -1  // Negative ID indicates unsaved
+
+    // Set editing state to new item
+    setEditingLineItem(newItemId)
+    setLineItemEdits({
+      product_code: '',
+      description: '',
+      unit: '',
+      quantity: null,
+      unit_price: null,
+      tax_rate: '',
+      amount: null,
+      is_non_stock: false,
+      line_number: (filteredAndSortedLineItems.length || 0) + 1
+    })
+  }
+
+  const handleDeleteLineItem = (itemId: number) => {
+    if (window.confirm('Are you sure you want to delete this line item? This action cannot be undone.')) {
+      deleteLineItemMutation.mutate(itemId)
+    }
+  }
+
+  // Helper to ensure item is being edited when user interacts with fields in bulk mode
+  const ensureEditing = (item: LineItem) => {
+    if (editingLineItem !== item.id) {
+      startEditLineItem(item)
+    }
   }
 
   // Build dynamic list of supplier words from loaded suppliers
@@ -1327,14 +1472,27 @@ export default function Review() {
 
     const nonStock = lineItems.filter(item => item.is_non_stock).length
 
-    // Count items with price calculation errors (qty × price ≠ total)
+    // Count items with price calculation errors
+    // Valid cases: qty only (free item), or all three values with correct calculation
+    // For credit notes, totals are negative but qty/price are positive
+    const isCreditNote = invoice?.document_type === 'credit_note'
     const priceCalcErrors = lineItems.filter(item => {
-      // Missing data check
-      if (item.unit_price == null || item.amount == null) return false
-      // If there's an amount but no quantity (or zero), that's an error
-      if (item.quantity == null || item.quantity === 0) return true
-      // Check if qty × price matches amount (with 2p tolerance)
-      return Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02
+      const hasQty = item.quantity != null && item.quantity > 0
+      const hasPrice = item.unit_price != null && item.unit_price > 0
+      const hasTotal = item.amount != null && item.amount !== 0  // Changed to allow negative amounts (credit notes)
+
+      // For credit notes, check if absolute values match (qty * price = |total|)
+      const expectedTotal = (item.quantity || 0) * (item.unit_price || 0)
+      const actualTotal = item.amount || 0
+      const calculationMismatch = isCreditNote
+        ? Math.abs(Math.abs(expectedTotal) - Math.abs(actualTotal)) > 0.02  // Compare absolute values for credit notes
+        : Math.abs(expectedTotal - actualTotal) > 0.02  // Normal comparison for invoices
+
+      return (
+        (hasPrice && (!hasQty || !hasTotal)) ||  // price requires both qty and total
+        (hasTotal && (!hasQty || !hasPrice)) ||  // total requires both qty and price
+        (hasQty && hasPrice && hasTotal && calculationMismatch) // calculation mismatch
+      )
     }).length
 
     // Calculate totals (line items are NET values)
@@ -1378,6 +1536,20 @@ export default function Review() {
       stockItemsGross
     }
   }, [lineItems, total, netTotal])
+
+  // Check if line items have validation errors (for disabling Confirm/Dext buttons)
+  const hasLineItemErrors = useMemo(() => {
+    // No line items = error
+    if (!lineItems || lineItems.length === 0) return true
+
+    // Totals don't match = error
+    if (!lineItemStats.totalsMatch) return true
+
+    // Price calculation errors = error
+    if (lineItemStats.priceCalcErrors > 0) return true
+
+    return false
+  }, [lineItems, lineItemStats.totalsMatch, lineItemStats.priceCalcErrors])
 
   // Calculate filter option counts for disabling
   const filterOptionCounts = useMemo(() => {
@@ -1793,6 +1965,7 @@ export default function Review() {
                   style={styles.input}
                 >
                   <option value="invoice">Invoice</option>
+                  <option value="credit_note">Credit Note</option>
                   <option value="delivery_note">Delivery Note</option>
                 </select>
               </label>
@@ -1946,19 +2119,18 @@ export default function Review() {
             </label>
           </div>
 
-          {/* Save | Confirm & Dext */}
-          <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
-            <button
-              onClick={() => handleSave('REVIEWED')}
-              style={{ ...styles.saveBtn, flex: 1 }}
-              disabled={updateMutation.isPending}
-            >
-              SAVE
-            </button>
+          {/* Confirm & Dext (full width, auto-saves on change) */}
+          <div style={{ marginTop: '20px' }}>
             <button
               onClick={handleConfirm}
-              style={{ ...styles.confirmBtn, flex: 1 }}
-              disabled={updateMutation.isPending}
+              style={{
+                ...styles.confirmBtn,
+                width: '100%',
+                opacity: (hasLineItemErrors || updateMutation.isPending) ? 0.5 : 1,
+                cursor: (hasLineItemErrors || updateMutation.isPending) ? 'not-allowed' : 'pointer'
+              }}
+              disabled={hasLineItemErrors || updateMutation.isPending}
+              title={hasLineItemErrors ? 'Fix line item validation errors before confirming' : ''}
             >
               {invoice?.dext_sent_at ? 'CONFIRM' : 'CONFIRM & DEXT'}
             </button>
@@ -1967,13 +2139,13 @@ export default function Review() {
           {/* Checks Section */}
           {lineItems && lineItems.length > 0 && (
             <div style={{ margin: '20px 0', display: 'flex', gap: '8px' }}>
-              {/* Items Total Check */}
+              {/* Items Total Check - RED if doesn't match (blocks confirm) */}
               <div style={{
                 flex: 1,
                 padding: '8px',
                 borderRadius: '4px',
-                border: `1px solid ${lineItemStats.totalsMatch ? '#c3e6cb' : '#ffc107'}`,
-                background: lineItemStats.totalsMatch ? '#d4edda' : '#fff3cd',
+                border: `2px solid ${lineItemStats.totalsMatch ? '#c3e6cb' : '#dc2626'}`,
+                background: lineItemStats.totalsMatch ? '#d4edda' : '#fef2f2',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -1981,23 +2153,23 @@ export default function Review() {
                 fontSize: '0.8rem'
               }}>
                 <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
-                  {lineItemStats.totalsMatch ? '✓' : '⚠'}
+                  {lineItemStats.totalsMatch ? '✓' : '⛔'}
                 </div>
-                <div style={{ fontWeight: '600', color: lineItemStats.totalsMatch ? '#155724' : '#856404', marginBottom: '2px' }}>
+                <div style={{ fontWeight: '600', color: lineItemStats.totalsMatch ? '#155724' : '#dc2626', marginBottom: '2px' }}>
                   Items Total
                 </div>
-                <div style={{ fontSize: '0.7rem', color: lineItemStats.totalsMatch ? '#155724' : '#856404' }}>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.totalsMatch ? '#155724' : '#dc2626' }}>
                   {lineItemStats.totalsMatch ? 'Matches' : "Doesn't match"}
                 </div>
               </div>
 
-              {/* QTY/Price Check */}
+              {/* QTY/Price Check - RED if errors (blocks confirm) */}
               <div style={{
                 flex: 1,
                 padding: '8px',
                 borderRadius: '4px',
-                border: `1px solid ${lineItemStats.priceCalcErrors === 0 ? '#c3e6cb' : '#f8d7da'}`,
-                background: lineItemStats.priceCalcErrors === 0 ? '#d4edda' : '#f8d7da',
+                border: `2px solid ${lineItemStats.priceCalcErrors === 0 ? '#c3e6cb' : '#dc2626'}`,
+                background: lineItemStats.priceCalcErrors === 0 ? '#d4edda' : '#fef2f2',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -2005,17 +2177,17 @@ export default function Review() {
                 fontSize: '0.8rem'
               }}>
                 <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
-                  {lineItemStats.priceCalcErrors === 0 ? '✓' : '💷'}
+                  {lineItemStats.priceCalcErrors === 0 ? '✓' : '⛔'}
                 </div>
-                <div style={{ fontWeight: '600', color: lineItemStats.priceCalcErrors === 0 ? '#155724' : '#721c24', marginBottom: '2px' }}>
+                <div style={{ fontWeight: '600', color: lineItemStats.priceCalcErrors === 0 ? '#155724' : '#dc2626', marginBottom: '2px' }}>
                   QTY/Price
                 </div>
-                <div style={{ fontSize: '0.7rem', color: lineItemStats.priceCalcErrors === 0 ? '#155724' : '#721c24' }}>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.priceCalcErrors === 0 ? '#155724' : '#dc2626' }}>
                   {lineItemStats.priceCalcErrors === 0 ? 'All OK' : `${lineItemStats.priceCalcErrors} error${lineItemStats.priceCalcErrors !== 1 ? 's' : ''}`}
                 </div>
               </div>
 
-              {/* Portions Check */}
+              {/* Portions Check - AMBER warning (doesn't block) */}
               <div style={{
                 flex: 1,
                 padding: '8px',
@@ -2037,13 +2209,13 @@ export default function Review() {
                 </div>
               </div>
 
-              {/* Missing Data Check */}
+              {/* Missing Data Check - AMBER warning (doesn't block confirm) */}
               <div style={{
                 flex: 1,
                 padding: '8px',
                 borderRadius: '4px',
-                border: `1px solid ${lineItemStats.missingData === 0 ? '#c3e6cb' : '#f8d7da'}`,
-                background: lineItemStats.missingData === 0 ? '#d4edda' : '#f8d7da',
+                border: `1px solid ${lineItemStats.missingData === 0 ? '#c3e6cb' : '#ffc107'}`,
+                background: lineItemStats.missingData === 0 ? '#d4edda' : '#fff3cd',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -2051,12 +2223,12 @@ export default function Review() {
                 fontSize: '0.8rem'
               }}>
                 <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
-                  {lineItemStats.missingData === 0 ? '✓' : '❌'}
+                  {lineItemStats.missingData === 0 ? '✓' : '⚠'}
                 </div>
-                <div style={{ fontWeight: '600', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24', marginBottom: '2px' }}>
+                <div style={{ fontWeight: '600', color: lineItemStats.missingData === 0 ? '#155724' : '#856404', marginBottom: '2px' }}>
                   Missing Data
                 </div>
-                <div style={{ fontSize: '0.7rem', color: lineItemStats.missingData === 0 ? '#155724' : '#721c24' }}>
+                <div style={{ fontSize: '0.7rem', color: lineItemStats.missingData === 0 ? '#155724' : '#856404' }}>
                   {lineItemStats.missingData} item{lineItemStats.missingData !== 1 ? 's' : ''}
                 </div>
               </div>
@@ -2123,10 +2295,13 @@ export default function Review() {
                     color: 'white',
                     border: 'none',
                     borderRadius: '4px',
-                    cursor: 'pointer',
+                    cursor: hasLineItemErrors ? 'not-allowed' : 'pointer',
                     minWidth: '130px',
-                    whiteSpace: 'nowrap'
+                    whiteSpace: 'nowrap',
+                    opacity: hasLineItemErrors ? 0.5 : 1
                   }}
+                  disabled={hasLineItemErrors}
+                  title={hasLineItemErrors ? 'Fix line item validation errors before sending to Dext' : ''}
                 >
                   {invoice.dext_sent_at ? 'Resend to Dext' : 'Send to Dext'}
                 </button>
@@ -2260,7 +2435,42 @@ export default function Review() {
       {/* Full-width Line Items Section */}
       <div style={styles.lineItemsSection}>
         <div style={{ marginBottom: '10px' }}>
-          <h3 style={{ margin: '0 0 10px 0' }}>Line Items</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <h3 style={{ margin: '0' }}>Line Items</h3>
+            <button
+              onClick={() => {
+                if (bulkEditMode) {
+                  // Check if there are unsaved changes
+                  if (editingLineItem !== null) {
+                    if (!window.confirm('You have unsaved changes. Are you sure you want to exit edit mode?')) {
+                      return
+                    }
+                  }
+                  // Exiting bulk edit mode - cancel any unsaved edits
+                  setEditingLineItem(null)
+                  setLineItemEdits({})
+                  setBulkEditMode(false)
+                } else {
+                  // Entering bulk edit mode
+                  setBulkEditMode(true)
+                  // If there are no line items, automatically add one
+                  if (!lineItems || lineItems.length === 0) {
+                    handleAddLineItem()
+                  }
+                }
+              }}
+              style={{
+                ...styles.editBtn,
+                background: bulkEditMode ? '#dc3545' : '#f0f0f0',
+                color: bulkEditMode ? 'white' : '#333',
+                border: bulkEditMode ? 'none' : '1px solid #ddd',
+                padding: '0.5rem 1rem',
+                fontSize: '0.85rem'
+              }}
+            >
+              {bulkEditMode ? '✕ Exit Edit Mode' : '✏️ Edit Line Items'}
+            </button>
+          </div>
           {lineItems && lineItems.length > 0 && (
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
               <input
@@ -2350,7 +2560,7 @@ export default function Review() {
                   Code {lineItemSortColumn === 'code' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
                 </th>
                 <th
-                  style={{ ...styles.th, minWidth: '280px', cursor: 'pointer', userSelect: 'none' }}
+                  style={{ ...styles.th, minWidth: '240px', cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => handleLineItemSort('description')}
                 >
                   Description {lineItemSortColumn === 'description' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
@@ -2368,7 +2578,7 @@ export default function Review() {
                   Qty {lineItemSortColumn === 'quantity' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
                 </th>
                 <th
-                  style={{ ...styles.th, width: '70px', cursor: 'pointer', userSelect: 'none' }}
+                  style={{ ...styles.th, width: '110px', cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => handleLineItemSort('unit_price')}
                 >
                   Price {lineItemSortColumn === 'unit_price' && (lineItemSortDirection === 'asc' ? '↑' : '↓')}
@@ -2392,7 +2602,34 @@ export default function Review() {
               </tr>
             </thead>
             <tbody>
-              {filteredAndSortedLineItems.map((item) => {
+              {[...filteredAndSortedLineItems, ...(editingLineItem === -1 ? [{
+                id: -1,
+                product_code: lineItemEdits.product_code || '',
+                description: lineItemEdits.description || '',
+                unit: lineItemEdits.unit || '',
+                quantity: lineItemEdits.quantity ?? null,
+                order_quantity: null,
+                unit_price: lineItemEdits.unit_price ?? null,
+                tax_rate: lineItemEdits.tax_rate || '',
+                tax_amount: null,
+                amount: lineItemEdits.amount ?? null,
+                line_number: lineItemEdits.line_number || 0,
+                is_non_stock: lineItemEdits.is_non_stock || false,
+                raw_content: null,
+                pack_quantity: null,
+                unit_size: null,
+                unit_size_type: null,
+                portions_per_unit: null,
+                cost_per_item: null,
+                cost_per_portion: null,
+                ocr_warnings: null,
+                price_change_status: null,
+                price_change_percent: null,
+                previous_price: null,
+                future_price: null,
+                future_change_percent: null,
+                _originalIndex: -1
+              }] : [])].map((item) => {
                 const bbox = getLineItemBoundingBox(item._originalIndex)
                 const hasOcrWarning = !!item.ocr_warnings
                 const highQtyThreshold = settings?.high_quantity_threshold ?? 100
@@ -2404,11 +2641,25 @@ export default function Review() {
                   itemStockHistory.previously_non_stock &&
                   !item.is_non_stock // Current item is marked as stock, but was previously non-stock
 
-                // Check for price calculation mismatch: qty × unit_price should equal amount
-                const hasPriceCalcError = item.unit_price != null &&
-                  item.amount != null &&
-                  (item.quantity == null || item.quantity === 0 ||
-                   Math.abs((item.quantity * item.unit_price) - item.amount) > 0.02) // Allow 2p tolerance for rounding
+                // Check for price calculation errors
+                // Valid cases: qty only (free item), or all three values with correct calculation
+                // For credit notes, totals are negative but qty/price are positive
+                const hasQty = item.quantity != null && item.quantity > 0
+                const hasPrice = item.unit_price != null && item.unit_price > 0
+                const hasTotal = item.amount != null && item.amount !== 0  // Changed to allow negative amounts (credit notes)
+
+                // For credit notes, check if absolute values match (qty * price = |total|)
+                const isCreditNote = invoice?.document_type === 'credit_note'
+                const expectedTotal = (item.quantity || 0) * (item.unit_price || 0)
+                const actualTotal = item.amount || 0
+                const calculationMismatch = isCreditNote
+                  ? Math.abs(Math.abs(expectedTotal) - Math.abs(actualTotal)) > 0.02  // Compare absolute values for credit notes
+                  : Math.abs(expectedTotal - actualTotal) > 0.02  // Normal comparison for invoices
+
+                const hasPriceCalcError =
+                  (hasPrice && (!hasQty || !hasTotal)) ||  // price requires both qty and total
+                  (hasTotal && (!hasQty || !hasPrice)) ||  // total requires both qty and price
+                  (hasQty && hasPrice && hasTotal && calculationMismatch) // calculation mismatch (2p tolerance)
 
                 // OCR warning takes priority (darker amber), high quantity is lighter
                 const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : undefined
@@ -2454,24 +2705,24 @@ export default function Review() {
                           <td style={styles.td}>
                             <input
                               type="text"
-                              value={lineItemEdits.product_code || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, product_code: e.target.value })}
+                              value={editingLineItem === item.id ? (lineItemEdits.product_code || '') : (item.product_code || '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, product_code: e.target.value }); }}
                               style={{ ...styles.tableInput, width: '70px' }}
                             />
                           </td>
                           <td style={styles.td}>
                             <input
                               type="text"
-                              value={lineItemEdits.description || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, description: e.target.value })}
+                              value={editingLineItem === item.id ? (lineItemEdits.description || '') : (item.description || '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, description: e.target.value }); }}
                               style={styles.tableInput}
                             />
                           </td>
                           <td style={styles.td}>
                             <input
                               type="text"
-                              value={lineItemEdits.unit || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit: e.target.value })}
+                              value={editingLineItem === item.id ? (lineItemEdits.unit || '') : (item.unit || '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, unit: e.target.value }); }}
                               style={{ ...styles.tableInput, width: '50px' }}
                             />
                           </td>
@@ -2479,8 +2730,8 @@ export default function Review() {
                             <input
                               type="number"
                               step="0.01"
-                              value={lineItemEdits.quantity || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) })}
+                              value={editingLineItem === item.id ? (lineItemEdits.quantity ?? '') : (item.quantity ?? '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, quantity: parseFloat(e.target.value) }); }}
                               style={{ ...styles.tableInput, width: '50px' }}
                             />
                           </td>
@@ -2488,16 +2739,16 @@ export default function Review() {
                             <input
                               type="number"
                               step="0.01"
-                              value={lineItemEdits.unit_price || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) })}
+                              value={editingLineItem === item.id ? (lineItemEdits.unit_price ?? '') : (item.unit_price ?? '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, unit_price: parseFloat(e.target.value) }); }}
                               style={{ ...styles.tableInput, width: '70px' }}
                             />
                           </td>
                           <td style={styles.td}>
                             <input
                               type="text"
-                              value={lineItemEdits.tax_rate || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, tax_rate: e.target.value })}
+                              value={editingLineItem === item.id ? (lineItemEdits.tax_rate || '') : (item.tax_rate || '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, tax_rate: e.target.value }); }}
                               style={{ ...styles.tableInput, width: '50px' }}
                             />
                           </td>
@@ -2505,16 +2756,16 @@ export default function Review() {
                             <input
                               type="number"
                               step="0.01"
-                              value={lineItemEdits.amount || ''}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) })}
+                              value={editingLineItem === item.id ? (lineItemEdits.amount ?? '') : (item.amount ?? '')}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, amount: parseFloat(e.target.value) }); }}
                               style={{ ...styles.tableInput, width: '60px' }}
                             />
                           </td>
                           <td style={{ ...styles.td, textAlign: 'center' }}>
                             <input
                               type="checkbox"
-                              checked={!lineItemEdits.is_non_stock}
-                              onChange={(e) => setLineItemEdits({ ...lineItemEdits, is_non_stock: !e.target.checked })}
+                              checked={editingLineItem === item.id ? !lineItemEdits.is_non_stock : !item.is_non_stock}
+                              onChange={(e) => { ensureEditing(item); setLineItemEdits({ ...lineItemEdits, is_non_stock: !e.target.checked }); }}
                               style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                             />
                           </td>
@@ -2522,8 +2773,46 @@ export default function Review() {
                             {/* Scale icon disabled during edit */}
                           </td>
                           <td style={styles.td}>
-                            <button onClick={() => saveLineItemEdit(item.id)} style={styles.smallBtn}>Save</button>
-                            <button onClick={() => { setEditingLineItem(null); setExpandedLineItem(null) }} style={styles.smallBtnCancel}>X</button>
+                            <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                              <button
+                                onClick={() => saveLineItemEdit(item.id)}
+                                style={{
+                                  padding: '0.35rem 0.5rem',
+                                  background: '#f0f0f0',
+                                  border: '1px solid #ddd',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '1rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  minWidth: '32px',
+                                  height: '32px'
+                                }}
+                                title="Save changes"
+                              >
+                                ✅
+                              </button>
+                              <button
+                                onClick={cancelEditLineItem}
+                                style={{
+                                  padding: '0.35rem 0.5rem',
+                                  background: '#f0f0f0',
+                                  border: '1px solid #ddd',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '1rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  minWidth: '32px',
+                                  height: '32px'
+                                }}
+                                title="Cancel editing"
+                              >
+                                ❌
+                              </button>
+                            </div>
                           </td>
                         </>
                       ) : (
@@ -2576,61 +2865,75 @@ export default function Review() {
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
                           <td style={{ ...styles.td, ...errorCellStyleLeft }}>{item.quantity?.toFixed(2) || '—'}</td>
-                          <td style={{ ...styles.td, ...errorCellStyleMiddle }}>
-                            <div>
-                              <div>
-                                {item.unit_price != null ? `£${item.unit_price.toFixed(2)}` : '—'}
-                                {/* Show green tick inline for consistent prices */}
-                                {item.price_change_status === 'consistent' && (
-                                  <span style={{ marginLeft: '6px', color: '#22c55e', fontWeight: 'bold' }}>
-                                    ✓
-                                  </span>
-                                )}
-                              </div>
-                              {/* Show arrow and percentage below for price changes */}
-                              {item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_status !== 'consistent' && item.price_change_percent !== null && item.price_change_percent !== 0 && (() => {
-                                const isIncrease = item.price_change_percent > 0
-                                const arrow = isIncrease ? '▲' : '▼'
-                                const color = isIncrease ? '#ef4444' : '#22c55e'
-                                return (
-                                  <div
-                                    onClick={() => openPriceHistoryModal(item)}
-                                    style={{
-                                      fontSize: '0.75rem',
-                                      marginTop: '2px',
-                                      color,
-                                      cursor: 'pointer',
-                                      display: 'inline-block'
-                                    }}
-                                    title="View price history"
-                                  >
-                                    <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
-                                    {Math.abs(item.price_change_percent).toFixed(1)}%
-                                  </div>
-                                )
-                              })()}
-                              {/* Show future price change in brackets and grey for old invoices */}
-                              {item.future_change_percent !== null && item.future_change_percent !== 0 && (() => {
-                                const isIncrease = item.future_change_percent > 0
-                                const arrow = isIncrease ? '▲' : '▼'
-                                return (
-                                  <div
-                                    onClick={() => openPriceHistoryModal(item)}
-                                    style={{
-                                      fontSize: '0.75rem',
-                                      marginTop: '2px',
-                                      color: '#9ca3af',
-                                      cursor: 'pointer',
-                                      display: 'inline-block'
-                                    }}
-                                    title="Price changed after this invoice"
-                                  >
-                                    (<span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
-                                    {Math.abs(item.future_change_percent).toFixed(1)}%)
-                                  </div>
-                                )
-                              })()}
+                          <td style={{ ...styles.td, ...errorCellStyleMiddle, position: 'relative' }}>
+                            {/* Price value - inline-block to align with other cells */}
+                            <div style={{ display: 'inline-block', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
+                              {item.unit_price != null ? `£${item.unit_price.toFixed(2)}` : '—'}
+                              {/* Show green tick inline for consistent prices */}
+                              {item.price_change_status === 'consistent' && (
+                                <span style={{ marginLeft: '6px', color: '#22c55e', fontWeight: 'bold' }}>
+                                  ✓
+                                </span>
+                              )}
+                              {/* Show green document icon inline for new items (no history) */}
+                              {item.price_change_status === 'no_history' && (
+                                <span style={{ marginLeft: '6px', color: '#22c55e' }}>
+                                  📄⁺
+                                </span>
+                              )}
+                              {/* Show amber coin icon inline for items with price changes */}
+                              {item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_status !== 'consistent' && (
+                                <span style={{ marginLeft: '6px', color: '#f59e0b' }}>
+                                  🪙
+                                </span>
+                              )}
                             </div>
+                            {/* Show arrow and percentage below for price changes - absolutely positioned */}
+                            {item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_status !== 'consistent' && item.price_change_percent !== null && item.price_change_percent !== 0 && (() => {
+                              const isIncrease = item.price_change_percent > 0
+                              const arrow = isIncrease ? '▲' : '▼'
+                              const color = isIncrease ? '#ef4444' : '#22c55e'
+                              return (
+                                <div
+                                  onClick={() => openPriceHistoryModal(item)}
+                                  style={{
+                                    position: 'absolute',
+                                    bottom: '0.2rem',
+                                    left: '0.5rem',
+                                    fontSize: '0.65rem',
+                                    lineHeight: '1',
+                                    color,
+                                    cursor: 'pointer'
+                                  }}
+                                  title="View price history"
+                                >
+                                  <span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
+                                  {Math.abs(item.price_change_percent).toFixed(1)}%
+                                </div>
+                              )
+                            })()}
+                            {/* Show future price change in brackets and grey for old invoices */}
+                            {item.future_change_percent !== null && item.future_change_percent !== 0 && (() => {
+                              const isIncrease = item.future_change_percent > 0
+                              const arrow = isIncrease ? '▲' : '▼'
+                              return (
+                                <div
+                                  onClick={() => openPriceHistoryModal(item)}
+                                  style={{
+                                    position: 'absolute',
+                                    bottom: '0.2rem',
+                                    left: '0.5rem',
+                                    fontSize: '0.75rem',
+                                    color: '#9ca3af',
+                                    cursor: 'pointer'
+                                  }}
+                                  title="Price changed after this invoice"
+                                >
+                                  (<span style={{ fontWeight: 'bold' }}>{arrow}</span>{' '}
+                                  {Math.abs(item.future_change_percent).toFixed(1)}%)
+                                </div>
+                              )
+                            })()}
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem', ...errorCellStyleMiddle }}>{item.tax_rate || '—'}</td>
                           <td style={{ ...styles.td, ...errorCellStyleRight }}>{item.amount ? `£${item.amount.toFixed(2)}` : '—'}</td>
@@ -2670,28 +2973,45 @@ export default function Review() {
                           </td>
                           <td style={{ ...styles.td, minWidth: '135px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
                             <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                              <button onClick={() => startEditLineItem(item)} style={styles.iconBtn} title="Edit line item">
-                                ✏️
-                              </button>
-                              <button onClick={() => openSearchModal(item)} style={styles.iconBtn} title="Search similar items">
-                                🔍
-                              </button>
-                              <button
-                                onClick={() => item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null && openPriceHistoryModal(item)}
-                                style={{
-                                  ...styles.iconBtn,
-                                  opacity: (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null) ? 1 : 0.5,
-                                  cursor: (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null) ? 'pointer' : 'not-allowed'
-                                }}
-                                title={
-                                  (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null)
-                                    ? "View price history"
-                                    : "No price history available"
-                                }
-                                disabled={!(item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null)}
-                              >
-                                📊
-                              </button>
+                              {bulkEditMode ? (
+                                <>
+                                  <button onClick={() => startEditLineItem(item)} style={styles.iconBtn} title="Edit line item">
+                                    ✏️
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteLineItem(item.id)}
+                                    style={{
+                                      ...styles.iconBtn,
+                                      color: '#dc3545'
+                                    }}
+                                    title="Delete line item"
+                                  >
+                                    🗑️
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button onClick={() => openSearchModal(item)} style={styles.iconBtn} title="Search similar items">
+                                    🔍
+                                  </button>
+                                  <button
+                                    onClick={() => item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null && openPriceHistoryModal(item)}
+                                    style={{
+                                      ...styles.iconBtn,
+                                      opacity: (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null) ? 1 : 0.5,
+                                      cursor: (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null) ? 'pointer' : 'not-allowed'
+                                    }}
+                                    title={
+                                      (item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null)
+                                        ? "View price history"
+                                        : "No price history available"
+                                    }
+                                    disabled={!(item.price_change_status && item.price_change_status !== 'no_history' && item.price_change_percent !== null)}
+                                  >
+                                    📊
+                                  </button>
+                                </>
+                              )}
                             </div>
                           </td>
                         </>
@@ -3021,6 +3341,22 @@ export default function Review() {
                   </React.Fragment>
                 )
               })}
+              {bulkEditMode && (
+                <tr>
+                  <td colSpan={11} style={{ textAlign: 'center', padding: '1.5rem', background: '#f9fafb' }}>
+                    <button
+                      onClick={handleAddLineItem}
+                      style={{
+                        ...styles.confirmBtn,
+                        padding: '0.75rem 2rem',
+                        fontSize: '0.95rem'
+                      }}
+                    >
+                      + Add Line Item
+                    </button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         ) : (
@@ -3028,13 +3364,11 @@ export default function Review() {
         )}
 
         {/* Line Items Total Validation */}
-        {lineItems && lineItems.length > 0 && (
-          <LineItemsValidation
-            lineItems={lineItems}
-            invoiceTotal={parseFloat(total) || 0}
-            netTotal={netTotal ? parseFloat(netTotal) : null}
-          />
-        )}
+        <LineItemsValidation
+          lineItems={lineItems || []}
+          invoiceTotal={parseFloat(total) || 0}
+          netTotal={netTotal ? parseFloat(netTotal) : null}
+        />
       </div>
 
       {/* Delete Confirmation Modal */}
