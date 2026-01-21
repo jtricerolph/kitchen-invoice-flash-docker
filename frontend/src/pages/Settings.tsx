@@ -43,6 +43,9 @@ interface ResosSettingsData {
   resos_api_key_set: boolean
   resos_last_sync: string | null
   resos_auto_sync_enabled: boolean
+  resos_upcoming_sync_enabled: boolean
+  resos_upcoming_sync_interval: number
+  resos_last_upcoming_sync: string | null
   resos_large_group_threshold: number
   resos_note_keywords: string | null
   resos_allergy_keywords: string | null
@@ -235,6 +238,8 @@ export default function Settings() {
   // Resos state
   const [resosApiKey, setResosApiKey] = useState('')
   const [resosAutoSyncEnabled, setResosAutoSyncEnabled] = useState(false)
+  const [resosUpcomingSyncEnabled, setResosUpcomingSyncEnabled] = useState(false)
+  const [resosUpcomingSyncInterval, setResosUpcomingSyncInterval] = useState(15)
   const [resosLargeGroupThreshold, setResosLargeGroupThreshold] = useState(8)
   const [resosNoteKeywords, setResosNoteKeywords] = useState('')
   const [resosAllergyKeywords, setResosAllergyKeywords] = useState('')
@@ -656,6 +661,8 @@ export default function Settings() {
   useEffect(() => {
     if (resosSettings) {
       setResosAutoSyncEnabled(resosSettings.resos_auto_sync_enabled || false)
+      setResosUpcomingSyncEnabled(resosSettings.resos_upcoming_sync_enabled || false)
+      setResosUpcomingSyncInterval(resosSettings.resos_upcoming_sync_interval || 15)
       setResosLargeGroupThreshold(resosSettings.resos_large_group_threshold || 8)
       setResosNoteKeywords(resosSettings.resos_note_keywords || '')
       setResosAllergyKeywords(resosSettings.resos_allergy_keywords || '')
@@ -3025,12 +3032,45 @@ export default function Settings() {
                   />
                   Enable automatic daily sync (4:30 AM)
                 </label>
-                <small style={styles.hint}>This setting is saved with the main settings below</small>
+                <small style={styles.hint}>Syncs all historical and forecast data (past 30 days + next 60 days)</small>
               </div>
 
               {resosSettings?.resos_last_sync && (
                 <div style={styles.formGroup}>
-                  <small style={styles.hint}>Last sync: {new Date(resosSettings.resos_last_sync).toLocaleString()}</small>
+                  <small style={styles.hint}>Last full sync: {new Date(resosSettings.resos_last_sync).toLocaleString()}</small>
+                </div>
+              )}
+
+              <div style={styles.formGroup}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={resosUpcomingSyncEnabled}
+                    onChange={(e) => setResosUpcomingSyncEnabled(e.target.checked)}
+                  />
+                  Enable frequent upcoming sync (next 7 days)
+                </label>
+                <small style={styles.hint}>Keeps upcoming bookings fresh with more frequent updates</small>
+              </div>
+
+              {resosUpcomingSyncEnabled && (
+                <div style={styles.formGroup}>
+                  <label>Sync interval (minutes)</label>
+                  <input
+                    type="number"
+                    value={resosUpcomingSyncInterval}
+                    onChange={(e) => setResosUpcomingSyncInterval(parseInt(e.target.value) || 15)}
+                    min={5}
+                    max={60}
+                    style={styles.textInput}
+                  />
+                  <small style={styles.hint}>How often to sync upcoming bookings (5-60 minutes, default 15)</small>
+                </div>
+              )}
+
+              {resosSettings?.resos_last_upcoming_sync && (
+                <div style={styles.formGroup}>
+                  <small style={styles.hint}>Last upcoming sync: {new Date(resosSettings.resos_last_upcoming_sync).toLocaleString()}</small>
                 </div>
               )}
 
@@ -3088,6 +3128,8 @@ export default function Settings() {
                     body: JSON.stringify({
                       resos_api_key: resosApiKey || undefined,
                       resos_auto_sync_enabled: resosAutoSyncEnabled,
+                      resos_upcoming_sync_enabled: resosUpcomingSyncEnabled,
+                      resos_upcoming_sync_interval: resosUpcomingSyncInterval,
                       resos_large_group_threshold: resosLargeGroupThreshold,
                       resos_note_keywords: resosNoteKeywords,
                       resos_allergy_keywords: resosAllergyKeywords,

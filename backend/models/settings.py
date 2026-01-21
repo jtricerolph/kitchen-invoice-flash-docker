@@ -40,6 +40,10 @@ class KitchenSettings(Base):
     resos_api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     resos_last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     resos_auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Separate sync interval for next 7 days (in minutes, default 15)
+    resos_upcoming_sync_interval: Mapped[int] = mapped_column(Integer, default=15)
+    resos_upcoming_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    resos_last_upcoming_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Resos Flagging Configuration
     resos_large_group_threshold: Mapped[int] = mapped_column(Integer, default=8)

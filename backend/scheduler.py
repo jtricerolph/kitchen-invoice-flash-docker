@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select
 
 from database import AsyncSessionLocal
@@ -75,6 +76,35 @@ async def run_daily_resos_sync():
                 logger.info(f"Kitchen {settings.kitchen_id} Resos sync completed: {results}")
             except Exception as e:
                 logger.error(f"Kitchen {settings.kitchen_id} Resos sync failed: {e}")
+                # Continue with other kitchens
+
+
+async def run_upcoming_resos_sync():
+    """
+    Upcoming Resos sync job (next 7 days) that runs more frequently.
+    Interval configured per kitchen in settings (default 15 minutes).
+    """
+    logger.info("Starting upcoming Resos sync job")
+
+    async with AsyncSessionLocal() as db:
+        # Get all kitchens with upcoming sync enabled
+        result = await db.execute(
+            select(KitchenSettings).where(
+                KitchenSettings.resos_upcoming_sync_enabled == True,
+                KitchenSettings.resos_api_key.isnot(None)
+            )
+        )
+        settings_list = result.scalars().all()
+
+        logger.info(f"Found {len(settings_list)} kitchens with upcoming Resos sync enabled")
+
+        for settings in settings_list:
+            try:
+                sync_service = ResosSyncService(settings.kitchen_id, db)
+                results = await sync_service.run_upcoming_sync()
+                logger.info(f"Kitchen {settings.kitchen_id} upcoming Resos sync completed: {results}")
+            except Exception as e:
+                logger.error(f"Kitchen {settings.kitchen_id} upcoming Resos sync failed: {e}")
                 # Continue with other kitchens
 
 
@@ -209,8 +239,18 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # Upcoming Resos sync (next 7 days) - runs every 15 minutes by default
+    # Note: The interval is configured per kitchen in settings
+    scheduler.add_job(
+        run_upcoming_resos_sync,
+        IntervalTrigger(minutes=15),
+        id="upcoming_resos_sync",
+        name="Upcoming Resos Sync (Next 7 Days)",
+        replace_existing=True
+    )
+
     scheduler.start()
-    logger.info("Scheduler started - backup at 3:00 AM, archival at 3:30 AM, Newbook sync at 4:00 AM, Resos sync at 4:30 AM")
+    logger.info("Scheduler started - backup at 3:00 AM, archival at 3:30 AM, Newbook sync at 4:00 AM, Resos sync at 4:30 AM, Upcoming sync every 15 min")
 
 
 def stop_scheduler():
