@@ -329,7 +329,6 @@ export default function Settings() {
         throw new Error(`Failed to fetch: ${res.status}`)
       }
       const data = await res.json()
-      console.log('Newbook settings loaded:', data)
       return data
     },
     staleTime: 0, // Always fetch fresh data
@@ -348,7 +347,6 @@ export default function Settings() {
         throw new Error(`Failed to fetch: ${res.status}`)
       }
       const data = await res.json()
-      console.log('Resos settings loaded:', data)
       return data
     },
     staleTime: 0,
@@ -618,14 +616,7 @@ export default function Settings() {
   }, [searchSettings])
 
   useEffect(() => {
-    console.log('Newbook settings effect triggered:', newbookSettings)
     if (newbookSettings) {
-      console.log('Populating form with:', {
-        username: newbookSettings.newbook_api_username,
-        region: newbookSettings.newbook_api_region,
-        breakfast_gl: newbookSettings.newbook_breakfast_gl_codes,
-        dinner_gl: newbookSettings.newbook_dinner_gl_codes,
-      })
       setNewbookUsername(newbookSettings.newbook_api_username || '')
       setNewbookRegion(newbookSettings.newbook_api_region || 'au')
       setNewbookInstanceId(newbookSettings.newbook_instance_id || '')
@@ -2122,7 +2113,6 @@ export default function Settings() {
                         smtp_from_email: smtpFromEmail || null,
                         smtp_from_name: smtpFromName || null
                       }
-                      console.log('Saving SMTP settings:', savePayload)
 
                       const saveRes = await fetch('/api/settings/', {
                         method: 'PATCH',
@@ -2152,12 +2142,6 @@ export default function Settings() {
                       } else {
                         const error = await res.json()
                         console.error('SMTP test error:', error)
-                        console.log('Form values being tested:', {
-                          smtp_host: smtpHost,
-                          smtp_from_email: smtpFromEmail,
-                          smtp_port: smtpPort,
-                          smtp_username: smtpUsername
-                        })
                         setSmtpTestStatus(`Error: ${error.detail}`)
                       }
                     } catch (err) {

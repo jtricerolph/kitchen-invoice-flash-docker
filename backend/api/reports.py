@@ -305,6 +305,9 @@ async def get_dashboard(
     prev_end = current_start - timedelta(days=1)
 
     async def calc_period_gp(start: date, end: date) -> GPReportResponse | None:
+        from models.line_item import LineItem
+        from sqlalchemy import or_
+
         # Manual revenue entries
         manual_rev_result = await db.execute(
             select(func.sum(RevenueEntry.amount))
@@ -332,15 +335,17 @@ async def get_dashboard(
         # Total revenue
         revenue = manual_revenue + newbook_revenue
 
-        # Costs
+        # Costs - stock items only (exclude non-stock)
         cost_result = await db.execute(
-            select(func.sum(Invoice.total))
+            select(func.sum(LineItem.amount))
+            .join(Invoice, LineItem.invoice_id == Invoice.id)
             .where(
                 Invoice.kitchen_id == current_user.kitchen_id,
                 Invoice.invoice_date >= start,
                 Invoice.invoice_date <= end,
                 Invoice.status == InvoiceStatus.CONFIRMED,
-                Invoice.total.isnot(None)
+                LineItem.amount.isnot(None),
+                or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
             )
         )
         costs = cost_result.scalar() or Decimal("0.00")

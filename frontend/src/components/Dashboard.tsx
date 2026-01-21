@@ -99,7 +99,6 @@ export default function Dashboard() {
       })
       if (!res.ok) throw new Error('Failed to fetch Resos covers')
       const data = await res.json()
-      console.log('Resos covers data:', data)
       return data
     },
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
@@ -174,9 +173,7 @@ export default function Dashboard() {
 
   // Helper function to get multiple unique icons for flag types
   const getFlagIcons = (flagTypes: string[] | null): string[] => {
-    console.log('getFlagIcons called with:', flagTypes)
     if (!flagTypes || flagTypes.length === 0) {
-      console.log('No flag types, returning empty array')
       return []
     }
 
@@ -184,13 +181,10 @@ export default function Dashboard() {
     const iconSet = new Set<string>()
     for (const flag of flagTypes) {
       const icon = getIconForFlag(flag)
-      console.log(`Flag "${flag}" -> Icon "${icon}"`)
       iconSet.add(icon)
     }
 
-    const result = Array.from(iconSet)
-    console.log('Returning icons:', result)
-    return result
+    return Array.from(iconSet)
   }
 
   if (isLoading) {

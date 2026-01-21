@@ -291,12 +291,6 @@ export default function Purchases() {
   const weeklyAggregates = useMemo<WeeklyAggregate[]>(() => {
     if (!weeklyChartData?.data) return []
 
-    console.log('=== WEEKLY CHART DEBUG ===')
-    console.log('Date range:', weeklyChartDateRange)
-    console.log('Total data points:', weeklyChartData.data.length)
-    console.log('Sample data points (first 5):', weeklyChartData.data.slice(0, 5))
-    console.log('Sample data points (last 5):', weeklyChartData.data.slice(-5))
-
     const weeks: WeeklyAggregate[] = []
     const startDate = new Date(weeklyChartDateRange.from)
 
@@ -320,9 +314,6 @@ export default function Purchases() {
           totalPurchases += Number(point.net_purchases) || 0
           totalSales += Number(point.net_sales) || 0
           matchedDays++
-          if (weekIdx === 0 || weekIdx === 23) {
-            console.log(`Week ${weekIdx} matched day:`, point.date, 'purchases:', point.net_purchases, 'sales:', point.net_sales)
-          }
         }
       }
 
@@ -331,16 +322,6 @@ export default function Purchases() {
       const weekEndDate = new Date(weekEndStr)
       const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' }
       const weekLabel = `${weekStartDate.toLocaleDateString('en-GB', opts)} - ${weekEndDate.toLocaleDateString('en-GB', opts)}`
-
-      if (weekIdx === 0 || weekIdx === 23) {
-        console.log(`Week ${weekIdx} (${weekLabel}):`, {
-          weekStart: weekStartStr,
-          weekEnd: weekEndStr,
-          matchedDays,
-          totalPurchases,
-          totalSales
-        })
-      }
 
       weeks.push({
         weekLabel,
@@ -351,23 +332,12 @@ export default function Purchases() {
       })
     }
 
-    console.log('Total weeks aggregated:', weeks.length)
-    console.log('First week aggregate:', weeks[0])
-    console.log('Last week aggregate:', weeks[23])
-    console.log('=== END DEBUG ===')
-
     return weeks
   }, [weeklyChartData, weeklyChartDateRange])
 
   // Split into last 12 weeks and previous 12 weeks
   const last12Weeks = weeklyAggregates.slice(12, 24)
   const previous12Weeks = weeklyAggregates.slice(0, 12)
-
-  // Debug split
-  console.log('=== SPLIT DEBUG ===')
-  console.log('Last 12 weeks (indices 12-23):', last12Weeks.map(w => ({ label: w.weekLabel, purchases: w.totalPurchases, sales: w.totalSales })))
-  console.log('Previous 12 weeks (indices 0-11):', previous12Weeks.map(w => ({ label: w.weekLabel, purchases: w.totalPurchases, sales: w.totalSales })))
-  console.log('=== END SPLIT DEBUG ===')
 
   // Prepare chart data
   const weeklyComparisonChartData = useMemo(() => {

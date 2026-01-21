@@ -333,13 +333,10 @@ class ResosStatsService:
         logger.info(f"Fetched {len(opening_hours)} opening hours from database for kitchen {self.kitchen_id}")
 
         # Build opening hours data with display names and actual_end times from settings
-        logger.info("=" * 60)
-        logger.info("BUILDING OPENING HOURS DATA FOR SERVICE PERIOD INFERENCE")
-        logger.info("=" * 60)
         opening_hours_data = []
         opening_hours_map = {}
         if settings.resos_opening_hours_mapping:
-            logger.info(f"Settings has {len(settings.resos_opening_hours_mapping)} opening hour mappings")
+            logger.debug(f"Settings has {len(settings.resos_opening_hours_mapping)} opening hour mappings")
             for mapping in settings.resos_opening_hours_mapping:
                 resos_id = mapping.get('resos_id')
                 if resos_id:
@@ -360,7 +357,7 @@ class ResosStatsService:
                     # Parse time string to time object
                     from datetime import datetime
                     end_time = datetime.strptime(actual_end_str, '%H:%M').time()
-                    logger.info(f"Using actual_end {actual_end_str} for {display_name} (database has {oh.end_time})")
+                    logger.debug(f"Using actual_end {actual_end_str} for {display_name} (database has {oh.end_time})")
                 else:
                     end_time = oh.end_time
 
@@ -370,7 +367,6 @@ class ResosStatsService:
                     'display_name': display_name,
                     'resos_id': oh.resos_opening_hour_id
                 })
-                logger.info(f"Added opening hour '{display_name}': {oh.start_time} - {end_time}")
             else:
                 logger.warning(f"Skipping opening hour '{oh.name}' - missing start_time or end_time")
 
@@ -854,8 +850,6 @@ class ResosStatsService:
                         booking_time = ticket['matched_booking'].get('booking_time')
                         booking_date = ticket['matched_booking'].get('booking_date')
 
-                        logger.info(f"DEBUG: booking_time={booking_time}, booking_date={booking_date}, ticket_time={ticket.get('ticket_time')}")
-
                         if booking_time and booking_date:
                             # Create datetime for day-of-week calculation
                             from datetime import datetime
@@ -930,7 +924,6 @@ class ResosStatsService:
             period_data[period]['ticket_count'] += 1
 
         # Now add ALL Resos bookings that weren't matched (e.g., no-shows, cancellations, unmatched)
-        logger.info(f"Processing {len(all_bookings)} total Resos bookings to find unmatched ones")
         for booking in all_bookings:
             # Skip if this booking was already counted via ticket match
             if booking.resos_booking_id in counted_bookings:
@@ -1109,7 +1102,6 @@ class ResosStatsService:
             daily_data[date_str][period]['ticket_count'] += 1
 
         # Now add ALL Resos bookings that weren't matched (e.g., no-shows, cancellations, unmatched)
-        logger.info(f"Processing {len(all_bookings)} total Resos bookings for daily breakdown to find unmatched ones")
         for booking in all_bookings:
             # Skip if this booking was already counted via ticket match
             if booking.resos_booking_id in counted_bookings:

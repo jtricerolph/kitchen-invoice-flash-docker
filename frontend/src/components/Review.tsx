@@ -572,20 +572,6 @@ export default function Review() {
           const scrollLeft = Math.max(0, bboxAbsoluteX - containerWidth / 2)
           const scrollTop = Math.max(0, bboxAbsoluteY - containerHeight / 2)
 
-          console.log('Zoom scroll debug:', {
-            bboxPageNum: bbox.pageNumber,
-            zoom,
-            pageActualSize: { w: pageActualWidth, h: pageActualHeight },
-            pageRectInViewport: { left: pageRect.left, top: pageRect.top },
-            containerRectInViewport: { left: containerRect.left, top: containerRect.top },
-            currentScroll: { left: container.scrollLeft, top: container.scrollTop },
-            pageInContainer: { left: pageLeftInContainer, top: pageTopInContainer },
-            bboxCenter: { x: bboxCenterX, y: bboxCenterY },
-            bboxAbsolute: { x: bboxAbsoluteX, y: bboxAbsoluteY },
-            scrollTarget: { left: scrollLeft, top: scrollTop },
-            containerSize: { w: containerWidth, h: containerHeight }
-          })
-
           // Scroll instantly to show the highlighted area centered
           container.scrollTo({
             left: scrollLeft,
