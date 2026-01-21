@@ -2534,7 +2534,7 @@ export default function Review() {
             </div>
           )}
         </div>
-        {lineItems && lineItems.length > 0 ? (
+        {(lineItems && lineItems.length > 0) || bulkEditMode ? (
           <table style={styles.lineItemsTable}>
             <thead>
               <tr>
