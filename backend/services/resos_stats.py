@@ -96,6 +96,10 @@ class ResosStatsService:
         Returns:
             True if names match, False otherwise
         """
+        # Handle None values
+        if resos_table_name is None or sambapos_table_name is None:
+            return False
+
         # Exact match
         if resos_table_name == sambapos_table_name:
             return True
@@ -185,35 +189,55 @@ class ResosStatsService:
             logger.info(f"❌ No bookings found for table '{table_name}' on {ticket_date_only}")
             return None
 
-        # If only one booking for this table/date, match it
-        if len(candidate_bookings) == 1:
-            logger.debug(f"Fallback match: Ticket {ticket['ticket_id']} matched to booking {candidate_bookings[0]['resos_booking_id']} (only booking for {table_name} on {ticket_date_only})")
-            return candidate_bookings[0]
-
-        # Multiple bookings - try to match by service period time window
-        # Find the booking whose time is closest to the ticket time
-        best_match = None
-        min_time_diff = None
-
+        # Calculate time differences for all bookings (even if only one)
+        # We still need to enforce the 60-minute window!
+        candidates_with_time_diff = []
         for booking in candidate_bookings:
             booking_time = booking['booking_time']
-
-            # Calculate time difference in minutes
             ticket_dt = datetime.combine(ticket_date_only, ticket_time)
             booking_dt = datetime.combine(ticket_date_only, booking_time)
             time_diff = abs((ticket_dt - booking_dt).total_seconds() / 60)
 
-            if min_time_diff is None or time_diff < min_time_diff:
-                min_time_diff = time_diff
-                best_match = booking
+            candidates_with_time_diff.append({
+                'booking': booking,
+                'time_diff': time_diff
+            })
 
-        # Accept match if within 2 hours
-        if best_match and min_time_diff <= 120:
-            logger.debug(f"Fallback match: Ticket {ticket['ticket_id']} matched to booking {best_match['resos_booking_id']} (time diff: {min_time_diff:.0f} min)")
-            return best_match
+        # Filter to bookings within 60 minutes (reduced from 120)
+        candidates_within_window = [c for c in candidates_with_time_diff if c['time_diff'] <= 60]
 
-        logger.debug(f"No match: Ticket {ticket['ticket_id']} for {table_name} on {ticket_date_only} - closest booking {min_time_diff:.0f} min away")
-        return None
+        if not candidates_within_window:
+            # No matches within time window
+            min_diff = min(c['time_diff'] for c in candidates_with_time_diff) if candidates_with_time_diff else None
+            logger.debug(f"No match: Ticket {ticket['ticket_id']} for {table_name} on {ticket_date_only} - closest booking {min_diff:.0f} min away (outside 60min window)")
+            return None
+
+        # If multiple matches within window, prefer same service period
+        if len(candidates_within_window) > 1 and opening_hours_mapping:
+            # Infer ticket's service period
+            ticket_period = self._infer_service_period_from_time(
+                ticket_time,
+                [],  # opening_hours_data not available here, but method handles gracefully
+                ticket_datetime=datetime.combine(ticket_date_only, ticket_time),
+                settings=None  # settings not available here
+            )
+
+            # Find candidates in same service period
+            same_period_candidates = [
+                c for c in candidates_within_window
+                if c['booking'].get('opening_hour_name') == ticket_period
+            ]
+
+            if same_period_candidates:
+                # Return closest match from same service period
+                best_candidate = min(same_period_candidates, key=lambda c: c['time_diff'])
+                logger.debug(f"Fallback match: Ticket {ticket['ticket_id']} matched to booking {best_candidate['booking']['resos_booking_id']} (time diff: {best_candidate['time_diff']:.0f} min, same service period: {ticket_period})")
+                return best_candidate['booking']
+
+        # Return closest match by time within window
+        best_candidate = min(candidates_within_window, key=lambda c: c['time_diff'])
+        logger.debug(f"Fallback match: Ticket {ticket['ticket_id']} matched to booking {best_candidate['booking']['resos_booking_id']} (time diff: {best_candidate['time_diff']:.0f} min)")
+        return best_candidate['booking']
 
     async def get_spend_statistics(
         self,
@@ -465,11 +489,11 @@ class ResosStatsService:
         # Daily breakdown using ALL tickets
         daily_breakdown = self._calculate_daily_breakdown(all_tickets, from_date, to_date)
 
-        # Service period breakdown using ALL tickets
-        service_period_breakdown = self._calculate_service_period_breakdown(all_tickets, settings, opening_hours_data)
+        # Service period breakdown using ALL tickets and ALL bookings
+        service_period_breakdown = self._calculate_service_period_breakdown(all_tickets, bookings, settings, opening_hours_data)
 
         # Daily breakdown by service period
-        daily_service_breakdown = self._calculate_daily_service_breakdown(all_tickets, settings, opening_hours_data)
+        daily_service_breakdown = self._calculate_daily_service_breakdown(all_tickets, bookings, settings, opening_hours_data)
         logger.info(f"📊 Daily service breakdown calculated: {len(daily_service_breakdown)} days")
         if len(daily_service_breakdown) > 0:
             first_day = daily_service_breakdown[0]
@@ -787,8 +811,15 @@ class ResosStatsService:
         logger.warning(f"⚠️ Could not infer service period for ticket time {ticket_time}. Available periods: {len(periods_to_check)}")
         return 'Unknown'
 
-    def _calculate_service_period_breakdown(self, all_tickets: list[dict], settings, opening_hours_data: list[dict]) -> list[dict]:
-        """Calculate spend breakdown by service period, grouped by display name from settings."""
+    def _calculate_service_period_breakdown(self, all_tickets: list[dict], all_bookings: list, settings, opening_hours_data: list[dict]) -> list[dict]:
+        """
+        Calculate spend breakdown by service period, grouped by display name from settings.
+
+        Counts:
+        - resos_covers: ALL Resos bookings (matched or unmatched)
+        - samba_covers: ALL SambaPOS tickets (matched or unmatched)
+        - covers: Max of resos_covers and samba_covers (or resos if matched)
+        """
         period_data = {}
 
         # Build a lookup map from opening_hour_id to display_name
@@ -898,6 +929,55 @@ class ResosStatsService:
             period_data[period]['samba_covers'] += samba_covers
             period_data[period]['ticket_count'] += 1
 
+        # Now add ALL Resos bookings that weren't matched (e.g., no-shows, cancellations, unmatched)
+        logger.info(f"Processing {len(all_bookings)} total Resos bookings to find unmatched ones")
+        for booking in all_bookings:
+            # Skip if this booking was already counted via ticket match
+            if booking.resos_booking_id in counted_bookings:
+                continue
+
+            # This is an unmatched booking - add its covers to resos_covers
+            # Determine service period from booking's opening hour
+            opening_hour_id = booking.opening_hour_id
+            if opening_hour_id and opening_hour_id in opening_hours_map:
+                period = opening_hours_map[opening_hour_id]
+            else:
+                period = booking.opening_hour_name
+
+                # Infer period for "No opening hour" bookings
+                if period == 'No opening hour' and booking.booking_time:
+                    from datetime import datetime
+                    booking_datetime = datetime.combine(booking.booking_date, booking.booking_time)
+                    inferred_period = self._infer_service_period_from_time(
+                        booking.booking_time,
+                        opening_hours_data,
+                        ticket_datetime=booking_datetime,
+                        settings=settings
+                    )
+                    if inferred_period and inferred_period not in ('Unknown', 'No opening hour'):
+                        period = inferred_period
+
+            if not period:
+                period = 'Unknown'
+
+            # Initialize period if not exists
+            if period not in period_data:
+                period_data[period] = {
+                    'service_period': period,
+                    'total_spend': 0.0,
+                    'food_spend': 0.0,
+                    'beverage_spend': 0.0,
+                    'covers': 0,
+                    'resos_covers': 0,
+                    'samba_covers': 0,
+                    'ticket_count': 0
+                }
+
+            # Add unmatched booking covers to resos_covers
+            period_data[period]['resos_covers'] += booking.people
+            period_data[period]['covers'] += booking.people  # Also add to total covers
+            logger.debug(f"Added unmatched booking {booking.resos_booking_id} ({booking.people} people) to {period}")
+
         # Calculate average per cover
         result = []
         for period, data in period_data.items():
@@ -909,16 +989,18 @@ class ResosStatsService:
 
         return sorted(result, key=lambda x: x['total_spend'], reverse=True)
 
-    def _calculate_daily_service_breakdown(self, all_tickets: list[dict], settings, opening_hours_data: list[dict]) -> list[dict]:
+    def _calculate_daily_service_breakdown(self, all_tickets: list[dict], all_bookings: list, settings, opening_hours_data: list[dict]) -> list[dict]:
         """
         Calculate daily breakdown by service period.
+
+        Counts ALL Resos bookings (matched or unmatched) and ALL SambaPOS tickets.
 
         Returns list of dicts with format:
         {
             'date': '2026-01-20',
             'periods': {
-                'Lunch': {'covers': 10, 'food': 200.0, 'beverage': 50.0, 'total_spend': 250.0},
-                'Dinner': {'covers': 25, 'food': 600.0, 'beverage': 150.0, 'total_spend': 750.0},
+                'Lunch': {'covers': 10, 'resos_covers': 12, 'samba_covers': 10, 'food': 200.0, 'beverage': 50.0, 'total_spend': 250.0},
+                'Dinner': {'covers': 25, 'resos_covers': 28, 'samba_covers': 24, 'food': 600.0, 'beverage': 150.0, 'total_spend': 750.0},
                 ...
             }
         }
@@ -1025,6 +1107,60 @@ class ResosStatsService:
             daily_data[date_str][period]['beverage'] += float(ticket['beverage_total'])
             daily_data[date_str][period]['total_spend'] += float(ticket['total_spend'])
             daily_data[date_str][period]['ticket_count'] += 1
+
+        # Now add ALL Resos bookings that weren't matched (e.g., no-shows, cancellations, unmatched)
+        logger.info(f"Processing {len(all_bookings)} total Resos bookings for daily breakdown to find unmatched ones")
+        for booking in all_bookings:
+            # Skip if this booking was already counted via ticket match
+            if booking.resos_booking_id in counted_bookings:
+                continue
+
+            # This is an unmatched booking - add its covers to resos_covers
+            date_str = booking.booking_date.isoformat()
+
+            # Determine service period from booking's opening hour
+            opening_hour_id = booking.opening_hour_id
+            if opening_hour_id and opening_hour_id in opening_hours_map:
+                period = opening_hours_map[opening_hour_id]
+            else:
+                period = booking.opening_hour_name
+
+                # Infer period for "No opening hour" bookings
+                if period == 'No opening hour' and booking.booking_time:
+                    from datetime import datetime
+                    booking_datetime = datetime.combine(booking.booking_date, booking.booking_time)
+                    inferred_period = self._infer_service_period_from_time(
+                        booking.booking_time,
+                        opening_hours_data,
+                        ticket_datetime=booking_datetime,
+                        settings=settings
+                    )
+                    if inferred_period and inferred_period not in ('Unknown', 'No opening hour'):
+                        period = inferred_period
+
+            if not period:
+                period = 'Unknown'
+
+            # Initialize date if not exists
+            if date_str not in daily_data:
+                daily_data[date_str] = {}
+
+            # Initialize period if not exists
+            if period not in daily_data[date_str]:
+                daily_data[date_str][period] = {
+                    'covers': 0,
+                    'resos_covers': 0,
+                    'samba_covers': 0,
+                    'food': 0.0,
+                    'beverage': 0.0,
+                    'total_spend': 0.0,
+                    'ticket_count': 0
+                }
+
+            # Add unmatched booking covers to resos_covers
+            daily_data[date_str][period]['resos_covers'] += booking.people
+            daily_data[date_str][period]['covers'] += booking.people  # Also add to total covers
+            logger.debug(f"Added unmatched booking {booking.resos_booking_id} ({booking.people} people) to {date_str} {period}")
 
         # Convert to list format
         result = []

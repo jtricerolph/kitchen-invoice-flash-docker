@@ -4,7 +4,7 @@ SambaPOS MSSQL Database Client
 Connects to SambaPOS EPOS database to fetch menu categories and top sellers data.
 """
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 import aioodbc
@@ -575,6 +575,10 @@ class SambaPOSClient:
             logger.warning("get_restaurant_spend called with empty tracked_categories")
             return []
 
+        # VALIDATE GL CODES CONFIGURED
+        if not food_gl_codes or not beverage_gl_codes:
+            raise ValueError("Food and Beverage GL codes must be configured in Settings > SambaPOS Integration")
+
         # Build placeholders for categories
         cat_placeholders = ','.join(['?' for _ in tracked_categories])
 
@@ -693,7 +697,40 @@ class SambaPOSClient:
             SELECT DISTINCT
                 t.Id as TicketId,
                 t.Date as TicketDate,
-                t.Date as TicketDateTime,
+                t.LastUpdateTime as TicketClosedTime,
+
+                -- Calculate "practical ticket time" as average of food order timestamps
+                -- Handles pre-dinner drinks scenario (bar tab before booking time)
+                (
+                    SELECT AVG(CAST(o.CreatedDateTime AS FLOAT))
+                    FROM Orders o
+                    INNER JOIN MenuItems mi ON o.MenuItemId = mi.Id
+                    CROSS APPLY (
+                        SELECT CHARINDEX('"TN":"NewBook GLA"', mi.CustomTags) as gla_pos
+                    ) gla
+                    CROSS APPLY (
+                        SELECT CASE WHEN gla.gla_pos > 0
+                                    THEN CHARINDEX('"TV":"', mi.CustomTags, gla.gla_pos) + 6
+                                    ELSE 0 END as tv_start
+                    ) tv
+                    CROSS APPLY (
+                        SELECT CASE WHEN tv.tv_start > 6
+                                    THEN CHARINDEX('"', mi.CustomTags, tv.tv_start)
+                                    ELSE 0 END as tv_end
+                    ) pos
+                    CROSS APPLY (
+                        SELECT CASE
+                            WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                            THEN SUBSTRING(mi.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                            ELSE NULL
+                        END as GLACode
+                    ) tag
+                    WHERE o.TicketId = t.Id
+                    AND tag.GLACode IN ({food_gl_placeholders})
+                    AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Void"%')
+                    AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Canceled"%')
+                ) as AvgFoodOrderTime,
+
                 t.TicketTags as TicketTags,
 
                 -- Extract table name from TicketEntities
@@ -770,6 +807,7 @@ class SambaPOSClient:
         # - FoodSpend CTE: from_date, to_date, food_gl_codes (if any)
         # - BeverageSpend CTE: from_date, to_date, beverage_gl_codes (if any)
         # - MainCourseCount CTE: from_date, to_date, tracked_categories
+        # - AvgFoodOrderTime subquery: food_gl_codes (if any)
         # - Main query: from_date, to_date, tracked_categories
         params = [
             from_date.isoformat(),  # FoodSpend CTE from_date
@@ -791,6 +829,10 @@ class SambaPOSClient:
         ])
         params.extend(tracked_categories)  # MainCourseCount CTE Kitchen Course categories
 
+        # AvgFoodOrderTime subquery in SELECT
+        if food_gl_codes:
+            params.extend(food_gl_codes)  # AvgFoodOrderTime subquery GL codes
+
         params.extend([
             from_date.isoformat(),  # Main query from_date
             to_date.isoformat()     # Main query to_date
@@ -811,14 +853,28 @@ class SambaPOSClient:
                     for row in rows:
                         ticket_id = row[0]
                         ticket_date = row[1]
-                        ticket_datetime = row[2]
-                        ticket_tags = row[3] if row[3] else ""
-                        table_name = row[4]
-                        room_entity = row[5]  # Room entity name if customer selected their room
-                        food_total = Decimal(str(row[6])) if row[6] else Decimal("0")
-                        beverage_total = Decimal(str(row[7])) if row[7] else Decimal("0")
-                        main_course_count = int(row[8]) if row[8] else 0
+                        closed_time = row[2]  # t.LastUpdateTime (DATETIME)
+                        avg_food_time_float = row[3]  # AvgFoodOrderTime (FLOAT or None)
+                        ticket_tags = row[4] if row[4] else ""
+                        table_name = row[5]
+                        room_entity = row[6]  # Room entity name if customer selected their room
+                        food_total = Decimal(str(row[7])) if row[7] else Decimal("0")
+                        beverage_total = Decimal(str(row[8])) if row[8] else Decimal("0")
+                        main_course_count = int(row[9]) if row[9] else 0
                         total_spend = food_total + beverage_total
+
+                        # Calculate practical ticket time from average food order timestamps
+                        # Handles pre-dinner drinks scenario (bar tab before booking time)
+                        ticket_time = None
+                        if avg_food_time_float:
+                            # SQL AVG(CAST(datetime AS FLOAT)) returns days since 1900-01-01
+                            # Convert back to datetime
+                            base_date = datetime(1900, 1, 1)
+                            practical_datetime = base_date + timedelta(days=float(avg_food_time_float))
+                            ticket_time = practical_datetime.time()
+                        elif closed_time:
+                            # Fallback to ticket closed time if no food orders
+                            ticket_time = closed_time.time() if closed_time else None
 
                         # Extract booking ID from ticket tags
                         # Tag format: "BOOKING_ID - Guest Name" or similar
@@ -845,14 +901,11 @@ class SambaPOSClient:
                         if covers == 0 and main_course_count > 0:
                             covers = main_course_count
 
-                        # Extract time from datetime for service period matching
-                        ticket_time = ticket_datetime.time() if ticket_datetime else None
-
                         results.append({
                             "ticket_id": ticket_id,
                             "ticket_date": ticket_date,
-                            "ticket_time": ticket_time,
-                            "ticket_datetime": ticket_datetime,
+                            "ticket_time": ticket_time,  # Practical time from avg food orders
+                            "ticket_closed_time": closed_time,  # Actual closed time
                             "table_name": table_name,
                             "room_entity": room_entity,
                             "has_room_entity": bool(room_entity),
@@ -861,8 +914,8 @@ class SambaPOSClient:
                             "food_total": food_total,
                             "beverage_total": beverage_total,
                             "total_spend": total_spend,
-                            "estimated_covers": covers,  # NEW: Estimated covers from tags or main course count
-                            "main_course_count": main_course_count  # NEW: For debugging/validation
+                            "estimated_covers": covers,  # Estimated covers from tags or main course count
+                            "main_course_count": main_course_count  # For debugging/validation
                         })
 
                     logger.info(f"SambaPOS restaurant spend: fetched {len(results)} tickets with table entities")
