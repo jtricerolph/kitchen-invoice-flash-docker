@@ -28,8 +28,8 @@ class RestaurantBookingDetail(BaseModel):
 
 
 class HotelStayDetail(BaseModel):
-    booking_id: str
-    room_number: str
+    booking_id: str | None
+    room_number: str | None
     guest_name: Optional[str]
     check_in: str
     check_out: str

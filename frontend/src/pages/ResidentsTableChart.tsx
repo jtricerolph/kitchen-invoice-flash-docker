@@ -11,8 +11,8 @@ interface RestaurantBooking {
 }
 
 interface HotelStay {
-  booking_id: string
-  room_number: string
+  booking_id: string | null
+  room_number: string | null
   guest_name: string | null
   check_in: string
   check_out: string
@@ -129,11 +129,11 @@ export default function ResidentsTableChart() {
           ))}
 
           {/* Booking Rows */}
-          {data.bookings.map((booking) => (
-            <div key={booking.booking_id} style={styles.row}>
+          {data.bookings.map((booking, idx) => (
+            <div key={booking.booking_id || `booking-${idx}`} style={styles.row}>
               {/* Room Cell */}
               <div style={styles.roomCell}>
-                <div style={styles.roomNumber}>{booking.room_number}</div>
+                <div style={styles.roomNumber}>{booking.room_number || 'Unknown Room'}</div>
                 {booking.guest_name && (
                   <div style={styles.guestName}>{booking.guest_name}</div>
                 )}
@@ -159,7 +159,7 @@ export default function ResidentsTableChart() {
                           ...(isLastNight && styles.barEnd)
                         }}
                         onClick={() => setSelectedBooking(booking)}
-                        title={`${booking.room_number} - ${booking.guest_name || 'Guest'}\n${booking.check_in} to ${booking.check_out}`}
+                        title={`${booking.room_number || 'Unknown Room'} - ${booking.guest_name || 'Guest'}\n${booking.check_in} to ${booking.check_out}`}
                       />
                     )}
 
@@ -185,7 +185,7 @@ export default function ResidentsTableChart() {
         <div style={styles.modalOverlay} onClick={() => setSelectedBooking(null)}>
           <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h2>Room {selectedBooking.room_number}</h2>
+              <h2>Room {selectedBooking.room_number || 'Unknown'}</h2>
               <button onClick={() => setSelectedBooking(null)} style={styles.closeBtn}>×</button>
             </div>
 
@@ -194,7 +194,7 @@ export default function ResidentsTableChart() {
                 <strong>Guest:</strong> {selectedBooking.guest_name || 'Not specified'}
               </div>
               <div style={styles.modalRow}>
-                <strong>Booking ID:</strong> {selectedBooking.booking_id}
+                <strong>Booking ID:</strong> {selectedBooking.booking_id || 'Not specified'}
               </div>
               <div style={styles.modalRow}>
                 <strong>Stay:</strong> {selectedBooking.check_in} to {selectedBooking.check_out} ({selectedBooking.nights.length} nights)
