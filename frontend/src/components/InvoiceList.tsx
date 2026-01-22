@@ -109,7 +109,7 @@ export default function InvoiceList() {
   return (
     <div>
       <div style={styles.header}>
-        <h2 style={styles.title}>Invoices</h2>
+        <h2 style={styles.title}>Uploaded Invoices</h2>
         <a href="/upload" style={styles.uploadBtn}>
           + Upload New
         </a>
@@ -143,7 +143,7 @@ export default function InvoiceList() {
 
         <div style={styles.dateFilters}>
           <label style={styles.dateLabel}>
-            From:
+            Upload Date From:
             <input
               type="date"
               value={dateFrom}
@@ -152,7 +152,7 @@ export default function InvoiceList() {
             />
           </label>
           <label style={styles.dateLabel}>
-            To:
+            Upload Date To:
             <input
               type="date"
               value={dateTo}

@@ -91,7 +91,10 @@ class NewbookDailyOccupancy(Base):
     arrival_booking_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # List of booking IDs arriving
     arrival_booking_details: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # Full arrival details with booking refs
 
-    # Room-level details for residents table chart
+    # Room-level breakdown (JSONB array) - array of {room_number, booking_id, is_dbb, is_package} for each occupied room
+    rooms_breakdown: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Room-level details for residents table chart (DEPRECATED - use rooms_breakdown instead)
     room_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     booking_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Newbook booking reference
     guest_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

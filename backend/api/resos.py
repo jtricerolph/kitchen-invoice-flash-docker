@@ -513,43 +513,55 @@ async def get_dashboard_covers(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> dict:
-    """Get today and tomorrow covers for dashboard"""
+    """Get today, tomorrow, and day after tomorrow covers for dashboard"""
     import logging
     logger = logging.getLogger(__name__)
 
     today = date.today()
     tomorrow = today + timedelta(days=1)
+    day_after = today + timedelta(days=2)
+
+    # Day names for display
+    day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
     result = await db.execute(
         select(ResosDailyStats).where(
             and_(
                 ResosDailyStats.kitchen_id == current_user.kitchen_id,
-                ResosDailyStats.date.in_([today, tomorrow])
+                ResosDailyStats.date.in_([today, tomorrow, day_after])
             )
         )
     )
 
     stats = {stat.date: stat for stat in result.scalars().all()}
 
-    def build_response(target_date: date) -> Optional[DashboardCoversResponse]:
+    def build_response(target_date: date, day_label: str) -> Optional[dict]:
         if target_date not in stats:
-            return None
+            return {
+                'date': target_date.isoformat(),
+                'day_label': day_label,
+                'total_bookings': 0,
+                'total_covers': 0,
+                'service_breakdown': [],
+                'has_flagged_bookings': False,
+                'unique_flag_types': []
+            }
         stat = stats[target_date]
         logger.info(f"Date {target_date}: unique_flag_types={stat.unique_flag_types}, type={type(stat.unique_flag_types)}, flagged_count={stat.flagged_booking_count}")
-        response = DashboardCoversResponse(
-            date=stat.date.isoformat(),
-            total_bookings=stat.total_bookings,
-            total_covers=stat.total_covers,
-            service_breakdown=stat.service_breakdown or [],
-            has_flagged_bookings=stat.flagged_booking_count > 0,
-            unique_flag_types=stat.unique_flag_types or []
-        )
-        logger.info(f"Response object: {response}")
-        return response
+        return {
+            'date': stat.date.isoformat(),
+            'day_label': day_label,
+            'total_bookings': stat.total_bookings,
+            'total_covers': stat.total_covers,
+            'service_breakdown': stat.service_breakdown or [],
+            'has_flagged_bookings': stat.flagged_booking_count > 0,
+            'unique_flag_types': stat.unique_flag_types or []
+        }
 
     return {
-        'today': build_response(today),
-        'tomorrow': build_response(tomorrow)
+        'today': build_response(today, 'Today'),
+        'tomorrow': build_response(tomorrow, 'Tomorrow'),
+        'day_after': build_response(day_after, day_names[day_after.weekday()])
     }
 
 

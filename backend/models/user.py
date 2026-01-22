@@ -50,6 +50,11 @@ class Kitchen(Base):
         "ResosSyncLog", back_populates="kitchen", cascade="all, delete-orphan"
     )
 
+    # Dispute tracking relationships
+    invoice_disputes: Mapped[list["InvoiceDispute"]] = relationship(
+        "InvoiceDispute", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -74,3 +79,4 @@ from .gp import RevenueEntry, GPPeriod
 from .settings import KitchenSettings
 from .newbook import NewbookGLAccount, NewbookDailyRevenue, NewbookDailyOccupancy, NewbookSyncLog, NewbookRoomCategory
 from .resos import ResosBooking, ResosDailyStats, ResosOpeningHour, ResosSyncLog
+from .dispute import InvoiceDispute

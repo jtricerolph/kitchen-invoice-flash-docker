@@ -57,6 +57,8 @@ class GPReportResponse(BaseModel):
 class DashboardResponse(BaseModel):
     current_period: GPReportResponse | None
     previous_period: GPReportResponse | None
+    forecast_period: GPReportResponse | None  # Placeholder for this week's forecast
+    rolling_30_days: GPReportResponse | None  # Last 30 days rolling (from yesterday)
     recent_invoices: int
     pending_review: int
 
@@ -378,19 +380,31 @@ async def get_dashboard(
     )
     recent_invoices = recent_result.scalar() or 0
 
-    # Pending review count
+    # Pending confirmation count (all non-confirmed: pending, processed, reviewed)
+    from sqlalchemy import or_
     pending_result = await db.execute(
         select(func.count(Invoice.id))
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
-            Invoice.status == InvoiceStatus.PROCESSED
+            or_(
+                Invoice.status == InvoiceStatus.PENDING,
+                Invoice.status == InvoiceStatus.PROCESSED,
+                Invoice.status == InvoiceStatus.REVIEWED
+            )
         )
     )
     pending_review = pending_result.scalar() or 0
 
+    # Rolling 30 days (from yesterday back 29 days)
+    yesterday = today - timedelta(days=1)
+    rolling_30_start = yesterday - timedelta(days=29)
+    rolling_30_end = yesterday
+
     return DashboardResponse(
         current_period=await calc_period_gp(current_start, current_end),
         previous_period=await calc_period_gp(prev_start, prev_end),
+        forecast_period=None,  # Placeholder - forecast not implemented yet
+        rolling_30_days=await calc_period_gp(rolling_30_start, rolling_30_end),
         recent_invoices=recent_invoices,
         pending_review=pending_review
     )

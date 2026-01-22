@@ -21,6 +21,76 @@ from services.newbook_api import NewbookAPIClient, NewbookAPIError
 logger = logging.getLogger(__name__)
 
 
+def expand_bookings_by_date(
+    bookings: list[dict],
+    date_from: date,
+    date_to: date,
+    dinner_gl_codes: list[str],
+    gl_account_id_to_code: dict[str, str]
+) -> dict[date, list[dict]]:
+    """
+    Expand multi-night bookings into per-date room breakdown.
+
+    Args:
+        bookings: List of bookings from get_bookings()
+        date_from: Start date for expansion
+        date_to: End date for expansion
+        dinner_gl_codes: GL codes that indicate dinner allocation (from settings)
+        gl_account_id_to_code: Mapping from Newbook gl_account_id to gl_code
+
+    Returns:
+        Dict mapping date -> list of room objects for that date
+
+    Example:
+        Booking: room 108, Jan 22-24 (2 nights)
+        Returns: {
+            date(2026, 1, 22): [{"room_number": "108", "booking_id": "33471", ...}],
+            date(2026, 1, 23): [{"room_number": "108", "booking_id": "33471", ...}]
+        }
+    """
+    breakdown_by_date = {}
+
+    for booking in bookings:
+        check_in = datetime.fromisoformat(booking["check_in_date"]).date()
+        check_out = datetime.fromisoformat(booking["check_out_date"]).date()
+
+        # Iterate each night of the stay (check-in to day before check-out)
+        current_date = check_in
+        while current_date < check_out and current_date <= date_to:
+            if current_date >= date_from:
+                if current_date not in breakdown_by_date:
+                    breakdown_by_date[current_date] = []
+
+                # Detect DBB using existing GL code logic (reuse from process_bookings_for_allocations)
+                # Check if booking has any inventory items matching dinner GL codes
+                inventory_items = booking.get("inventory_items", [])
+                is_dbb = False
+                for item in inventory_items:
+                    gl_account_id = str(item.get("gl_account_id", ""))
+                    gl_code = gl_account_id_to_code.get(gl_account_id, "")
+                    if gl_code in dinner_gl_codes:
+                        is_dbb = True
+                        break
+
+                # Detect package from item_name (no GL code mapping for this yet)
+                is_package = any(
+                    item.get("item_name", "").lower().find("package") >= 0
+                    for item in inventory_items
+                )
+
+                breakdown_by_date[current_date].append({
+                    "room_number": booking.get("site_name"),  # e.g., "108"
+                    "booking_id": booking.get("booking_id"),  # e.g., "33471"
+                    "bookings_group_id": booking.get("bookings_group_id"),  # Group ID for related bookings
+                    "is_dbb": is_dbb,
+                    "is_package": is_package
+                })
+
+            current_date += timedelta(days=1)
+
+    return breakdown_by_date
+
+
 class NewbookSyncService:
     """Service for syncing Newbook data to local database"""
 
@@ -335,6 +405,53 @@ class NewbookSyncService:
                 # Process bookings for arrival tracking (also filtered by room type)
                 arrivals_by_date = client.process_bookings_for_arrivals(bookings, included_room_types, category_id_to_type)
 
+                # Process bookings for room breakdown (for ResidentsTableChart)
+                breakdown_by_date = expand_bookings_by_date(
+                    bookings,
+                    date_from,
+                    date_to,
+                    dinner_gl_codes,
+                    gl_account_id_to_code
+                )
+
+                # Diagnostic logging: check for duplicate room entries on same date
+                for check_date, rooms_on_date in breakdown_by_date.items():
+                    room_to_bookings = {}
+                    for room_entry in rooms_on_date:
+                        room_num = room_entry.get("room_number")
+                        if room_num:
+                            if room_num not in room_to_bookings:
+                                room_to_bookings[room_num] = []
+                            room_to_bookings[room_num].append(room_entry.get("booking_id"))
+
+                    # Report rooms with multiple bookings on same date
+                    for room_num, booking_ids in room_to_bookings.items():
+                        if len(booking_ids) > 1:
+                            logger.warning(f"Date {check_date}, Room {room_num}: Multiple bookings: {booking_ids}")
+
+                # Also log detailed info about bookings with same room number
+                room_booking_details = {}
+                for booking in bookings:
+                    room_num = booking.get("site_name")
+                    booking_id = booking.get("booking_id")
+                    if room_num and booking_id:
+                        if room_num not in room_booking_details:
+                            room_booking_details[room_num] = []
+                        room_booking_details[room_num].append({
+                            'booking_id': booking_id,
+                            'booking_reference': booking.get("booking_reference"),
+                            'check_in': booking.get("check_in_date"),
+                            'check_out': booking.get("check_out_date"),
+                            'nights': booking.get("nights")
+                        })
+
+                # Report rooms with multiple total bookings in the period
+                for room_num, booking_list in room_booking_details.items():
+                    if len(booking_list) > 1:
+                        logger.warning(f"Room {room_num} has {len(booking_list)} bookings in period {date_from} to {date_to}:")
+                        for b in booking_list:
+                            logger.warning(f"  - Booking {b['booking_id']} (ref: {b['booking_reference']}): {b['check_in']} to {b['check_out']} ({b['nights']} nights)")
+
             records_count = 0
             today = date.today()
 
@@ -362,6 +479,9 @@ class NewbookSyncService:
                 # Get arrivals for this date
                 arrivals = arrivals_by_date.get(str(entry_date), arrivals_by_date.get(entry["date"], {}))
 
+                # Get rooms breakdown for this date
+                rooms_breakdown = breakdown_by_date.get(entry_date, [])
+
                 # Log first few entries for debugging
                 if records_count < 3:
                     logger.info(f"Occupancy entry: date={entry_date}, guest_count={guest_count}, occupied_rooms={entry.get('occupied_rooms')}, is_forecast={entry_is_forecast}")
@@ -383,6 +503,7 @@ class NewbookSyncService:
                         arrival_count=arrivals.get("count"),
                         arrival_booking_ids=arrivals.get("ids"),
                         arrival_booking_details=arrivals.get("details"),
+                        rooms_breakdown=rooms_breakdown,
                         is_forecast=True,
                         fetched_at=datetime.utcnow()
                     ).on_conflict_do_update(
@@ -399,6 +520,7 @@ class NewbookSyncService:
                             "arrival_count": arrivals.get("count"),
                             "arrival_booking_ids": arrivals.get("ids"),
                             "arrival_booking_details": arrivals.get("details"),
+                            "rooms_breakdown": rooms_breakdown,
                             "is_forecast": True,
                             "fetched_at": datetime.utcnow()
                         }
@@ -420,11 +542,13 @@ class NewbookSyncService:
                         arrival_count=arrivals.get("count"),
                         arrival_booking_ids=arrivals.get("ids"),
                         arrival_booking_details=arrivals.get("details"),
+                        rooms_breakdown=rooms_breakdown,
                         is_forecast=False,
                         fetched_at=datetime.utcnow()
                     ).on_conflict_do_update(
                         constraint="uq_newbook_occupancy_per_day",
                         set_={
+                            "rooms_breakdown": rooms_breakdown,
                             "is_forecast": False,
                             "fetched_at": datetime.utcnow()
                         }

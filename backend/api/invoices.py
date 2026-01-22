@@ -148,6 +148,10 @@ class InvoiceResponse(BaseModel):
     notes: str | None
     dext_sent_at: str | None  # ISO datetime
     dext_sent_by_username: str | None  # Resolved from relationship
+    # Dispute tracking fields
+    dispute_count: int = 0
+    has_open_disputes: bool = False
+    disputes: list[dict] = []
 
     class Config:
         from_attributes = True
@@ -332,7 +336,14 @@ async def get_invoice_or_404(
     return invoice
 
 
-def invoice_to_response(invoice: Invoice, supplier_name: str | None = None, line_items: list | None = None) -> InvoiceResponse:
+def invoice_to_response(
+    invoice: Invoice,
+    supplier_name: str | None = None,
+    line_items: list | None = None,
+    dispute_count: int = 0,
+    has_open_disputes: bool = False,
+    disputes: list[dict] = None
+) -> InvoiceResponse:
     from sqlalchemy import inspect
 
     # Get supplier name from relationship if not provided
@@ -380,7 +391,11 @@ def invoice_to_response(invoice: Invoice, supplier_name: str | None = None, line
         # Dext integration
         notes=invoice.notes,
         dext_sent_at=invoice.dext_sent_at.isoformat() if invoice.dext_sent_at else None,
-        dext_sent_by_username=dext_sent_by_username
+        dext_sent_by_username=dext_sent_by_username,
+        # Dispute tracking
+        dispute_count=dispute_count,
+        has_open_disputes=has_open_disputes,
+        disputes=disputes or []
     )
 
 
@@ -699,9 +714,10 @@ async def list_invoices(
     if supplier_id:
         query = query.where(Invoice.supplier_id == supplier_id)
     if date_from:
-        query = query.where(Invoice.invoice_date >= date_from)
+        query = query.where(Invoice.created_at >= date_from)
     if date_to:
-        query = query.where(Invoice.invoice_date <= date_to)
+        # Add one day to include the entire end date
+        query = query.where(Invoice.created_at < date_to + timedelta(days=1))
 
     query = query.order_by(Invoice.created_at.desc()).offset(offset).limit(limit)
 
@@ -721,9 +737,10 @@ async def list_invoices(
     if supplier_id:
         count_query = count_query.where(Invoice.supplier_id == supplier_id)
     if date_from:
-        count_query = count_query.where(Invoice.invoice_date >= date_from)
+        count_query = count_query.where(Invoice.created_at >= date_from)
     if date_to:
-        count_query = count_query.where(Invoice.invoice_date <= date_to)
+        # Add one day to include the entire end date
+        count_query = count_query.where(Invoice.created_at < date_to + timedelta(days=1))
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
 
@@ -983,7 +1000,37 @@ async def get_invoice(
                 await db.commit()
                 await db.refresh(invoice)
 
-    return invoice_to_response(invoice)
+    # Query disputes for this invoice
+    from models.dispute import InvoiceDispute, DisputeStatus
+
+    # Fetch all disputes for this invoice
+    result = await db.execute(
+        select(InvoiceDispute).where(
+            InvoiceDispute.invoice_id == invoice_id
+        ).order_by(InvoiceDispute.opened_at.desc())
+    )
+    disputes_list = result.scalars().all()
+
+    dispute_count = len(disputes_list)
+    has_open_disputes = any(
+        d.status in [DisputeStatus.NEW, DisputeStatus.CONTACTED, DisputeStatus.AWAITING_CREDIT, DisputeStatus.AWAITING_REPLACEMENT]
+        for d in disputes_list
+    )
+
+    # Format disputes for response
+    disputes = [
+        {
+            "id": d.id,
+            "dispute_type": d.dispute_type.value,
+            "status": d.status.value,
+            "title": d.title,
+            "disputed_amount": float(d.disputed_amount) if d.disputed_amount else 0,
+            "opened_at": d.opened_at.isoformat()
+        }
+        for d in disputes_list
+    ]
+
+    return invoice_to_response(invoice, dispute_count=dispute_count, has_open_disputes=has_open_disputes, disputes=disputes)
 
 
 @router.get("/{invoice_id}/image")
@@ -1122,6 +1169,7 @@ async def update_invoice(
 ):
     """Update invoice data (for manual corrections)"""
     from sqlalchemy import or_
+    from models.dispute import InvoiceDispute, DisputeStatus
 
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
 
@@ -1130,6 +1178,32 @@ async def update_invoice(
     update_data = update.model_dump(exclude_unset=True)
     new_supplier_id = update_data.get("supplier_id")
     supplier_changed = new_supplier_id is not None and new_supplier_id != old_supplier_id
+
+    # Check for open disputes before confirming invoice
+    if update_data.get("status") == "CONFIRMED":
+        result = await db.execute(
+            select(func.count(InvoiceDispute.id)).where(
+                InvoiceDispute.invoice_id == invoice_id,
+                InvoiceDispute.status.in_([
+                    DisputeStatus.OPEN,
+                    DisputeStatus.CONTACTED,
+                    DisputeStatus.IN_PROGRESS,
+                    DisputeStatus.AWAITING_CREDIT,
+                    DisputeStatus.AWAITING_REPLACEMENT
+                ])
+            )
+        )
+        open_dispute_count = result.scalar() or 0
+
+        if open_dispute_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "cannot_confirm_with_disputes",
+                    "message": f"Cannot confirm invoice with {open_dispute_count} open dispute(s). Resolve all disputes before confirming.",
+                    "dispute_count": open_dispute_count
+                }
+            )
 
     for field, value in update_data.items():
         if field == "status" and value:

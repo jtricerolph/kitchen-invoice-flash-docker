@@ -87,6 +87,17 @@ class Invoice(Base):
         order_by="LineItem.line_number"
     )
 
+    # Dispute tracking relationships
+    disputes: Mapped[list["InvoiceDispute"]] = relationship(
+        "InvoiceDispute",
+        back_populates="invoice",
+        cascade="all, delete-orphan"
+    )
+    credit_notes: Mapped[list["CreditNote"]] = relationship(
+        "CreditNote",
+        back_populates="invoice"
+    )
+
     # Self-referential relationships for duplicate tracking
     duplicate_of: Mapped[Optional["Invoice"]] = relationship(
         "Invoice",
@@ -112,3 +123,4 @@ class Invoice(Base):
 from .user import Kitchen, User
 from .supplier import Supplier
 from .line_item import LineItem
+from .dispute import InvoiceDispute, CreditNote

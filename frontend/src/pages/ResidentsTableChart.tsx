@@ -10,10 +10,9 @@ interface RestaurantBooking {
   opening_hour_name?: string
 }
 
-interface HotelStay {
+interface BookingSegment {
   booking_id: string | null
-  room_number: string | null
-  guest_name: string | null
+  bookings_group_id?: string | null
   check_in: string
   check_out: string
   nights: string[]
@@ -22,14 +21,20 @@ interface HotelStay {
   is_package?: boolean
 }
 
+interface RoomRow {
+  room_number: string | null
+  bookings: BookingSegment[]
+}
+
 interface ChartData {
   date_range: {
     start_date: string
     end_date: string
     dates: string[]
   }
-  bookings: HotelStay[]
+  rooms: RoomRow[]
   summary: {
+    total_rooms: number
     total_bookings: number
     total_room_nights: number
     nights_with_restaurant: number
@@ -37,13 +42,28 @@ interface ChartData {
   }
 }
 
+// Single color scheme for all bookings - like Newbook UI
+const BOOKING_COLORS = {
+  // Normal bookings (no group)
+  normal: {
+    bg: '#e8e5f5',      // Soft purple background
+    border: '#667eea'    // Purple border
+  },
+  // Group member bookings (part of a booking group)
+  groupMember: {
+    bg: '#e8e5f5',      // Same background
+    border: '#0ea5e9'    // Sky blue border to indicate group membership
+  }
+}
+
 export default function ResidentsTableChart() {
   const { token } = useAuth()
   const [startDate, setStartDate] = useState(() => new Date().toISOString().split('T')[0])
-  const [selectedBooking, setSelectedBooking] = useState<HotelStay | null>(null)
+  const [selectedBooking, setSelectedBooking] = useState<{ room: RoomRow, booking: BookingSegment } | null>(null)
+  const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery<ChartData>({
-    queryKey: ['residents-table-chart', startDate],
+    queryKey: ['residents-table-chart', 'v2', startDate], // v2 to invalidate old cache
     queryFn: async () => {
       const res = await fetch(`/api/residents-table-chart?start_date=${startDate}`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -81,11 +101,13 @@ export default function ResidentsTableChart() {
     )
   }
 
-  if (!data) {
+  if (!data || !data.rooms) {
     return (
       <div style={styles.container}>
         <h1>Residents Table Chart</h1>
-        <div style={{ padding: '2rem', textAlign: 'center' }}>No data available</div>
+        <div style={{ padding: '2rem', textAlign: 'center' }}>
+          {!data ? 'No data available' : 'Loading new data structure...'}
+        </div>
       </div>
     )
   }
@@ -108,7 +130,9 @@ export default function ResidentsTableChart() {
 
       {/* Summary */}
       <div style={styles.summary}>
-        <strong>{data.summary.total_bookings}</strong> Hotel Bookings
+        <strong>{data.summary.total_rooms}</strong> Rooms
+        <span style={{ margin: '0 1rem', color: '#ddd' }}>|</span>
+        <strong>{data.summary.total_bookings}</strong> Bookings
         <span style={{ margin: '0 1rem', color: '#ddd' }}>|</span>
         <strong>{data.summary.total_room_nights}</strong> Room Nights
         <span style={{ margin: '0 1rem', color: '#ddd' }}>|</span>
@@ -128,48 +152,95 @@ export default function ResidentsTableChart() {
             </div>
           ))}
 
-          {/* Booking Rows */}
-          {data.bookings.map((booking, idx) => (
-            <div key={booking.booking_id || `booking-${idx}`} style={styles.row}>
+          {/* Room Rows */}
+          {data.rooms.map((room, roomIdx) => (
+            <div key={room.room_number || `room-${roomIdx}`} style={styles.row}>
               {/* Room Cell */}
               <div style={styles.roomCell}>
-                <div style={styles.roomNumber}>{booking.room_number || 'Unknown Room'}</div>
-                {booking.guest_name && (
-                  <div style={styles.guestName}>{booking.guest_name}</div>
-                )}
-                {booking.is_dbb && <span style={styles.badge}>DBB</span>}
-                {booking.is_package && <span style={styles.badge}>PKG</span>}
+                <div style={styles.roomNumber}>{room.room_number || 'Unknown Room'}</div>
               </div>
 
-              {/* Day Cells */}
+              {/* Day Cells - check all bookings for this room */}
               {data.date_range.dates.map((date) => {
-                const isStaying = booking.nights.includes(date)
+                // Find booking that covers this date (should only be one per room per night)
+                const bookingsOnDate = room.bookings.filter(b => b.nights.includes(date))
+                const booking = bookingsOnDate[0] // Only one booking can occupy a room per night
+
+                if (!booking) return <div key={date} style={styles.dayCell} />
+
                 const isFirstNight = booking.check_in === date
                 const isLastNight = booking.nights[booking.nights.length - 1] === date
                 const restaurantBooking = booking.restaurant_bookings[date]
 
+                // Check if this booking is part of a group
+                const hasValidGroupId = booking.bookings_group_id && booking.bookings_group_id.trim() !== ''
+                const isGroupHovered = hasValidGroupId && hoveredGroupId === booking.bookings_group_id
+                // Use group member color if part of a group, otherwise normal color
+                const colors = hasValidGroupId ? BOOKING_COLORS.groupMember : BOOKING_COLORS.normal
+
                 return (
                   <div key={date} style={styles.dayCell}>
                     {/* Hotel Stay Bar */}
-                    {isStaying && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '12px',
+                        height: '36px',
+                        background: colors.bg,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        zIndex: isGroupHovered ? 15 : 10,
+                        left: isFirstNight ? '0.5rem' : 'calc(-0.5rem + 1px)',
+                        right: isLastNight ? '0.5rem' : 'calc(-0.5rem + 1px)',
+                        borderRadius: isFirstNight && isLastNight ? '8px' :
+                                     isFirstNight ? '8px 0 0 8px' :
+                                     isLastNight ? '0 8px 8px 0' : '0',
+                        // Keep borders consistent - hide on middle segments only when hovered
+                        borderTop: `2px solid ${colors.border}`,
+                        borderBottom: `2px solid ${colors.border}`,
+                        borderLeft: isFirstNight ? `2px solid ${colors.border}` : 'none',
+                        borderRight: isLastNight ? `2px solid ${colors.border}` : 'none',
+                        // Use inset box-shadows to create directional highlights ONLY on sides that don't adjoin other segments
+                        boxShadow: isGroupHovered
+                          ? (
+                              // Inset shadows only on non-adjoining sides
+                              isFirstNight && isLastNight
+                                ? `inset 0 3px 0 ${colors.border}, inset 0 -3px 0 ${colors.border}, inset 3px 0 0 ${colors.border}, inset -3px 0 0 ${colors.border}` // Single night - all 4 sides
+                                : isFirstNight
+                                ? `inset 0 3px 0 ${colors.border}, inset 0 -3px 0 ${colors.border}, inset 3px 0 0 ${colors.border}` // First night - top, bottom, LEFT only (right adjoins next night)
+                                : isLastNight
+                                ? `inset 0 3px 0 ${colors.border}, inset 0 -3px 0 ${colors.border}, inset -3px 0 0 ${colors.border}` // Last night - top, bottom, RIGHT only (left adjoins previous night)
+                                : `inset 0 3px 0 ${colors.border}, inset 0 -3px 0 ${colors.border}` // Middle nights - top and bottom ONLY (both sides adjoin other nights)
+                            )
+                          : (isFirstNight || isLastNight ? '0 1px 3px rgba(0,0,0,0.05)' : 'none')
+                      }}
+                      onMouseEnter={() => hasValidGroupId && setHoveredGroupId(booking.bookings_group_id!)}
+                      onMouseLeave={() => setHoveredGroupId(null)}
+                      onClick={() => setSelectedBooking({ room, booking })}
+                      title={`Room ${room.room_number} - Booking ${booking.booking_id}\n${booking.check_in} to ${booking.check_out}${hasValidGroupId ? `\nGroup: ${booking.bookings_group_id}` : ''}`}
+                    />
+
+                    {/* Restaurant Table Icon - positioned relative to cell, not bar */}
+                    {restaurantBooking?.has_booking && (
                       <div
                         style={{
-                          ...styles.bar,
-                          ...(isFirstNight && styles.barStart),
-                          ...(isLastNight && styles.barEnd)
+                          position: 'absolute',
+                          top: '12px',
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          height: '36px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '1.3rem',
+                          cursor: 'pointer',
+                          filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))',
+                          zIndex: 20,
+                          pointerEvents: 'none'
                         }}
-                        onClick={() => setSelectedBooking(booking)}
-                        title={`${booking.room_number || 'Unknown Room'} - ${booking.guest_name || 'Guest'}\n${booking.check_in} to ${booking.check_out}`}
-                      />
-                    )}
-
-                    {/* Restaurant Table Icon */}
-                    {isStaying && restaurantBooking?.has_booking && (
-                      <div
-                        style={styles.tableIcon}
                         title={`${restaurantBooking.opening_hour_name || 'Dining'} - ${restaurantBooking.time || ''}\n${restaurantBooking.people} people${restaurantBooking.table_name ? `\n${restaurantBooking.table_name}` : ''}`}
                       >
-                        🪑
+                        🍽️
                       </div>
                     )}
                   </div>
@@ -185,26 +256,23 @@ export default function ResidentsTableChart() {
         <div style={styles.modalOverlay} onClick={() => setSelectedBooking(null)}>
           <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h2>Room {selectedBooking.room_number || 'Unknown'}</h2>
+              <h2>Room {selectedBooking.room.room_number || 'Unknown'}</h2>
               <button onClick={() => setSelectedBooking(null)} style={styles.closeBtn}>×</button>
             </div>
 
             <div style={styles.modalContent}>
               <div style={styles.modalRow}>
-                <strong>Guest:</strong> {selectedBooking.guest_name || 'Not specified'}
+                <strong>Booking ID:</strong> {selectedBooking.booking.booking_id || 'Not specified'}
               </div>
               <div style={styles.modalRow}>
-                <strong>Booking ID:</strong> {selectedBooking.booking_id || 'Not specified'}
+                <strong>Stay:</strong> {selectedBooking.booking.check_in} to {selectedBooking.booking.check_out} ({selectedBooking.booking.nights.length} nights)
               </div>
-              <div style={styles.modalRow}>
-                <strong>Stay:</strong> {selectedBooking.check_in} to {selectedBooking.check_out} ({selectedBooking.nights.length} nights)
-              </div>
-              {selectedBooking.is_dbb && (
+              {selectedBooking.booking.is_dbb && (
                 <div style={styles.modalRow}>
                   <span style={styles.badge}>Dinner, Bed & Breakfast</span>
                 </div>
               )}
-              {selectedBooking.is_package && (
+              {selectedBooking.booking.is_package && (
                 <div style={styles.modalRow}>
                   <span style={styles.badge}>Package Deal</span>
                 </div>
@@ -222,8 +290,8 @@ export default function ResidentsTableChart() {
                   </tr>
                 </thead>
                 <tbody>
-                  {selectedBooking.nights.map((night) => {
-                    const rb = selectedBooking.restaurant_bookings[night]
+                  {selectedBooking.booking.nights.map((night) => {
+                    const rb = selectedBooking.booking.restaurant_bookings[night]
                     return (
                       <tr key={night} style={rb?.has_booking ? {} : styles.noBookingRow}>
                         <td style={styles.td}>{night}</td>
@@ -289,7 +357,9 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'white',
     borderRadius: '12px',
     overflow: 'auto',
-    padding: '1rem'
+    scrollbarGutter: 'stable',
+    padding: '1rem',
+    paddingRight: '0.5rem'
   },
   grid: {
     display: 'grid',
@@ -374,7 +444,8 @@ const styles: Record<string, React.CSSProperties> = {
     transform: 'translateX(-50%)',
     fontSize: '1.5rem',
     cursor: 'pointer',
-    filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))'
+    filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))',
+    zIndex: 20
   },
   modalOverlay: {
     position: 'fixed' as const,

@@ -12,35 +12,38 @@ interface DashboardData {
     total_costs: number
     gp_percentage: number
   } | null
+  forecast_period: {
+    total_revenue: number
+    total_costs: number
+    gp_percentage: number
+  } | null
+  rolling_30_days: {
+    total_revenue: number
+    total_costs: number
+    gp_percentage: number
+  } | null
   recent_invoices: number
   pending_review: number
 }
 
+interface CoversDayData {
+  date: string
+  day_label: string
+  total_bookings: number
+  total_covers: number
+  service_breakdown: Array<{
+    period: string
+    bookings: number
+    covers: number
+  }>
+  has_flagged_bookings: boolean
+  unique_flag_types: string[] | null
+}
+
 interface ResosCoversData {
-  today: {
-    date: string
-    total_bookings: number
-    total_covers: number
-    service_breakdown: Array<{
-      period: string
-      bookings: number
-      covers: number
-    }>
-    has_flagged_bookings: boolean
-    unique_flag_types: string[] | null
-  } | null
-  tomorrow: {
-    date: string
-    total_bookings: number
-    total_covers: number
-    service_breakdown: Array<{
-      period: string
-      bookings: number
-      covers: number
-    }>
-    has_flagged_bookings: boolean
-    unique_flag_types: string[] | null
-  } | null
+  today: CoversDayData | null
+  tomorrow: CoversDayData | null
+  day_after: CoversDayData | null
 }
 
 interface ResosSettings {
@@ -62,6 +65,23 @@ interface ArrivalDayStats {
 interface ArrivalDashboardData {
   days: ArrivalDayStats[]
   service_filter_name?: string | null
+}
+
+interface DisputeStats {
+  total_disputes: number
+  open_disputes: number
+  total_disputed_amount: number
+  status_counts: Record<string, { count: number; amount: number }>
+  recent_disputes: Array<{
+    id: number
+    invoice_id: number
+    invoice_number: string | null
+    supplier_name: string
+    title: string
+    status: string
+    disputed_amount: number
+    opened_at: string
+  }>
 }
 
 export default function Dashboard() {
@@ -138,6 +158,19 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000 // Cache for 5 minutes
   })
 
+  const { data: disputeStats } = useQuery<DisputeStats>({
+    queryKey: ['dispute-stats'],
+    queryFn: async () => {
+      const res = await fetch('/api/disputes/stats/summary', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      if (!res.ok) throw new Error('Failed to fetch dispute stats')
+      return res.json()
+    },
+    enabled: !!token,
+    staleTime: 5 * 60 * 1000 // Cache for 5 minutes
+  })
+
   // Helper function to get icon for a single flag type
   const getIconForFlag = (flag: string): string => {
     const iconMapping = resosSettings?.resos_flag_icon_mapping || {}
@@ -187,6 +220,41 @@ export default function Dashboard() {
     return Array.from(iconSet)
   }
 
+  // Helper to render a covers widget
+  const renderCoversWidget = (dayData: CoversDayData | null, title: string) => {
+    return (
+      <div style={styles.card}>
+        <h3 style={styles.cardTitle}>
+          {title}
+          {dayData?.has_flagged_bookings && (
+            <span style={styles.flagIcon}>
+              {getFlagIcons(dayData.unique_flag_types).map((icon, idx) => (
+                <span key={idx}>{icon}</span>
+              ))}
+            </span>
+          )}
+        </h3>
+        {dayData && dayData.total_covers > 0 ? (
+          <>
+            <div style={styles.coverValue}>
+              {dayData.total_covers} covers
+            </div>
+            <div style={styles.details}>
+              <span>{dayData.total_bookings} bookings</span>
+              {dayData.service_breakdown.map((s) => (
+                <span key={s.period}>
+                  {s.period}: {s.bookings} : {s.covers}
+                </span>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p style={styles.noData}>No booking data</p>
+        )}
+      </div>
+    )
+  }
+
   if (isLoading) {
     return <div style={styles.loading}>Loading dashboard...</div>
   }
@@ -202,9 +270,11 @@ export default function Dashboard() {
     <div>
       <h2 style={styles.title}>Dashboard</h2>
 
-      <div style={styles.grid}>
+      {/* ===== GP Section ===== */}
+      <h3 style={styles.sectionTitle}>Gross Profit</h3>
+      <div style={styles.fourGrid}>
         <div style={styles.card}>
-          <h3 style={styles.cardTitle}>This Week GP</h3>
+          <h3 style={styles.cardTitle}>This Week</h3>
           {current ? (
             <>
               <div style={styles.gpValue}>{Number(current.gp_percentage).toFixed(1)}%</div>
@@ -219,7 +289,22 @@ export default function Dashboard() {
         </div>
 
         <div style={styles.card}>
-          <h3 style={styles.cardTitle}>Last Week GP</h3>
+          <h3 style={styles.cardTitle}>This Week Forecast</h3>
+          {data?.forecast_period ? (
+            <>
+              <div style={styles.gpValue}>{Number(data.forecast_period.gp_percentage).toFixed(1)}%</div>
+              <div style={styles.details}>
+                <span>Revenue: £{Number(data.forecast_period.total_revenue).toFixed(2)}</span>
+                <span>Costs: £{Number(data.forecast_period.total_costs).toFixed(2)}</span>
+              </div>
+            </>
+          ) : (
+            <p style={styles.noData}>Coming soon</p>
+          )}
+        </div>
+
+        <div style={styles.card}>
+          <h3 style={styles.cardTitle}>Last Week</h3>
           {previous ? (
             <>
               <div style={styles.gpValue}>{Number(previous.gp_percentage).toFixed(1)}%</div>
@@ -234,84 +319,88 @@ export default function Dashboard() {
         </div>
 
         <div style={styles.card}>
-          <h3 style={styles.cardTitle}>Recent Invoices</h3>
-          <div style={styles.statValue}>{data?.recent_invoices || 0}</div>
-          <p style={styles.statLabel}>Uploaded this week</p>
+          <h3 style={styles.cardTitle}>Last 30 Days</h3>
+          {data?.rolling_30_days ? (
+            <>
+              <div style={styles.gpValue}>{Number(data.rolling_30_days.gp_percentage).toFixed(1)}%</div>
+              <div style={styles.details}>
+                <span>Revenue: £{Number(data.rolling_30_days.total_revenue).toFixed(2)}</span>
+                <span>Costs: £{Number(data.rolling_30_days.total_costs).toFixed(2)}</span>
+              </div>
+            </>
+          ) : (
+            <p style={styles.noData}>No data for this period</p>
+          )}
         </div>
+      </div>
+
+      {/* ===== Documents Section ===== */}
+      <h3 style={styles.sectionTitle}>Documents</h3>
+      <div style={styles.fourGrid}>
+        <a href="/upload" style={{ ...styles.card, ...styles.uploadCard, textDecoration: 'none' }}>
+          <h3 style={styles.cardTitle}>Upload New</h3>
+          <div style={styles.uploadIcon}>+</div>
+          <p style={styles.statLabel}>Upload invoice</p>
+        </a>
 
         <div style={{ ...styles.card, ...(data?.pending_review ? styles.alertCard : {}) }}>
-          <h3 style={styles.cardTitle}>Pending Review</h3>
+          <h3 style={styles.cardTitle}>Pending Confirmation</h3>
           <div style={styles.statValue}>{data?.pending_review || 0}</div>
-          <p style={styles.statLabel}>Invoices need review</p>
+          <p style={styles.statLabel}>Awaiting confirmation</p>
           {(data?.pending_review || 0) > 0 && (
-            <a href="/invoices?status=processed" style={styles.link}>
+            <a href="/invoices?status=pending_confirmation" style={styles.link}>
               Review now →
             </a>
           )}
         </div>
 
-        <div style={styles.card}>
-          <h3 style={styles.cardTitle}>
-            Today's Covers
-            {resosCovers?.today?.has_flagged_bookings && (
-              <span style={styles.flagIcon}>
-                {getFlagIcons(resosCovers.today.unique_flag_types).map((icon, idx) => (
-                  <span key={idx}>{icon}</span>
-                ))}
-              </span>
-            )}
-          </h3>
-          {resosCovers?.today ? (
-            <>
-              <div style={styles.coverValue}>
-                {resosCovers.today.total_covers} covers
-              </div>
-              <div style={styles.details}>
-                <span>{resosCovers.today.total_bookings} bookings</span>
-                {resosCovers.today.service_breakdown.map((s) => (
-                  <span key={s.period}>
-                    {s.period}: {s.bookings} : {s.covers}
+        <div style={{
+          ...styles.card,
+          ...((disputeStats?.open_disputes || 0) > 0 ? styles.alertCard : {})
+        }}>
+          <h3 style={styles.cardTitle}>Disputes</h3>
+          <div style={{
+            ...styles.statValue,
+            color: (disputeStats?.open_disputes || 0) > 0 ? '#e94560' : '#4ade80'
+          }}>
+            {disputeStats?.open_disputes || 0}
+          </div>
+          <p style={styles.statLabel}>Open disputes</p>
+          {disputeStats && disputeStats.status_counts && Object.keys(disputeStats.status_counts).length > 0 && (
+            <div style={styles.statusBreakdown}>
+              {Object.entries(disputeStats.status_counts)
+                .filter(([status]) => status !== 'RESOLVED')
+                .filter(([, data]) => (data as any).count > 0)
+                .map(([status, data]) => (
+                  <span key={status} style={styles.statusBreakdownItem}>
+                    {status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}: {(data as any).count}
                   </span>
                 ))}
-              </div>
-              <a href="/resos" style={styles.link}>
-                View Calendar →
-              </a>
-            </>
-          ) : (
-            <p style={styles.noData}>No booking data</p>
+            </div>
           )}
+          <a href="/disputes" style={styles.link}>
+            View all →
+          </a>
         </div>
 
         <div style={styles.card}>
-          <h3 style={styles.cardTitle}>
-            Tomorrow's Covers
-            {resosCovers?.tomorrow?.has_flagged_bookings && (
-              <span style={styles.flagIcon}>
-                {getFlagIcons(resosCovers.tomorrow.unique_flag_types).map((icon, idx) => (
-                  <span key={idx}>{icon}</span>
-                ))}
-              </span>
-            )}
-          </h3>
-          {resosCovers?.tomorrow ? (
-            <>
-              <div style={styles.coverValue}>
-                {resosCovers.tomorrow.total_covers} covers
-              </div>
-              <div style={styles.details}>
-                <span>{resosCovers.tomorrow.total_bookings} bookings</span>
-                {resosCovers.tomorrow.service_breakdown.map((s) => (
-                  <span key={s.period}>
-                    {s.period}: {s.bookings} : {s.covers}
-                  </span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p style={styles.noData}>No booking data</p>
+          <h3 style={styles.cardTitle}>Recent Invoices</h3>
+          <div style={styles.statValue}>{data?.recent_invoices || 0}</div>
+          <p style={styles.statLabel}>Uploaded this week</p>
+          {(data?.recent_invoices || 0) > 0 && (
+            <a href={`/invoices?date_from=${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&date_to=${new Date().toISOString().split('T')[0]}`} style={styles.link}>
+              View all →
+            </a>
           )}
         </div>
+      </div>
+
+      {/* ===== Covers Section ===== */}
+      <h3 style={styles.sectionTitle}>Covers</h3>
+      <div style={styles.fourGrid}>
+        {renderCoversWidget(resosCovers?.today || null, 'Today')}
+        {renderCoversWidget(resosCovers?.tomorrow || null, 'Tomorrow')}
+        {renderCoversWidget(resosCovers?.day_after || null, resosCovers?.day_after?.day_label || 'Day After')}
 
         <div style={styles.card}>
           <h3 style={styles.cardTitle}>Upcoming Events</h3>
@@ -333,57 +422,50 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Hotel Arrivals & Restaurant Bookings */}
+      {/* ===== Hotel Arrivals & Restaurant Bookings ===== */}
       {arrivalStats && arrivalStats.days && arrivalStats.days.length > 0 && (
-        <div style={styles.wideCard}>
-          <h3 style={styles.cardTitle}>
+        <>
+          <h3 style={styles.sectionTitle}>
             {arrivalStats.service_filter_name
               ? `Hotel Arrivals & ${arrivalStats.service_filter_name} Bookings`
               : 'Hotel Arrivals & Restaurant Bookings'
             }
-            {arrivalStats.service_filter_name && (
-              <span style={styles.serviceFilterInfo}> (showing {arrivalStats.service_filter_name} tables only)</span>
-            )}
           </h3>
-          <div style={styles.arrivalGrid}>
-            {arrivalStats.days.map((day) => (
-              <div key={day.date} style={styles.arrivalDay}>
-                <div style={styles.dayName}>{day.day_name}</div>
-                <div style={styles.arrivalStats}>
-                  <div style={styles.arrivalStat}>
-                    <div style={styles.arrivalValue}>{day.arrival_count}</div>
-                    <div style={styles.arrivalLabel}>arrivals</div>
-                    <div style={styles.arrivalSubtext}>{day.arrival_guests} guests</div>
-                  </div>
-                  <div style={styles.arrivalStat}>
-                    <div style={styles.arrivalValue}>{day.table_bookings}</div>
-                    <div style={styles.arrivalLabel}>table bookings</div>
-                    <div style={styles.arrivalSubtext}>{day.table_covers} covers</div>
-                  </div>
-                  <div style={styles.arrivalStat}>
-                    <div style={{ ...styles.arrivalValue, color: '#4ade80' }}>{day.matched_arrivals}</div>
-                    <div style={styles.arrivalLabel}>have booked</div>
-                  </div>
-                  <div style={styles.arrivalStat}>
-                    <div style={{ ...styles.arrivalValue, color: '#e94560' }}>{day.unmatched_arrivals}</div>
-                    <div style={styles.arrivalLabel}>no booking yet</div>
-                    <div style={styles.arrivalSubtext}>{day.opportunity_guests} guests</div>
+          <div style={styles.wideCard}>
+            {arrivalStats.service_filter_name && (
+              <span style={styles.serviceFilterInfo}>(showing {arrivalStats.service_filter_name} tables only)</span>
+            )}
+            <div style={styles.arrivalGrid}>
+              {arrivalStats.days.map((day) => (
+                <div key={day.date} style={styles.arrivalDay}>
+                  <div style={styles.dayName}>{day.day_name}</div>
+                  <div style={styles.arrivalStats}>
+                    <div style={styles.arrivalStat}>
+                      <div style={styles.arrivalValue}>{day.arrival_count}</div>
+                      <div style={styles.arrivalLabel}>arrivals</div>
+                      <div style={styles.arrivalSubtext}>{day.arrival_guests} guests</div>
+                    </div>
+                    <div style={styles.arrivalStat}>
+                      <div style={styles.arrivalValue}>{day.table_bookings}</div>
+                      <div style={styles.arrivalLabel}>table bookings</div>
+                      <div style={styles.arrivalSubtext}>{day.table_covers} covers</div>
+                    </div>
+                    <div style={styles.arrivalStat}>
+                      <div style={{ ...styles.arrivalValue, color: '#4ade80' }}>{day.matched_arrivals}</div>
+                      <div style={styles.arrivalLabel}>have booked</div>
+                    </div>
+                    <div style={styles.arrivalStat}>
+                      <div style={{ ...styles.arrivalValue, color: '#e94560' }}>{day.unmatched_arrivals}</div>
+                      <div style={styles.arrivalLabel}>no booking yet</div>
+                      <div style={styles.arrivalSubtext}>{day.opportunity_guests} guests</div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        </>
       )}
-
-      <div style={styles.actions}>
-        <a href="/upload" style={styles.primaryBtn}>
-          Upload Invoice
-        </a>
-        <a href="/invoices" style={styles.secondaryBtn}>
-          View All Invoices
-        </a>
-      </div>
     </div>
   )
 }
@@ -398,9 +480,18 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: '1.5rem',
     color: '#1a1a2e',
   },
-  grid: {
+  sectionTitle: {
+    color: '#1a1a2e',
+    fontSize: '1rem',
+    fontWeight: 600,
+    marginBottom: '1rem',
+    marginTop: '0.5rem',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+  },
+  fourGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+    gridTemplateColumns: 'repeat(4, 1fr)',
     gap: '1.5rem',
     marginBottom: '2rem',
   },
@@ -409,6 +500,21 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '1.5rem',
     borderRadius: '12px',
     boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+  },
+  uploadCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    transition: 'transform 0.2s, box-shadow 0.2s',
+    border: '2px dashed #e94560',
+  },
+  uploadIcon: {
+    fontSize: '3rem',
+    fontWeight: 'bold',
+    color: '#e94560',
+    marginBottom: '0.5rem',
   },
   alertCard: {
     borderLeft: '4px solid #e94560',
@@ -424,7 +530,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '0.75rem',
     fontWeight: 'normal',
     textTransform: 'none',
-    marginLeft: '8px',
+    marginBottom: '1rem',
+    display: 'block',
   },
   gpValue: {
     fontSize: '2.5rem',
@@ -468,25 +575,6 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'none',
     fontWeight: 'bold',
   },
-  actions: {
-    display: 'flex',
-    gap: '1rem',
-  },
-  primaryBtn: {
-    padding: '1rem 2rem',
-    background: '#e94560',
-    color: 'white',
-    textDecoration: 'none',
-    borderRadius: '8px',
-    fontWeight: 'bold',
-  },
-  secondaryBtn: {
-    padding: '1rem 2rem',
-    background: '#1a1a2e',
-    color: 'white',
-    textDecoration: 'none',
-    borderRadius: '8px',
-  },
   wideCard: {
     background: 'white',
     padding: '1.5rem',
@@ -498,7 +586,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
     gap: '1.5rem',
-    marginTop: '1rem',
   },
   arrivalDay: {
     border: '1px solid #e5e7eb',
@@ -534,5 +621,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '0.75rem',
     color: '#999',
     marginTop: '0.125rem',
+  },
+  statusBreakdown: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+    marginTop: '0.5rem',
+    marginBottom: '0.75rem',
+  },
+  statusBreakdownItem: {
+    fontSize: '0.75rem',
+    color: '#666',
   },
 }

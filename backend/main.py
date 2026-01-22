@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -24,6 +24,10 @@ from migrations.add_resos_integration import run_migration as run_resos_migratio
 from migrations.add_calendar_events import run_migration as run_calendar_events_migration
 from migrations.add_resos_upcoming_sync import run_migration as run_resos_upcoming_sync_migration
 from migrations.add_residents_table_chart import run_migration as run_residents_table_chart_migration
+from migrations.add_rooms_breakdown import run_migration as run_rooms_breakdown_migration
+from migrations.add_invoice_disputes import run_migration as run_disputes_migration
+from migrations.add_awaiting_replacement_status import run_migration as run_awaiting_replacement_migration
+from migrations.add_new_status import run_migration as run_new_status_migration
 from scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -119,6 +123,34 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Residents table chart migration warning (may be expected): {e}")
 
+    # Run rooms breakdown migration
+    try:
+        await run_rooms_breakdown_migration()
+        logger.info("Rooms breakdown migration completed")
+    except Exception as e:
+        logger.warning(f"Rooms breakdown migration warning (may be expected): {e}")
+
+    # Run invoice disputes migration
+    try:
+        await run_disputes_migration()
+        logger.info("Invoice disputes migration completed")
+    except Exception as e:
+        logger.warning(f"Invoice disputes migration warning (may be expected): {e}")
+
+    # Run awaiting replacement status migration
+    try:
+        await run_awaiting_replacement_migration()
+        logger.info("Awaiting replacement status migration completed")
+    except Exception as e:
+        logger.warning(f"Awaiting replacement status migration warning (may be expected): {e}")
+
+    # Run NEW status migration
+    try:
+        await run_new_status_migration()
+        logger.info("NEW status migration completed")
+    except Exception as e:
+        logger.warning(f"NEW status migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -147,6 +179,8 @@ app.add_middleware(
 # Include routers
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
+app.include_router(disputes.router, prefix="/api/disputes", tags=["Disputes"])
+app.include_router(credit_notes.router, prefix="/api/credit-notes", tags=["Credit Notes"])
 app.include_router(suppliers.router, prefix="/api/suppliers", tags=["Suppliers"])
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])

@@ -8,6 +8,7 @@ import Dashboard from './components/Dashboard'
 import Upload from './components/Upload'
 import InvoiceList from './components/InvoiceList'
 import Review from './components/Review'
+import Disputes from './components/Disputes'
 import Purchases from './components/Purchases'
 import GPReport from './components/GPReport'
 import SearchInvoices from './components/SearchInvoices'
@@ -136,6 +137,12 @@ function App() {
               }
             />
             <Route
+              path="/disputes"
+              element={
+                token ? (isPageAccessible('/invoices') ? <Disputes /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/settings"
               element={
                 token ? (isPageAccessible('/settings') ? <Settings /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -254,7 +261,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               {invoicesOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
-                    {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Pending Invoices</a>}
+                    {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Uploaded Invoices</a>}
+                    {showNavItem('/invoices') && <a href="/disputes" style={styles.dropdownLink}>Disputes</a>}
                     {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
                     {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
                   </div>

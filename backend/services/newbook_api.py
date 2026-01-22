@@ -475,9 +475,15 @@ class NewbookAPIClient:
                     if len(bookings) == 0:
                         logger.info(f"First booking room fields - category_id: {category_id}, site_type: {item.get('site_type')}, site_name: {item.get('site_name')}")
 
+                    # Get booking group ID for related bookings (e.g., family/party traveling together)
+                    bookings_group_id = item.get("bookings_group_id")
+                    if bookings_group_id:
+                        bookings_group_id = str(bookings_group_id)
+
                     bookings.append({
                         "booking_id": str(item.get("id", item.get("booking_id", ""))),
                         "booking_reference": item.get("reference", item.get("booking_reference", item.get("booking_reference_id"))),
+                        "bookings_group_id": bookings_group_id,  # Group ID for related bookings
                         "check_in_date": item.get("booking_arrival", item.get("check_in", item.get("check_in_date"))),
                         "check_out_date": item.get("booking_departure", item.get("check_out", item.get("check_out_date"))),
                         "nights": item.get("booking_length", item.get("nights")),

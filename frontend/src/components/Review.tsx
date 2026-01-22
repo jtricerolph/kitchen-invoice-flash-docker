@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import * as pdfjsLib from 'pdfjs-dist'
 import LineItemHistoryModal from './LineItemHistoryModal'
+import CreateDisputeModal from './CreateDisputeModal'
+import DisputeDetailModal from './DisputeDetailModal'
 
 // Use local worker file from public directory
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
@@ -43,6 +45,17 @@ interface Invoice {
   notes: string | null
   dext_sent_at: string | null
   dext_sent_by_username: string | null
+  // Dispute tracking
+  dispute_count: number
+  has_open_disputes: boolean
+  disputes: Array<{
+    id: number
+    dispute_type: string
+    status: string
+    title: string
+    disputed_amount: number
+    opened_at: string
+  }>
 }
 
 interface Supplier {
@@ -284,6 +297,8 @@ export default function Review() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDuplicateModal, setShowDuplicateModal] = useState(false)
   const [showCreateSupplierModal, setShowCreateSupplierModal] = useState(false)
+  const [showDisputeModal, setShowDisputeModal] = useState(false)
+  const [viewingDisputeId, setViewingDisputeId] = useState<number | null>(null)
   const [adminOperationInProgress, setAdminOperationInProgress] = useState(false)
   const [adminOperationResult, setAdminOperationResult] = useState<{type: 'success' | 'error', message: string} | null>(null)
   const [showRawOcrModal, setShowRawOcrModal] = useState(false)
@@ -337,7 +352,7 @@ export default function Review() {
     sourceLineItemId?: number
   } | null>(null)
 
-  const { data: invoice, isLoading } = useQuery<Invoice>({
+  const { data: invoice, isLoading, refetch: refetchInvoice } = useQuery<Invoice>({
     queryKey: ['invoice', id],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/${id}`, {
@@ -926,6 +941,16 @@ export default function Review() {
   }, [invoiceNumber, invoiceDate, total, netTotal, supplierId, category, orderNumber, documentType])
 
   const handleConfirm = async () => {
+    // Check for open disputes before confirming
+    if (invoice?.has_open_disputes) {
+      alert(
+        `Cannot confirm invoice with open disputes.\n\n` +
+        `This invoice has ${invoice.dispute_count} dispute(s) that must be resolved first.\n\n` +
+        `Please resolve all disputes before confirming.`
+      )
+      return
+    }
+
     await handleSave('CONFIRMED')
     navigate('/invoices')
   }
@@ -2267,6 +2292,54 @@ export default function Review() {
             </div>
           )}
 
+          {/* Dispute Indicator Blocks - clickable to open detail modal */}
+          {invoice.disputes && invoice.disputes.length > 0 && (
+            <div style={{ marginTop: '15px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {invoice.disputes.map((dispute) => {
+                const isOpen = ['NEW', 'CONTACTED', 'AWAITING_CREDIT', 'AWAITING_REPLACEMENT'].includes(dispute.status)
+
+                return (
+                  <div
+                    key={dispute.id}
+                    onClick={() => setViewingDisputeId(dispute.id)}
+                    style={{
+                      padding: '12px',
+                      background: isOpen ? '#fff3cd' : '#d1ecf1',
+                      border: `2px solid ${isOpen ? '#ffc107' : '#17a2b8'}`,
+                      borderRadius: '8px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 'bold', color: '#1a1a2e', marginBottom: '4px' }}>
+                        {isOpen ? '⚠️' : 'ℹ️'} {dispute.status.replace(/_/g, ' ')}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                        #{dispute.id} - {dispute.dispute_type.replace(/_/g, ' ').toUpperCase()} - {dispute.title}
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        padding: '6px 12px',
+                        background: '#e94560',
+                        color: 'white',
+                        borderRadius: '4px',
+                        fontSize: '0.85rem',
+                        fontWeight: 'bold',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      View
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           {/* Button Rows - Centered */}
           <div style={{ marginTop: '15px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
             {/* Row 1: Resend to Dext | Delete | View OCR */}
@@ -2307,6 +2380,22 @@ export default function Review() {
                 }}
               >
                 Delete Invoice
+              </button>
+              <button
+                onClick={() => setShowDisputeModal(true)}
+                style={{
+                  padding: '0.4rem 1.2rem',
+                  fontSize: '0.8rem',
+                  background: '#f0ad4e',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  minWidth: '110px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                Log Dispute
               </button>
               <button
                 onClick={() => setShowRawOcrModal(true)}
@@ -3763,6 +3852,32 @@ export default function Review() {
           sourceLineItemId={historyModal.sourceLineItemId}
           onAcknowledge={() => {
             refetchLineItems()
+          }}
+        />
+      )}
+
+      {/* Create Dispute Modal */}
+      {showDisputeModal && invoice && (
+        <CreateDisputeModal
+          invoiceId={invoice.id}
+          invoiceNumber={invoice.invoice_number}
+          supplierId={invoice.supplier_id || null}
+          supplierName={invoice.supplier_name || null}
+          lineItems={lineItems || []}
+          onClose={() => setShowDisputeModal(false)}
+          onSuccess={() => {
+            refetchInvoice() // Refresh invoice to update dispute count
+          }}
+        />
+      )}
+
+      {/* View Dispute Detail Modal */}
+      {viewingDisputeId && (
+        <DisputeDetailModal
+          disputeId={viewingDisputeId}
+          onClose={() => setViewingDisputeId(null)}
+          onUpdate={() => {
+            refetchInvoice() // Refresh invoice to update dispute data
           }}
         />
       )}

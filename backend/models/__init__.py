@@ -10,11 +10,17 @@ from .newbook import NewbookGLAccount, NewbookDailyRevenue, NewbookDailyOccupanc
 from .resos import ResosBooking, ResosDailyStats, ResosOpeningHour, ResosSyncLog
 from .backup import BackupHistory
 from .acknowledged_price import AcknowledgedPrice
+from .dispute import (
+    InvoiceDispute, DisputeLineItem, DisputeAttachment, DisputeActivity, CreditNote,
+    DisputeType, DisputeStatus, DisputePriority
+)
 
 __all__ = [
     "User", "Kitchen", "Invoice", "Supplier", "RevenueEntry", "GPPeriod",
     "KitchenSettings", "LineItem", "FieldMapping", "ProductDefinition",
     "NewbookGLAccount", "NewbookDailyRevenue", "NewbookDailyOccupancy", "NewbookSyncLog",
     "ResosBooking", "ResosDailyStats", "ResosOpeningHour", "ResosSyncLog",
-    "BackupHistory", "AcknowledgedPrice"
+    "BackupHistory", "AcknowledgedPrice",
+    "InvoiceDispute", "DisputeLineItem", "DisputeAttachment", "DisputeActivity", "CreditNote",
+    "DisputeType", "DisputeStatus", "DisputePriority"
 ]
