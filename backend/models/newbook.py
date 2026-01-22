@@ -91,6 +91,13 @@ class NewbookDailyOccupancy(Base):
     arrival_booking_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # List of booking IDs arriving
     arrival_booking_details: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # Full arrival details with booking refs
 
+    # Room-level details for residents table chart
+    room_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    booking_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # Newbook booking reference
+    guest_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_dbb: Mapped[bool] = mapped_column(Boolean, default=False)  # Dinner Bed & Breakfast
+    is_package: Mapped[bool] = mapped_column(Boolean, default=False)  # Package deal
+
     # Forecast indicator
     is_forecast: Mapped[bool] = mapped_column(Boolean, default=False)  # True for future booked dates
 
