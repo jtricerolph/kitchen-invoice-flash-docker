@@ -49,7 +49,7 @@ interface CreateDisputeRequest {
 export default function CreateDisputeModal({
   invoiceId,
   invoiceNumber,
-  supplierId,
+  supplierId: _supplierId,
   supplierName,
   lineItems = [],
   onClose,
@@ -123,7 +123,7 @@ export default function CreateDisputeModal({
           const item = lineItems.find(li => li.id === itemId)
           if (!item) return null
 
-          return {
+          const lineItem: DisputeLineItemInput = {
             invoice_line_item_id: item.id,
             product_name: item.description || item.product_code || 'Unnamed item',
             product_code: item.product_code || undefined,
@@ -131,6 +131,7 @@ export default function CreateDisputeModal({
             unit_price_charged: item.unit_price || undefined,
             total_charged: item.amount || 0,
           }
+          return lineItem
         })
         .filter((item): item is DisputeLineItemInput => item !== null)
     }

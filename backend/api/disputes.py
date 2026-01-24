@@ -7,11 +7,13 @@ Handles:
 - Dispute activity logging
 - Dashboard statistics
 """
+import secrets
+import hashlib
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
 from decimal import Decimal
@@ -26,6 +28,11 @@ from models.dispute import (
 from models.invoice import Invoice
 from models.supplier import Supplier
 from services.dispute_archival_service import DisputeArchivalService
+
+
+def generate_public_hash() -> str:
+    """Generate a secure random hash for public attachment links"""
+    return secrets.token_urlsafe(32)  # 43 character URL-safe string
 
 router = APIRouter()
 
@@ -50,7 +57,7 @@ class CreateDisputeInput(BaseModel):
     dispute_type: DisputeType
     priority: DisputePriority = DisputePriority.MEDIUM
     title: str
-    description: str
+    description: Optional[str] = ""
     disputed_amount: float
     expected_amount: Optional[float] = None
     line_items: List[DisputeLineItemInput] = []
@@ -95,6 +102,8 @@ class DisputeAttachmentResponse(BaseModel):
     description: Optional[str]
     uploaded_at: str
     uploaded_by_username: str
+    public_hash: Optional[str] = None
+    public_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -560,6 +569,9 @@ async def upload_dispute_attachment(
     if not success:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {file_path}")
 
+    # Generate public hash for shareable link
+    public_hash = generate_public_hash()
+
     # Create attachment record
     attachment = DisputeAttachment(
         dispute_id=dispute_id,
@@ -570,7 +582,8 @@ async def upload_dispute_attachment(
         file_size_bytes=file_size,
         attachment_type=attachment_type,
         description=description,
-        uploaded_by=current_user.id
+        uploaded_by=current_user.id,
+        public_hash=public_hash
     )
 
     db.add(attachment)
@@ -596,7 +609,9 @@ async def upload_dispute_attachment(
         "id": attachment.id,
         "file_name": file.filename,
         "file_size": file_size,
-        "archived": success
+        "archived": success,
+        "public_hash": public_hash,
+        "public_url": f"/api/public/attachments/{public_hash}"
     }
 
 
@@ -702,6 +717,46 @@ async def get_dispute_stats(
     }
 
 
+@router.get("/stats/daily")
+async def get_daily_dispute_stats(
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get daily dispute statistics for a date range (for purchases chart integration)"""
+    from sqlalchemy import cast, Date
+
+    query = select(
+        cast(InvoiceDispute.opened_at, Date).label("date"),
+        func.count(InvoiceDispute.id).label("count"),
+        func.sum(InvoiceDispute.disputed_amount).label("total_disputed")
+    ).where(
+        InvoiceDispute.kitchen_id == current_user.kitchen_id
+    )
+
+    if from_date:
+        query = query.where(cast(InvoiceDispute.opened_at, Date) >= from_date)
+    if to_date:
+        query = query.where(cast(InvoiceDispute.opened_at, Date) <= to_date)
+
+    query = query.group_by(cast(InvoiceDispute.opened_at, Date))
+    query = query.order_by(cast(InvoiceDispute.opened_at, Date))
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    return {
+        "daily_stats": {
+            row.date.isoformat(): {
+                "count": row.count,
+                "total_disputed": float(row.total_disputed or 0)
+            }
+            for row in rows
+        }
+    }
+
+
 def _format_dispute(dispute: InvoiceDispute) -> DisputeResponse:
     """Format dispute for API response"""
 
@@ -760,7 +815,9 @@ def _format_dispute(dispute: InvoiceDispute) -> DisputeResponse:
                 attachment_type=att.attachment_type,
                 description=att.description,
                 uploaded_at=att.uploaded_at.isoformat(),
-                uploaded_by_username=att.uploaded_by_user.name if att.uploaded_by_user else "Unknown"
+                uploaded_by_username=att.uploaded_by_user.name if att.uploaded_by_user else "Unknown",
+                public_hash=att.public_hash,
+                public_url=f"/api/public/attachments/{att.public_hash}" if att.public_hash else None
             )
             for att in dispute.attachments
         ],
@@ -777,3 +834,163 @@ def _format_dispute(dispute: InvoiceDispute) -> DisputeResponse:
             for act in sorted(dispute.activity_log, key=lambda x: x.created_at)
         ]
     )
+
+
+# ===== Credit Note Linking Endpoints =====
+
+class OpenDisputeResponse(BaseModel):
+    """Simplified dispute info for linking modal"""
+    id: int
+    title: str
+    dispute_type: str
+    status: str
+    disputed_amount: float
+    opened_at: str
+    invoice_number: Optional[str] = None
+
+
+class LinkCreditNoteInput(BaseModel):
+    """Input for linking a credit note to a dispute"""
+    credit_note_invoice_id: int  # The invoice ID with document_type='credit_note'
+    resolved_amount: Optional[float] = None  # Optional: override the credit note amount
+    resolution_notes: Optional[str] = None  # Optional: additional notes
+
+
+@router.get("/supplier/{supplier_id}/open", response_model=List[OpenDisputeResponse])
+async def get_open_disputes_for_supplier(
+    supplier_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get all open/unresolved disputes for a specific supplier"""
+    # Open statuses (not resolved or closed)
+    open_statuses = [
+        DisputeStatus.NEW,
+        DisputeStatus.OPEN,
+        DisputeStatus.CONTACTED,
+        DisputeStatus.IN_PROGRESS,
+        DisputeStatus.AWAITING_CREDIT,
+        DisputeStatus.AWAITING_REPLACEMENT,
+        DisputeStatus.ESCALATED
+    ]
+
+    result = await db.execute(
+        select(InvoiceDispute, Invoice.invoice_number)
+        .join(Invoice, InvoiceDispute.invoice_id == Invoice.id)
+        .where(
+            and_(
+                InvoiceDispute.kitchen_id == current_user.kitchen_id,
+                Invoice.supplier_id == supplier_id,
+                InvoiceDispute.status.in_(open_statuses)
+            )
+        )
+        .order_by(InvoiceDispute.opened_at.desc())
+    )
+    rows = result.all()
+
+    return [
+        OpenDisputeResponse(
+            id=dispute.id,
+            title=dispute.title,
+            dispute_type=dispute.dispute_type.value,
+            status=dispute.status.value,
+            disputed_amount=float(dispute.disputed_amount),
+            opened_at=dispute.opened_at.isoformat(),
+            invoice_number=invoice_number
+        )
+        for dispute, invoice_number in rows
+    ]
+
+
+@router.post("/{dispute_id}/link-credit-note")
+async def link_credit_note_to_dispute(
+    dispute_id: int,
+    link_input: LinkCreditNoteInput,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Link a credit note invoice to a dispute and mark it as resolved"""
+    # Get the dispute
+    result = await db.execute(
+        select(InvoiceDispute).where(
+            and_(
+                InvoiceDispute.id == dispute_id,
+                InvoiceDispute.kitchen_id == current_user.kitchen_id
+            )
+        )
+    )
+    dispute = result.scalar_one_or_none()
+    if not dispute:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+
+    # Get the credit note invoice
+    result = await db.execute(
+        select(Invoice).where(
+            and_(
+                Invoice.id == link_input.credit_note_invoice_id,
+                Invoice.kitchen_id == current_user.kitchen_id
+            )
+        )
+    )
+    credit_note = result.scalar_one_or_none()
+    if not credit_note:
+        raise HTTPException(status_code=404, detail="Credit note not found")
+
+    # Verify it's a credit note
+    if credit_note.document_type != 'credit_note':
+        raise HTTPException(status_code=400, detail="Invoice is not a credit note")
+
+    # Determine resolved amount
+    resolved_amount = link_input.resolved_amount
+    if resolved_amount is None and credit_note.total:
+        # Use the credit note total (as positive value)
+        resolved_amount = abs(float(credit_note.total))
+
+    # Update the dispute
+    old_status = dispute.status.value
+    dispute.status = DisputeStatus.RESOLVED
+    dispute.resolved_amount = Decimal(str(resolved_amount)) if resolved_amount else None
+    dispute.resolved_by = current_user.id
+    dispute.resolved_at = datetime.utcnow()
+
+    if link_input.resolution_notes:
+        dispute.resolution_notes = link_input.resolution_notes
+
+    # Build credit note reference
+    credit_note_ref = credit_note.invoice_number or f"ID#{credit_note.id}"
+    credit_note_date = credit_note.invoice_date.strftime('%d %b %Y') if credit_note.invoice_date else 'unknown date'
+
+    # Add activity for status change
+    status_activity = DisputeActivity(
+        dispute_id=dispute.id,
+        activity_type="status_change",
+        description=f"Status changed from {old_status} to RESOLVED",
+        old_value=old_status,
+        new_value="RESOLVED",
+        created_by=current_user.id
+    )
+    db.add(status_activity)
+
+    # Add activity for credit note link
+    link_activity = DisputeActivity(
+        dispute_id=dispute.id,
+        activity_type="credit_note_linked",
+        description=f"Dispute resolved with credit note #{credit_note_ref} dated {credit_note_date}",
+        new_value=str(credit_note.id),  # Store invoice ID for linking
+        created_by=current_user.id
+    )
+    db.add(link_activity)
+
+    # Update the credit note to track the linked dispute
+    credit_note.linked_dispute_id = dispute.id
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": f"Dispute linked to credit note #{credit_note_ref}",
+        "dispute_id": dispute.id,
+        "credit_note_id": credit_note.id,
+        "credit_note_number": credit_note_ref,
+        "resolved_amount": resolved_amount
+    }

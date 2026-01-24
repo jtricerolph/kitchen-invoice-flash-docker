@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,11 +9,13 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
+logger = logging.getLogger(__name__)
+
 from database import get_db
 from models.user import User
 from models.invoice import Invoice, InvoiceStatus
 from models.gp import RevenueEntry, GPPeriod
-from models.newbook import NewbookDailyRevenue, NewbookGLAccount
+from models.newbook import NewbookDailyRevenue, NewbookGLAccount, NewbookDailyOccupancy
 from auth.jwt import get_current_user
 
 router = APIRouter()
@@ -52,6 +55,11 @@ class GPReportResponse(BaseModel):
     # Revenue breakdown
     newbook_revenue: Optional[Decimal] = None
     manual_revenue: Optional[Decimal] = None
+    # Allowances (credits that improve GP if applied)
+    wastage_total: Optional[Decimal] = None  # Wastage logged in logbook
+    disputes_total: Optional[Decimal] = None  # Open disputes on invoices in this period
+    allowances_total: Optional[Decimal] = None  # wastage + disputes combined
+    gp_with_allowances: Optional[Decimal] = None  # GP% if allowances applied
 
 
 class DashboardResponse(BaseModel):
@@ -308,6 +316,8 @@ async def get_dashboard(
 
     async def calc_period_gp(start: date, end: date) -> GPReportResponse | None:
         from models.line_item import LineItem
+        from models.logbook import LogbookEntry, EntryType
+        from models.dispute import InvoiceDispute, DisputeStatus
         from sqlalchemy import or_
 
         # Manual revenue entries
@@ -352,11 +362,54 @@ async def get_dashboard(
         )
         costs = cost_result.scalar() or Decimal("0.00")
 
+        # Wastage total from logbook
+        wastage_result = await db.execute(
+            select(func.sum(LogbookEntry.total_cost))
+            .where(
+                LogbookEntry.kitchen_id == current_user.kitchen_id,
+                LogbookEntry.entry_date >= start,
+                LogbookEntry.entry_date <= end,
+                LogbookEntry.entry_type == EntryType.WASTAGE,
+                LogbookEntry.is_deleted == False
+            )
+        )
+        wastage_total = wastage_result.scalar() or Decimal("0.00")
+
+        # Open disputes total - based on invoice date, not dispute creation date
+        # These are potential credits that would reduce costs if resolved
+        open_statuses = [
+            DisputeStatus.NEW, DisputeStatus.OPEN, DisputeStatus.CONTACTED,
+            DisputeStatus.IN_PROGRESS, DisputeStatus.AWAITING_CREDIT,
+            DisputeStatus.AWAITING_REPLACEMENT, DisputeStatus.ESCALATED
+        ]
+        disputes_result = await db.execute(
+            select(func.sum(InvoiceDispute.difference_amount))
+            .join(Invoice, InvoiceDispute.invoice_id == Invoice.id)
+            .where(
+                InvoiceDispute.kitchen_id == current_user.kitchen_id,
+                Invoice.invoice_date >= start,
+                Invoice.invoice_date <= end,
+                InvoiceDispute.status.in_(open_statuses)
+            )
+        )
+        disputes_total = disputes_result.scalar() or Decimal("0.00")
+
         if revenue == 0 and costs == 0:
             return None
 
         gp_amount = revenue - costs
         gp_pct = (gp_amount / revenue * 100) if revenue > 0 else Decimal("0.00")
+
+        # Calculate GP with allowances (wastage + disputes as credits)
+        # Allowances = money that could be recovered/saved
+        # - Wastage: if not wasted, wouldn't have purchased
+        # - Disputes: credits expected from suppliers
+        allowances_total = wastage_total + disputes_total
+        gp_with_allowances = revenue - costs + allowances_total
+        gp_with_allowances_pct = (gp_with_allowances / revenue * 100) if revenue > 0 else Decimal("0.00")
+
+        # Only show allowances section if there are any
+        has_allowances = allowances_total > 0
 
         return GPReportResponse(
             start_date=start,
@@ -367,7 +420,11 @@ async def get_dashboard(
             gp_percentage=round(gp_pct, 2),
             category_breakdown={},
             newbook_revenue=newbook_revenue if newbook_revenue > 0 else None,
-            manual_revenue=manual_revenue if manual_revenue > 0 else None
+            manual_revenue=manual_revenue if manual_revenue > 0 else None,
+            wastage_total=wastage_total if wastage_total > 0 else None,
+            disputes_total=disputes_total if disputes_total > 0 else None,
+            allowances_total=allowances_total if has_allowances else None,
+            gp_with_allowances=round(gp_with_allowances_pct, 2) if has_allowances else None
         )
 
     # Recent invoices count (last 7 days)
@@ -936,6 +993,13 @@ class DateRangeGPResponse(BaseModel):
     gross_profit_percent: Decimal # (GP / Sales) * 100
     supplier_breakdown: list[SupplierBreakdown] = []
     gl_account_breakdown: list[GLAccountBreakdown] = []
+    # Allowances breakdown - logbook entry types
+    wastage_total: Optional[Decimal] = None  # Wastage entries
+    transfer_total: Optional[Decimal] = None  # Transfer entries
+    staff_food_total: Optional[Decimal] = None  # Staff food entries
+    manual_adjustment_total: Optional[Decimal] = None  # Manual adjustment entries
+    # Open disputes on invoices in this period
+    disputes_total: Optional[Decimal] = None
 
 
 @router.get("/gp/range", response_model=DateRangeGPResponse)
@@ -947,6 +1011,7 @@ async def get_gp_by_range(
 ):
     """Get GP calculation for a custom date range (inclusive)"""
     from models.line_item import LineItem
+    from models.logbook import LogbookEntry, EntryType
     from sqlalchemy import or_
 
     # Validate date range
@@ -1003,6 +1068,45 @@ async def get_gp_by_range(
         )
     )
     net_food_purchases = purchases_result.scalar() or Decimal("0.00")
+
+    # Get logbook entry totals by type
+    # Helper function to query a specific entry type
+    async def get_entry_type_total(entry_type: EntryType) -> Decimal:
+        result = await db.execute(
+            select(func.sum(LogbookEntry.total_cost))
+            .where(
+                LogbookEntry.kitchen_id == current_user.kitchen_id,
+                LogbookEntry.entry_date >= from_date,
+                LogbookEntry.entry_date <= to_date,
+                LogbookEntry.entry_type == entry_type,
+                LogbookEntry.is_deleted == False
+            )
+        )
+        return result.scalar() or Decimal("0.00")
+
+    wastage_total = await get_entry_type_total(EntryType.WASTAGE)
+    transfer_total = await get_entry_type_total(EntryType.TRANSFER)
+    staff_food_total = await get_entry_type_total(EntryType.STAFF_FOOD)
+    manual_adjustment_total = await get_entry_type_total(EntryType.MANUAL_ADJUSTMENT)
+
+    # Open disputes total - based on invoice date, not dispute creation date
+    from models.dispute import InvoiceDispute, DisputeStatus
+    open_statuses = [
+        DisputeStatus.NEW, DisputeStatus.OPEN, DisputeStatus.CONTACTED,
+        DisputeStatus.IN_PROGRESS, DisputeStatus.AWAITING_CREDIT,
+        DisputeStatus.AWAITING_REPLACEMENT, DisputeStatus.ESCALATED
+    ]
+    disputes_result = await db.execute(
+        select(func.sum(InvoiceDispute.difference_amount))
+        .join(Invoice, InvoiceDispute.invoice_id == Invoice.id)
+        .where(
+            InvoiceDispute.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= from_date,
+            Invoice.invoice_date <= to_date,
+            InvoiceDispute.status.in_(open_statuses)
+        )
+    )
+    disputes_total = disputes_result.scalar() or Decimal("0.00")
 
     # Calculate GP
     gross_profit = net_food_sales - net_food_purchases
@@ -1071,7 +1175,12 @@ async def get_gp_by_range(
         gross_profit=gross_profit,
         gross_profit_percent=round(gross_profit_percent, 1),
         supplier_breakdown=supplier_breakdown,
-        gl_account_breakdown=gl_breakdown
+        gl_account_breakdown=gl_breakdown,
+        wastage_total=wastage_total if wastage_total > 0 else None,
+        transfer_total=transfer_total if transfer_total > 0 else None,
+        staff_food_total=staff_food_total if staff_food_total > 0 else None,
+        manual_adjustment_total=manual_adjustment_total if manual_adjustment_total > 0 else None,
+        disputes_total=disputes_total if disputes_total > 0 else None
     )
 
 
@@ -1165,6 +1274,19 @@ async def get_daily_gp_data(
     )
     resos_stats = {stat.date: stat for stat in resos_daily.scalars().all()}
 
+    # Get Newbook occupancy data (total guests per night)
+    newbook_occupancy = await db.execute(
+        select(NewbookDailyOccupancy)
+        .where(
+            and_(
+                NewbookDailyOccupancy.kitchen_id == current_user.kitchen_id,
+                NewbookDailyOccupancy.date >= from_date,
+                NewbookDailyOccupancy.date <= to_date
+            )
+        )
+    )
+    occupancy_by_date = {occ.date: occ for occ in newbook_occupancy.scalars().all()}
+
     # Build daily data points for the entire range
     data_points = []
     current_date = from_date
@@ -1193,10 +1315,17 @@ async def get_daily_gp_data(
                     elif 'dinner' in period_name:
                         dinner_covers = covers
 
+        # Extract Newbook occupancy (total guests) if available
+        occupancy = None
+        if current_date in occupancy_by_date:
+            occ = occupancy_by_date[current_date]
+            occupancy = occ.total_guests
+
         data_points.append(DailyDataPoint(
             date=current_date,
             net_sales=net_sales,
             net_purchases=net_purchases,
+            occupancy=occupancy,
             lunch_covers=lunch_covers,
             dinner_covers=dinner_covers,
             total_covers=total_covers
@@ -1652,4 +1781,544 @@ async def get_top_sellers(
         ],
         total_charges_processed=total_processed,
         total_items_aggregated=len(combined_items)
+    )
+
+
+# ============ Purchases Report Endpoints ============
+
+class PurchasesSummaryResponse(BaseModel):
+    """Response for purchases summary"""
+    from_date: date
+    to_date: date
+    period_label: str
+    total_purchases: Decimal
+    supplier_breakdown: list[SupplierBreakdown]
+
+
+class DailySupplierDataPoint(BaseModel):
+    """Single data point for daily supplier chart"""
+    date: date
+    supplier_id: int | None
+    supplier_name: str
+    net_purchases: Decimal
+
+
+class DailySupplierChartResponse(BaseModel):
+    """Response for daily supplier chart"""
+    from_date: date
+    to_date: date
+    suppliers: list[str]  # Ordered list of supplier names for legend
+    data: list[DailySupplierDataPoint]
+
+
+class TopLineItem(BaseModel):
+    """Top line item by quantity or value"""
+    description: str
+    product_code: str | None
+    total_quantity: Decimal
+    total_value: Decimal
+    avg_unit_price: Decimal
+    occurrence_count: int
+
+
+class TopItemsResponse(BaseModel):
+    """Response for top line items"""
+    from_date: date
+    to_date: date
+    top_by_quantity: list[TopLineItem]
+    top_by_value: list[TopLineItem]
+
+
+@router.get("/purchases/summary", response_model=PurchasesSummaryResponse)
+async def get_purchases_summary(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get purchases summary with supplier breakdown for date range"""
+    from models.line_item import LineItem
+    from models.supplier import Supplier
+    from sqlalchemy import or_
+
+    # Validate date range
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Build period label
+    if from_date.year == to_date.year:
+        if from_date.month == to_date.month:
+            period_label = f"{from_date.strftime('%b %d')} - {to_date.strftime('%d, %Y')}"
+        else:
+            period_label = f"{from_date.strftime('%b %d')} - {to_date.strftime('%b %d, %Y')}"
+    else:
+        period_label = f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
+
+    # Get total purchases (stock items only from confirmed invoices)
+    total_result = await db.execute(
+        select(func.sum(LineItem.amount))
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
+        .where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= from_date,
+            Invoice.invoice_date <= to_date,
+            Invoice.status == InvoiceStatus.CONFIRMED,
+            LineItem.amount.isnot(None),
+            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
+        )
+    )
+    total_purchases = total_result.scalar() or Decimal("0.00")
+
+    # Get supplier breakdown
+    supplier_result = await db.execute(
+        select(Invoice.supplier_id, Supplier.name, func.sum(LineItem.amount))
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
+        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
+        .where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= from_date,
+            Invoice.invoice_date <= to_date,
+            Invoice.status == InvoiceStatus.CONFIRMED,
+            LineItem.amount.isnot(None),
+            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
+        )
+        .group_by(Invoice.supplier_id, Supplier.name)
+        .order_by(func.sum(LineItem.amount).desc())
+    )
+
+    supplier_breakdown = []
+    for supplier_id, supplier_name, total in supplier_result.all():
+        if total and total > 0:
+            pct = (total / total_purchases * 100) if total_purchases > 0 else Decimal("0")
+            supplier_breakdown.append(SupplierBreakdown(
+                supplier_id=supplier_id,
+                supplier_name=supplier_name or "Unmatched",
+                net_purchases=total,
+                percentage=round(pct, 1)
+            ))
+
+    return PurchasesSummaryResponse(
+        from_date=from_date,
+        to_date=to_date,
+        period_label=period_label,
+        total_purchases=total_purchases,
+        supplier_breakdown=supplier_breakdown
+    )
+
+
+@router.get("/purchases/daily-by-supplier", response_model=DailySupplierChartResponse)
+async def get_daily_purchases_by_supplier(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get daily purchases grouped by supplier for multi-line chart"""
+    from models.line_item import LineItem
+    from models.supplier import Supplier
+    from sqlalchemy import or_
+    from datetime import timedelta
+    from collections import defaultdict
+
+    # Validate date range
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Get daily purchases by supplier
+    daily_result = await db.execute(
+        select(Invoice.invoice_date, Invoice.supplier_id, Supplier.name, func.sum(LineItem.amount))
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
+        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
+        .where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= from_date,
+            Invoice.invoice_date <= to_date,
+            Invoice.status == InvoiceStatus.CONFIRMED,
+            LineItem.amount.isnot(None),
+            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
+        )
+        .group_by(Invoice.invoice_date, Invoice.supplier_id, Supplier.name)
+        .order_by(Invoice.invoice_date)
+    )
+
+    # Collect all supplier totals to determine top suppliers
+    supplier_totals: dict[str, Decimal] = defaultdict(Decimal)
+    daily_data: list[tuple] = []
+
+    for inv_date, supplier_id, supplier_name, total in daily_result.all():
+        name = supplier_name or "Unmatched"
+        supplier_totals[name] += total or Decimal("0")
+        daily_data.append((inv_date, supplier_id, name, total or Decimal("0")))
+
+    # Get top 10 suppliers by total purchases
+    top_suppliers = sorted(supplier_totals.keys(), key=lambda x: supplier_totals[x], reverse=True)[:10]
+
+    # Build data points for top suppliers only
+    data_points = []
+    for inv_date, supplier_id, supplier_name, total in daily_data:
+        if supplier_name in top_suppliers:
+            data_points.append(DailySupplierDataPoint(
+                date=inv_date,
+                supplier_id=supplier_id,
+                supplier_name=supplier_name,
+                net_purchases=total
+            ))
+
+    return DailySupplierChartResponse(
+        from_date=from_date,
+        to_date=to_date,
+        suppliers=top_suppliers,
+        data=data_points
+    )
+
+
+@router.get("/purchases/top-items", response_model=TopItemsResponse)
+async def get_top_purchase_items(
+    from_date: date,
+    to_date: date,
+    limit: int = 10,
+    supplier_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get top line items by quantity and value, optionally filtered by supplier"""
+    from models.line_item import LineItem
+    from sqlalchemy import or_
+
+    # Validate date range
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Build base query
+    query = (
+        select(
+            LineItem.description,
+            LineItem.product_code,
+            func.sum(LineItem.quantity).label('total_qty'),
+            func.sum(LineItem.amount).label('total_value'),
+            func.avg(LineItem.unit_price).label('avg_price'),
+            func.count(LineItem.id).label('occurrence_count')
+        )
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
+        .where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= from_date,
+            Invoice.invoice_date <= to_date,
+            Invoice.status == InvoiceStatus.CONFIRMED,
+            LineItem.amount.isnot(None),
+            LineItem.description.isnot(None),
+            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
+        )
+    )
+
+    # Add supplier filter if specified
+    if supplier_id is not None:
+        query = query.where(Invoice.supplier_id == supplier_id)
+
+    query = query.group_by(LineItem.description, LineItem.product_code)
+
+    items_result = await db.execute(query)
+
+    all_items = []
+    for row in items_result.all():
+        desc, prod_code, total_qty, total_value, avg_price, count = row
+        if total_qty and total_qty > 0:
+            all_items.append({
+                "description": desc or "Unknown",
+                "product_code": prod_code,
+                "total_quantity": total_qty,
+                "total_value": total_value or Decimal("0"),
+                "avg_unit_price": avg_price or Decimal("0"),
+                "occurrence_count": count
+            })
+
+    # Sort by quantity
+    top_by_qty = sorted(all_items, key=lambda x: x["total_quantity"], reverse=True)[:limit]
+
+    # Sort by value
+    top_by_value = sorted(all_items, key=lambda x: x["total_value"], reverse=True)[:limit]
+
+    return TopItemsResponse(
+        from_date=from_date,
+        to_date=to_date,
+        top_by_quantity=[
+            TopLineItem(
+                description=item["description"],
+                product_code=item["product_code"],
+                total_quantity=item["total_quantity"],
+                total_value=item["total_value"],
+                avg_unit_price=round(item["avg_unit_price"], 2),
+                occurrence_count=item["occurrence_count"]
+            )
+            for item in top_by_qty
+        ],
+        top_by_value=[
+            TopLineItem(
+                description=item["description"],
+                product_code=item["product_code"],
+                total_quantity=item["total_quantity"],
+                total_value=item["total_value"],
+                avg_unit_price=round(item["avg_unit_price"], 2),
+                occurrence_count=item["occurrence_count"]
+            )
+            for item in top_by_value
+        ]
+    )
+
+
+# ============ Allowances Report Endpoints ============
+
+class AllowancesSummaryResponse(BaseModel):
+    """Response for allowances summary"""
+    from_date: date
+    to_date: date
+    period_label: str
+    wastage_total: Decimal
+    wastage_count: int
+    transfer_total: Decimal
+    transfer_count: int
+    staff_food_total: Decimal
+    staff_food_count: int
+    manual_adjustment_total: Decimal
+    manual_adjustment_count: int
+    total_allowances: Decimal
+
+
+class DailyAllowanceDataPoint(BaseModel):
+    """Single data point for daily allowances chart"""
+    date: date
+    wastage: Decimal
+    transfer: Decimal
+    staff_food: Decimal
+    manual_adjustment: Decimal
+
+
+class DailyAllowanceChartResponse(BaseModel):
+    """Response for daily allowances chart"""
+    from_date: date
+    to_date: date
+    data: list[DailyAllowanceDataPoint]
+
+
+class DisputeTallyRow(BaseModel):
+    """Single row in dispute tally"""
+    label: str
+    count: int
+    difference_value: Decimal
+
+
+class DisputesSummaryResponse(BaseModel):
+    """Response for disputes period summary"""
+    from_date: date
+    to_date: date
+    period_label: str
+    rows: list[DisputeTallyRow]
+
+
+@router.get("/allowances/summary", response_model=AllowancesSummaryResponse)
+async def get_allowances_summary(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get allowances summary by entry type"""
+    from models.logbook import LogbookEntry, EntryType
+
+    # Validate date range
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Build period label
+    if from_date.year == to_date.year:
+        if from_date.month == to_date.month:
+            period_label = f"{from_date.strftime('%b %d')} - {to_date.strftime('%d, %Y')}"
+        else:
+            period_label = f"{from_date.strftime('%b %d')} - {to_date.strftime('%b %d, %Y')}"
+    else:
+        period_label = f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
+
+    # Helper to get total and count for entry type
+    async def get_entry_stats(entry_type: EntryType) -> tuple[Decimal, int]:
+        total_result = await db.execute(
+            select(func.sum(LogbookEntry.total_cost), func.count(LogbookEntry.id))
+            .where(
+                LogbookEntry.kitchen_id == current_user.kitchen_id,
+                LogbookEntry.entry_date >= from_date,
+                LogbookEntry.entry_date <= to_date,
+                LogbookEntry.entry_type == entry_type,
+                LogbookEntry.is_deleted == False
+            )
+        )
+        row = total_result.one()
+        return (row[0] or Decimal("0.00"), row[1] or 0)
+
+    wastage_total, wastage_count = await get_entry_stats(EntryType.WASTAGE)
+    transfer_total, transfer_count = await get_entry_stats(EntryType.TRANSFER)
+    staff_food_total, staff_food_count = await get_entry_stats(EntryType.STAFF_FOOD)
+    manual_adj_total, manual_adj_count = await get_entry_stats(EntryType.MANUAL_ADJUSTMENT)
+
+    total_allowances = wastage_total + transfer_total + staff_food_total + manual_adj_total
+
+    return AllowancesSummaryResponse(
+        from_date=from_date,
+        to_date=to_date,
+        period_label=period_label,
+        wastage_total=wastage_total,
+        wastage_count=wastage_count,
+        transfer_total=transfer_total,
+        transfer_count=transfer_count,
+        staff_food_total=staff_food_total,
+        staff_food_count=staff_food_count,
+        manual_adjustment_total=manual_adj_total,
+        manual_adjustment_count=manual_adj_count,
+        total_allowances=total_allowances
+    )
+
+
+@router.get("/allowances/daily", response_model=DailyAllowanceChartResponse)
+async def get_daily_allowances(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get daily allowances breakdown by type for chart"""
+    from models.logbook import LogbookEntry, EntryType
+    from datetime import timedelta
+    from collections import defaultdict
+
+    # Validate date range
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Get all entries grouped by date and type
+    result = await db.execute(
+        select(LogbookEntry.entry_date, LogbookEntry.entry_type, func.sum(LogbookEntry.total_cost))
+        .where(
+            LogbookEntry.kitchen_id == current_user.kitchen_id,
+            LogbookEntry.entry_date >= from_date,
+            LogbookEntry.entry_date <= to_date,
+            LogbookEntry.is_deleted == False
+        )
+        .group_by(LogbookEntry.entry_date, LogbookEntry.entry_type)
+    )
+
+    # Build lookup by date and type
+    daily_data: dict[date, dict[str, Decimal]] = defaultdict(lambda: {
+        "wastage": Decimal("0"),
+        "transfer": Decimal("0"),
+        "staff_food": Decimal("0"),
+        "manual_adjustment": Decimal("0")
+    })
+
+    for entry_date, entry_type, total in result.all():
+        type_key = entry_type.value.lower()
+        daily_data[entry_date][type_key] = total or Decimal("0")
+
+    # Build data points for full date range
+    data_points = []
+    current_date = from_date
+    while current_date <= to_date:
+        day_data = daily_data.get(current_date, {
+            "wastage": Decimal("0"),
+            "transfer": Decimal("0"),
+            "staff_food": Decimal("0"),
+            "manual_adjustment": Decimal("0")
+        })
+        data_points.append(DailyAllowanceDataPoint(
+            date=current_date,
+            wastage=day_data["wastage"],
+            transfer=day_data["transfer"],
+            staff_food=day_data["staff_food"],
+            manual_adjustment=day_data["manual_adjustment"]
+        ))
+        current_date += timedelta(days=1)
+
+    return DailyAllowanceChartResponse(
+        from_date=from_date,
+        to_date=to_date,
+        data=data_points
+    )
+
+
+@router.get("/disputes/period-summary", response_model=DisputesSummaryResponse)
+async def get_disputes_period_summary(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get disputes summary for cases opened in period (by invoice date)"""
+    from models.dispute import InvoiceDispute, DisputeStatus
+
+    # Validate date range
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Build period label
+    if from_date.year == to_date.year:
+        if from_date.month == to_date.month:
+            period_label = f"{from_date.strftime('%b %d')} - {to_date.strftime('%d, %Y')}"
+        else:
+            period_label = f"{from_date.strftime('%b %d')} - {to_date.strftime('%b %d, %Y')}"
+    else:
+        period_label = f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
+
+    # Base query - disputes where invoice_date falls in period
+    base_query = (
+        select(func.count(InvoiceDispute.id), func.sum(InvoiceDispute.difference_amount))
+        .join(Invoice, InvoiceDispute.invoice_id == Invoice.id)
+        .where(
+            InvoiceDispute.kitchen_id == current_user.kitchen_id,
+            Invoice.invoice_date >= from_date,
+            Invoice.invoice_date <= to_date
+        )
+    )
+
+    # Total cases
+    total_result = await db.execute(base_query)
+    total_row = total_result.one()
+    total_count = total_row[0] or 0
+    total_value = total_row[1] or Decimal("0")
+
+    # Resolved cases
+    resolved_result = await db.execute(
+        base_query.where(InvoiceDispute.status == DisputeStatus.RESOLVED)
+    )
+    resolved_row = resolved_result.one()
+    resolved_count = resolved_row[0] or 0
+    resolved_value = resolved_row[1] or Decimal("0")
+
+    # Closed cases
+    closed_result = await db.execute(
+        base_query.where(InvoiceDispute.status == DisputeStatus.CLOSED)
+    )
+    closed_row = closed_result.one()
+    closed_count = closed_row[0] or 0
+    closed_value = closed_row[1] or Decimal("0")
+
+    # Still open cases
+    open_statuses = [
+        DisputeStatus.NEW, DisputeStatus.OPEN, DisputeStatus.CONTACTED,
+        DisputeStatus.IN_PROGRESS, DisputeStatus.AWAITING_CREDIT,
+        DisputeStatus.AWAITING_REPLACEMENT, DisputeStatus.ESCALATED
+    ]
+    open_result = await db.execute(
+        base_query.where(InvoiceDispute.status.in_(open_statuses))
+    )
+    open_row = open_result.one()
+    open_count = open_row[0] or 0
+    open_value = open_row[1] or Decimal("0")
+
+    return DisputesSummaryResponse(
+        from_date=from_date,
+        to_date=to_date,
+        period_label=period_label,
+        rows=[
+            DisputeTallyRow(label="Total Cases", count=total_count, difference_value=total_value),
+            DisputeTallyRow(label="Resolved", count=resolved_count, difference_value=resolved_value),
+            DisputeTallyRow(label="Closed", count=closed_count, difference_value=closed_value),
+            DisputeTallyRow(label="Still Open", count=open_count, difference_value=open_value)
+        ]
     )

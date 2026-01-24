@@ -26,6 +26,8 @@ interface DisputeAttachment {
   description: string | null
   uploaded_at: string
   uploaded_by_username: string | null
+  public_hash: string | null
+  public_url: string | null
 }
 
 interface DisputeActivity {
@@ -108,6 +110,10 @@ export default function DisputeDetailModal({ disputeId, onClose, onUpdate }: Dis
   const [isEditing, setIsEditing] = useState(false)
   const [editedTitle, setEditedTitle] = useState('')
   const [editedDescription, setEditedDescription] = useState('')
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadDescription, setUploadDescription] = useState<string>('')
+  const [isUploading, setIsUploading] = useState(false)
+  const [copiedHash, setCopiedHash] = useState<string | null>(null)
 
   const { data: dispute, isLoading, error } = useQuery<DisputeDetail>({
     queryKey: ['dispute', disputeId],
@@ -218,6 +224,79 @@ export default function DisputeDetailModal({ disputeId, onClose, onUpdate }: Dis
       description: editedDescription.trim() || undefined
     } as any)
     setIsEditing(false)
+  }
+
+  const handleUploadAttachment = async () => {
+    if (!uploadFile) {
+      alert('Please select a file')
+      return
+    }
+
+    setIsUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', uploadFile)
+
+      const params = new URLSearchParams()
+      params.append('attachment_type', 'photo')  // Default to photo
+      if (uploadDescription.trim()) {
+        params.append('description', uploadDescription.trim())
+      }
+
+      const res = await fetch(`/api/disputes/${disputeId}/attachments?${params}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to upload attachment')
+      }
+
+      // Refresh dispute data
+      queryClient.invalidateQueries({ queryKey: ['dispute', disputeId] })
+      if (onUpdate) onUpdate()
+
+      // Reset form
+      setUploadFile(null)
+      setUploadDescription('')
+      setShowUploadAttachment(false)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const copyPublicLink = (att: DisputeAttachment) => {
+    if (!att.public_url) return
+
+    // Build full URL
+    const fullUrl = `${window.location.origin}${att.public_url}`
+
+    navigator.clipboard.writeText(fullUrl).then(() => {
+      setCopiedHash(att.public_hash)
+      setTimeout(() => setCopiedHash(null), 2000)
+    }).catch(() => {
+      // Fallback for older browsers
+      const textarea = document.createElement('textarea')
+      textarea.value = fullUrl
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+      setCopiedHash(att.public_hash)
+      setTimeout(() => setCopiedHash(null), 2000)
+    })
+  }
+
+  const viewAttachment = (att: DisputeAttachment) => {
+    if (att.public_url) {
+      window.open(att.public_url, '_blank')
+    }
   }
 
   if (isLoading) {
@@ -454,23 +533,91 @@ export default function DisputeDetailModal({ disputeId, onClose, onUpdate }: Dis
             </div>
             {showUploadAttachment && (
               <div style={styles.uploadSection}>
-                <p style={styles.metadata}>Attachment upload coming soon...</p>
+                <div style={styles.uploadForm}>
+                  <div style={styles.formGroup}>
+                    <input
+                      type="file"
+                      onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                      accept="image/*,.pdf,.doc,.docx,.eml,.msg"
+                      style={styles.fileInput}
+                    />
+                    {uploadFile && (
+                      <span style={styles.selectedFile}>
+                        Selected: {uploadFile.name} ({(uploadFile.size / 1024).toFixed(1)} KB)
+                      </span>
+                    )}
+                  </div>
+                  <div style={styles.formGroup}>
+                    <input
+                      type="text"
+                      value={uploadDescription}
+                      onChange={(e) => setUploadDescription(e.target.value)}
+                      placeholder="Description (optional)"
+                      style={styles.input}
+                    />
+                  </div>
+                  <button
+                    onClick={handleUploadAttachment}
+                    disabled={!uploadFile || isUploading}
+                    style={{
+                      ...styles.primaryBtn,
+                      opacity: !uploadFile || isUploading ? 0.6 : 1,
+                    }}
+                  >
+                    {isUploading ? 'Uploading...' : 'Upload'}
+                  </button>
+                </div>
               </div>
             )}
             {dispute.attachments.length === 0 ? (
-              <p style={styles.empty}>No attachments yet</p>
+              <p style={styles.empty}>No attachments yet. Upload photos of damaged items to share with suppliers.</p>
             ) : (
               <div style={styles.attachmentList}>
                 {dispute.attachments.map((att) => (
                   <div key={att.id} style={styles.attachmentItem}>
-                    <span style={styles.attachmentName}>📎 {att.file_name}</span>
-                    <span style={styles.attachmentMeta}>
-                      {(att.file_size_bytes / 1024).toFixed(1)} KB -
-                      {new Date(att.uploaded_at).toLocaleDateString()} by {att.uploaded_by_username || 'Unknown'}
-                    </span>
+                    <div style={styles.attachmentInfo}>
+                      <span style={styles.attachmentName}>
+                        {att.file_type.startsWith('image/') ? '🖼️' : '📎'} {att.file_name}
+                      </span>
+                      <span style={styles.attachmentMeta}>
+                        {(att.file_size_bytes / 1024).toFixed(1)} KB •
+                        {new Date(att.uploaded_at).toLocaleDateString()} by {att.uploaded_by_username || 'Unknown'}
+                      </span>
+                      {att.description && (
+                        <span style={styles.attachmentDesc}>{att.description}</span>
+                      )}
+                    </div>
+                    <div style={styles.attachmentActions}>
+                      {att.public_url && (
+                        <>
+                          <button
+                            onClick={() => viewAttachment(att)}
+                            style={styles.actionBtn}
+                            title="View in new tab"
+                          >
+                            View
+                          </button>
+                          <button
+                            onClick={() => copyPublicLink(att)}
+                            style={{
+                              ...styles.actionBtn,
+                              background: copiedHash === att.public_hash ? '#5cb85c' : '#e94560',
+                            }}
+                            title="Copy shareable link for email"
+                          >
+                            {copiedHash === att.public_hash ? 'Copied!' : 'Copy Link'}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
+            )}
+            {dispute.attachments.length > 0 && (
+              <p style={styles.attachmentHint}>
+                Use "Copy Link" to get a shareable URL that can be included in emails to suppliers.
+              </p>
             )}
           </div>
 
@@ -921,5 +1068,64 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#f9f9f9',
     borderRadius: '8px',
     marginBottom: '1rem',
+  },
+  uploadForm: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '1rem',
+  },
+  formGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+  },
+  fileInput: {
+    padding: '0.5rem',
+    border: '2px dashed #ccc',
+    borderRadius: '8px',
+    background: 'white',
+    cursor: 'pointer',
+  },
+  selectedFile: {
+    fontSize: '0.85rem',
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  attachmentInfo: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.25rem',
+  },
+  attachmentDesc: {
+    fontSize: '0.8rem',
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  attachmentActions: {
+    display: 'flex',
+    gap: '0.5rem',
+    flexShrink: 0,
+  },
+  actionBtn: {
+    padding: '0.4rem 0.75rem',
+    borderRadius: '6px',
+    border: 'none',
+    background: '#e94560',
+    color: 'white',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    fontWeight: '500',
+    whiteSpace: 'nowrap',
+    transition: 'background 0.2s',
+  },
+  attachmentHint: {
+    marginTop: '1rem',
+    padding: '0.75rem',
+    background: '#e8f4f8',
+    borderRadius: '6px',
+    fontSize: '0.85rem',
+    color: '#0c5460',
+    fontStyle: 'italic',
   },
 }

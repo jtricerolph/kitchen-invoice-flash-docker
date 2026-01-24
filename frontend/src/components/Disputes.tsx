@@ -92,7 +92,7 @@ export default function Disputes() {
   // Client-side filter for "not_resolved" - show all except resolved
   let disputes = data?.disputes || []
   if (statusFilter === 'not_resolved') {
-    disputes = disputes.filter(d => d.status !== 'resolved')
+    disputes = disputes.filter(d => d.status.toUpperCase() !== 'RESOLVED')
   }
 
   // Auto-open dispute modal if invoice_id is in URL params

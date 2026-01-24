@@ -192,6 +192,16 @@ def generate_dext_email_html(
     if include_non_stock:
         non_stock_items = [item for item in line_items if item.is_non_stock]
         if non_stock_items:
+            # Add PDF highlight notification
+            html += """
+            <div style="background: #fffbcc; padding: 15px; margin: 20px 0; border-left: 4px solid #ffa500;">
+                <p style="margin: 0; font-weight: bold;">
+                    📄 The attached PDF has been enhanced with
+                    <span style="background: yellow; padding: 2px 6px;">yellow highlights</span>
+                    on all non-stock items for easy identification.
+                </p>
+            </div>
+            """
             html += """
             <h4>Non-Stock Items:</h4>
             <table>

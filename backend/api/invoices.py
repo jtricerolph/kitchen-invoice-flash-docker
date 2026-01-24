@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 import logging
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -152,6 +152,12 @@ class InvoiceResponse(BaseModel):
     dispute_count: int = 0
     has_open_disputes: bool = False
     disputes: list[dict] = []
+    disputed_line_item_ids: list[int] = []  # Line item IDs that are part of a dispute
+    # Source tracking fields
+    source: str = "upload"
+    source_reference: str | None = None
+    # Linked dispute (for credit notes)
+    linked_dispute_id: int | None = None
 
     class Config:
         from_attributes = True
@@ -342,7 +348,8 @@ def invoice_to_response(
     line_items: list | None = None,
     dispute_count: int = 0,
     has_open_disputes: bool = False,
-    disputes: list[dict] = None
+    disputes: list[dict] = None,
+    disputed_line_item_ids: list[int] = None
 ) -> InvoiceResponse:
     from sqlalchemy import inspect
 
@@ -395,7 +402,13 @@ def invoice_to_response(
         # Dispute tracking
         dispute_count=dispute_count,
         has_open_disputes=has_open_disputes,
-        disputes=disputes or []
+        disputes=disputes or [],
+        disputed_line_item_ids=disputed_line_item_ids or [],
+        # Source tracking
+        source=invoice.source or "upload",
+        source_reference=invoice.source_reference,
+        # Linked dispute (for credit notes)
+        linked_dispute_id=invoice.linked_dispute_id
     )
 
 
@@ -1003,9 +1016,11 @@ async def get_invoice(
     # Query disputes for this invoice
     from models.dispute import InvoiceDispute, DisputeStatus
 
-    # Fetch all disputes for this invoice
+    # Fetch all disputes for this invoice (with line_items for disputed line item IDs)
     result = await db.execute(
-        select(InvoiceDispute).where(
+        select(InvoiceDispute).options(
+            selectinload(InvoiceDispute.line_items)
+        ).where(
             InvoiceDispute.invoice_id == invoice_id
         ).order_by(InvoiceDispute.opened_at.desc())
     )
@@ -1016,6 +1031,13 @@ async def get_invoice(
         d.status in [DisputeStatus.NEW, DisputeStatus.CONTACTED, DisputeStatus.AWAITING_CREDIT, DisputeStatus.AWAITING_REPLACEMENT]
         for d in disputes_list
     )
+
+    # Collect disputed line item IDs from all disputes
+    disputed_line_item_ids = []
+    for d in disputes_list:
+        for dli in d.line_items:
+            if dli.invoice_line_item_id and dli.invoice_line_item_id not in disputed_line_item_ids:
+                disputed_line_item_ids.append(dli.invoice_line_item_id)
 
     # Format disputes for response
     disputes = [
@@ -1030,7 +1052,7 @@ async def get_invoice(
         for d in disputes_list
     ]
 
-    return invoice_to_response(invoice, dispute_count=dispute_count, has_open_disputes=has_open_disputes, disputes=disputes)
+    return invoice_to_response(invoice, dispute_count=dispute_count, has_open_disputes=has_open_disputes, disputes=disputes, disputed_line_item_ids=disputed_line_item_ids)
 
 
 @router.get("/{invoice_id}/image")
@@ -1309,6 +1331,56 @@ async def update_invoice(
 
             await db.commit()
 
+    # Auto-update PDF highlights/notes overlay when notes change (if annotations enabled)
+    if "notes" in update_data:
+        try:
+            from services.pdf_highlighter import PDFHighlighter, parse_azure_ocr_line_items
+            from sqlalchemy.orm import selectinload
+            from models.settings import KitchenSettings
+            import json
+
+            # Check if PDF annotations are enabled in settings
+            settings_result = await db.execute(
+                select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+
+            if settings and settings.pdf_annotations_enabled:
+                # Load full invoice with all line items and OCR data
+                invoice_result = await db.execute(
+                    select(Invoice).options(
+                        selectinload(Invoice.line_items)
+                    ).where(Invoice.id == invoice_id)
+                )
+                full_invoice = invoice_result.scalar_one_or_none()
+
+                if full_invoice and full_invoice.ocr_raw_json and os.path.exists(full_invoice.image_path):
+                    ocr_data = json.loads(full_invoice.ocr_raw_json)
+                    ocr_line_items = parse_azure_ocr_line_items(ocr_data)
+
+                    if ocr_line_items:
+                        non_stock_items = [item for item in full_invoice.line_items if item.is_non_stock]
+
+                        # Create backup if doesn't exist (safety measure)
+                        import shutil
+                        backup_path = full_invoice.image_path + '.original'
+                        if not os.path.exists(backup_path):
+                            shutil.copy2(full_invoice.image_path, backup_path)
+
+                        # Regenerate all highlights/notes (clears existing annotations first)
+                        highlighter = PDFHighlighter(full_invoice.image_path)
+                        highlighter.highlight_items_with_ocr_data(
+                            ocr_line_items=ocr_line_items,
+                            non_stock_line_items=non_stock_items,
+                            output_path=full_invoice.image_path,
+                            notes=full_invoice.notes,
+                            ocr_data=ocr_data
+                        )
+                        logger.info(f"Auto-updated PDF notes overlay: notes={'updated' if full_invoice.notes else 'cleared'}")
+
+        except Exception as e:
+            logger.warning(f"Failed to auto-update PDF notes overlay: {e}")
+
     return invoice_to_response(invoice)
 
 
@@ -1573,6 +1645,56 @@ async def update_line_item(
 
     await db.commit()
     await db.refresh(line_item)
+
+    # Auto-update PDF highlights when is_non_stock status changes (if annotations enabled)
+    if "is_non_stock" in update_data:
+        try:
+            from services.pdf_highlighter import PDFHighlighter, parse_azure_ocr_line_items
+            from sqlalchemy.orm import selectinload
+            from models.settings import KitchenSettings
+            import json
+
+            # Check if PDF annotations are enabled in settings
+            settings_result = await db.execute(
+                select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+
+            if settings and settings.pdf_annotations_enabled:
+                # Load full invoice with all line items and OCR data
+                invoice_result = await db.execute(
+                    select(Invoice).options(
+                        selectinload(Invoice.line_items)
+                    ).where(Invoice.id == invoice_id)
+                )
+                invoice = invoice_result.scalar_one_or_none()
+
+                if invoice and invoice.ocr_raw_json and os.path.exists(invoice.image_path):
+                    ocr_data = json.loads(invoice.ocr_raw_json)
+                    ocr_line_items = parse_azure_ocr_line_items(ocr_data)
+
+                    if ocr_line_items:
+                        non_stock_items = [item for item in invoice.line_items if item.is_non_stock]
+
+                        # Create backup if doesn't exist (safety measure)
+                        import shutil
+                        backup_path = invoice.image_path + '.original'
+                        if not os.path.exists(backup_path):
+                            shutil.copy2(invoice.image_path, backup_path)
+
+                        # Regenerate all highlights (clears existing, adds for current non-stock items)
+                        highlighter = PDFHighlighter(invoice.image_path)
+                        highlighter.highlight_items_with_ocr_data(
+                            ocr_line_items=ocr_line_items,
+                            non_stock_line_items=non_stock_items,
+                            output_path=invoice.image_path,
+                            notes=invoice.notes,
+                            ocr_data=ocr_data
+                        )
+                        logger.info(f"Auto-updated PDF highlights: {len(non_stock_items)} non-stock items")
+
+        except Exception as e:
+            logger.warning(f"Failed to auto-update PDF highlights: {e}")
 
     return LineItemResponse(
         id=line_item.id,
@@ -2272,7 +2394,49 @@ async def send_invoice_to_dext(
     if not os.path.exists(invoice.image_path):
         raise HTTPException(status_code=404, detail="Invoice file not found")
 
-    # Read file
+    # Update PDF highlights for non-stock items (if annotations are enabled in settings)
+    # Highlights are annotations (overlays) - not burnt in - so can be updated anytime
+    if settings.dext_include_annotations:
+        try:
+            from services.pdf_highlighter import PDFHighlighter, parse_azure_ocr_line_items
+            import json
+
+            # Parse OCR JSON to get line items with bounding regions
+            ocr_data = json.loads(invoice.ocr_raw_json) if invoice.ocr_raw_json else {}
+            ocr_line_items = parse_azure_ocr_line_items(ocr_data)
+
+            if ocr_line_items:
+                non_stock_items = [item for item in invoice.line_items if item.is_non_stock]
+
+                # Create backup if doesn't exist (safety measure)
+                import shutil
+                backup_path = invoice.image_path + '.original'
+                if not os.path.exists(backup_path):
+                    shutil.copy2(invoice.image_path, backup_path)
+
+                # Regenerate highlights (clears existing, adds current non-stock items)
+                highlighter = PDFHighlighter(invoice.image_path)
+                highlighter.highlight_items_with_ocr_data(
+                    ocr_line_items=ocr_line_items,
+                    non_stock_line_items=non_stock_items,
+                    output_path=invoice.image_path,
+                    notes=invoice.notes,
+                    ocr_data=ocr_data
+                )
+
+                if non_stock_items:
+                    logger.info(f"Updated PDF with {len(non_stock_items)} highlighted non-stock items")
+                else:
+                    logger.info("Cleared all highlights from PDF (no non-stock items)")
+            else:
+                logger.debug("No OCR line item data available for highlighting")
+
+        except Exception as e:
+            logger.warning(f"PDF highlighting failed, using original: {e}")
+    else:
+        logger.info("PDF annotations disabled in settings, skipping highlights")
+
+    # Read file (now contains highlights if successful)
     try:
         with open(invoice.image_path, 'rb') as f:
             file_bytes = f.read()
@@ -2318,6 +2482,107 @@ async def send_invoice_to_dext(
         "sent_at": invoice.dext_sent_at.isoformat(),
         "sent_to": settings.dext_email
     }
+
+
+# ============ PDF Highlighting Endpoint ============
+
+@router.post("/{invoice_id}/regenerate-highlights")
+async def regenerate_highlights(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Regenerate PDF highlights for non-stock items.
+
+    Clears any existing highlights and adds new ones for current non-stock items.
+    Useful for testing or manually triggering highlight updates.
+    """
+    from sqlalchemy.orm import selectinload
+    from models.settings import KitchenSettings
+    import json
+
+    # Check if PDF annotations are enabled in settings
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+    if not settings or not settings.pdf_annotations_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF annotations are disabled in settings. Enable them first to regenerate highlights."
+        )
+
+    # Load invoice with line items
+    result = await db.execute(
+        select(Invoice).options(
+            selectinload(Invoice.line_items)
+        ).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Check file exists
+    if not os.path.exists(invoice.image_path):
+        raise HTTPException(status_code=404, detail="Invoice file not found")
+
+    # Check OCR data exists
+    if not invoice.ocr_raw_json:
+        raise HTTPException(status_code=400, detail="No OCR data available for this invoice")
+
+    try:
+        from services.pdf_highlighter import PDFHighlighter, parse_azure_ocr_line_items
+
+        # Parse OCR JSON using Azure format parser
+        ocr_data = json.loads(invoice.ocr_raw_json)
+        ocr_line_items = parse_azure_ocr_line_items(ocr_data)
+
+        if not ocr_line_items:
+            raise HTTPException(status_code=400, detail="No line items with bounding regions in OCR data")
+
+        # Get non-stock items
+        non_stock_items = [item for item in invoice.line_items if item.is_non_stock]
+
+        import shutil
+
+        # Create backup of original if it doesn't exist (safety measure)
+        original_backup = invoice.image_path + '.original'
+        if not os.path.exists(original_backup):
+            shutil.copy2(invoice.image_path, original_backup)
+            logger.info(f"Created original backup: {original_backup}")
+        else:
+            # Restore from backup first to clear any burnt-in content
+            shutil.copy2(original_backup, invoice.image_path)
+            logger.info(f"Restored from original backup before regenerating highlights")
+
+        # Regenerate highlights
+        highlighter = PDFHighlighter(invoice.image_path)
+        result_path = highlighter.highlight_items_with_ocr_data(
+            ocr_line_items=ocr_line_items,
+            non_stock_line_items=non_stock_items,
+            output_path=invoice.image_path,
+            notes=invoice.notes,
+            ocr_data=ocr_data
+        )
+
+        return {
+            "message": "Highlights regenerated successfully",
+            "non_stock_count": len(non_stock_items),
+            "ocr_line_items_count": len(ocr_line_items),
+            "has_notes": bool(invoice.notes),
+            "pdf_path": result_path
+        }
+
+    except ImportError as e:
+        logger.error(f"PyMuPDF not installed: {e}")
+        raise HTTPException(status_code=500, detail="PDF highlighting library not installed. Run: pip install PyMuPDF")
+    except Exception as e:
+        logger.error(f"Highlight regeneration failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to regenerate highlights: {str(e)}")
 
 
 # ============ Admin Manual Control Endpoints ============

@@ -107,7 +107,7 @@ class InvoiceDispute(Base):
 
     # Relationships
     kitchen: Mapped["Kitchen"] = relationship("Kitchen", back_populates="invoice_disputes")
-    invoice: Mapped["Invoice"] = relationship("Invoice", back_populates="disputes")
+    invoice: Mapped["Invoice"] = relationship("Invoice", back_populates="disputes", foreign_keys=[invoice_id])
     opened_by_user: Mapped["User"] = relationship("User", foreign_keys=[opened_by])
     resolved_by_user: Mapped["User"] = relationship("User", foreign_keys=[resolved_by])
     closed_by_user: Mapped["User"] = relationship("User", foreign_keys=[closed_by])
@@ -175,6 +175,9 @@ class DisputeAttachment(Base):
     # Categorization
     attachment_type: Mapped[str] = mapped_column(String(50), nullable=False)  # photo, email, delivery_note, credit_note, other
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Public sharing - hash for unauthenticated access (e.g., email to suppliers)
+    public_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
 
     # File storage (following Invoice model pattern)
     file_storage_location: Mapped[str] = mapped_column(String(20), default="local")  # "local" or "nextcloud"

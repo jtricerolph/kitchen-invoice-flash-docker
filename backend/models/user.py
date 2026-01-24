@@ -55,6 +55,16 @@ class Kitchen(Base):
         "InvoiceDispute", back_populates="kitchen", cascade="all, delete-orphan"
     )
 
+    # Logbook relationships
+    logbook_entries: Mapped[list["LogbookEntry"]] = relationship(
+        "LogbookEntry", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+
+    # Email processing logs (IMAP inbox sync)
+    email_processing_logs: Mapped[list["EmailProcessingLog"]] = relationship(
+        "EmailProcessingLog", back_populates="kitchen", cascade="all, delete-orphan"
+    )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -80,3 +90,5 @@ from .settings import KitchenSettings
 from .newbook import NewbookGLAccount, NewbookDailyRevenue, NewbookDailyOccupancy, NewbookSyncLog, NewbookRoomCategory
 from .resos import ResosBooking, ResosDailyStats, ResosOpeningHour, ResosSyncLog
 from .dispute import InvoiceDispute
+from .logbook import LogbookEntry
+from .email_processing import EmailProcessingLog

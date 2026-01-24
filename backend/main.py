@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -23,11 +23,18 @@ from migrations.add_price_settings import run_migration as run_price_settings_mi
 from migrations.add_resos_integration import run_migration as run_resos_migration
 from migrations.add_calendar_events import run_migration as run_calendar_events_migration
 from migrations.add_resos_upcoming_sync import run_migration as run_resos_upcoming_sync_migration
+from migrations.add_newbook_upcoming_sync import run_migration as run_newbook_upcoming_sync_migration
 from migrations.add_residents_table_chart import run_migration as run_residents_table_chart_migration
 from migrations.add_rooms_breakdown import run_migration as run_rooms_breakdown_migration
 from migrations.add_invoice_disputes import run_migration as run_disputes_migration
 from migrations.add_awaiting_replacement_status import run_migration as run_awaiting_replacement_migration
 from migrations.add_new_status import run_migration as run_new_status_migration
+from migrations.add_dispute_attachment_public_hash import run_migration as run_dispute_attachment_hash_migration
+from migrations.add_logbook import run_migration as run_logbook_migration
+from migrations.add_imap_integration import run_migration as run_imap_migration
+from migrations.add_support_request import run_migration as run_support_migration
+from migrations.add_pdf_annotation_settings import run_migration as run_pdf_annotation_settings_migration
+from migrations.add_linked_dispute import run_migration as run_linked_dispute_migration
 from scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -116,6 +123,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Resos upcoming sync migration warning (may be expected): {e}")
 
+    # Run Newbook upcoming sync migration
+    try:
+        await run_newbook_upcoming_sync_migration()
+        logger.info("Newbook upcoming sync migration completed")
+    except Exception as e:
+        logger.warning(f"Newbook upcoming sync migration warning (may be expected): {e}")
+
     # Run residents table chart migration
     try:
         await run_residents_table_chart_migration()
@@ -150,6 +164,48 @@ async def lifespan(app: FastAPI):
         logger.info("NEW status migration completed")
     except Exception as e:
         logger.warning(f"NEW status migration warning (may be expected): {e}")
+
+    # Run dispute attachment public hash migration
+    try:
+        await run_dispute_attachment_hash_migration()
+        logger.info("Dispute attachment public hash migration completed")
+    except Exception as e:
+        logger.warning(f"Dispute attachment public hash migration warning (may be expected): {e}")
+
+    # Run logbook migration
+    try:
+        await run_logbook_migration()
+        logger.info("Logbook migration completed")
+    except Exception as e:
+        logger.warning(f"Logbook migration warning (may be expected): {e}")
+
+    # Run IMAP integration migration
+    try:
+        await run_imap_migration()
+        logger.info("IMAP integration migration completed")
+    except Exception as e:
+        logger.warning(f"IMAP integration migration warning (may be expected): {e}")
+
+    # Run support request migration
+    try:
+        await run_support_migration()
+        logger.info("Support request migration completed")
+    except Exception as e:
+        logger.warning(f"Support request migration warning (may be expected): {e}")
+
+    # Run PDF annotation settings migration
+    try:
+        await run_pdf_annotation_settings_migration()
+        logger.info("PDF annotation settings migration completed")
+    except Exception as e:
+        logger.warning(f"PDF annotation settings migration warning (may be expected): {e}")
+
+    # Run linked dispute migration
+    try:
+        await run_linked_dispute_migration()
+        logger.info("Linked dispute migration completed")
+    except Exception as e:
+        logger.warning(f"Linked dispute migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()
@@ -192,6 +248,10 @@ app.include_router(search.router, tags=["Search"])
 app.include_router(resos.router, prefix="/api/resos", tags=["Resos"])
 app.include_router(calendar_events.router, prefix="/api/calendar-events", tags=["Calendar Events"])
 app.include_router(residents_table_chart.router, prefix="/api", tags=["Residents Table Chart"])
+app.include_router(public.router, prefix="/api/public", tags=["Public"])
+app.include_router(logbook.router, prefix="/api", tags=["Logbook"])
+app.include_router(imap.router, prefix="/api", tags=["IMAP"])
+app.include_router(support.router, prefix="/api", tags=["Support"])
 
 
 @app.get("/")

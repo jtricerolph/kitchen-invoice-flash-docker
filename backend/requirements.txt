@@ -21,6 +21,9 @@ azure-ai-formrecognizer==3.3.0
 # Image processing
 Pillow==10.2.0
 
+# PDF processing
+PyMuPDF==1.23.8  # PDF annotation (highlighting non-stock items)
+
 # Utilities
 pydantic==2.5.3
 pydantic-settings==2.1.0

@@ -8,6 +8,7 @@ interface RestaurantBooking {
   people?: number
   table_name?: string
   opening_hour_name?: string
+  is_group_match?: boolean  // True if matched via group/exclude field (faded icon)
 }
 
 interface BookingSegment {
@@ -236,9 +237,10 @@ export default function ResidentsTableChart() {
                           cursor: 'pointer',
                           filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))',
                           zIndex: 20,
-                          pointerEvents: 'none'
+                          pointerEvents: 'none',
+                          opacity: restaurantBooking.is_group_match ? 0.5 : 1  // Faded for group matches
                         }}
-                        title={`${restaurantBooking.opening_hour_name || 'Dining'} - ${restaurantBooking.time || ''}\n${restaurantBooking.people} people${restaurantBooking.table_name ? `\n${restaurantBooking.table_name}` : ''}`}
+                        title={`${restaurantBooking.opening_hour_name || 'Dining'} - ${restaurantBooking.time || ''}\n${restaurantBooking.people} people${restaurantBooking.table_name ? `\n${restaurantBooking.table_name}` : ''}${restaurantBooking.is_group_match ? '\n(Group booking - via another room)' : ''}`}
                       >
                         🍽️
                       </div>

@@ -1,9 +1,12 @@
+import logging
 from datetime import timedelta
 from decimal import Decimal
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 from models.invoice import Invoice
+
+logger = logging.getLogger(__name__)
 
 
 class DuplicateDetector:
@@ -28,6 +31,14 @@ class DuplicateDetector:
                 "related_documents": list[Invoice]
             }
         """
+        logger.info(
+            f"Checking duplicates for invoice {invoice.id}: "
+            f"invoice_number={invoice.invoice_number}, "
+            f"supplier_id={invoice.supplier_id}, "
+            f"date={invoice.invoice_date}, "
+            f"total={invoice.total}"
+        )
+
         result = {
             "firm_duplicate": None,
             "possible_duplicates": [],
@@ -38,7 +49,10 @@ class DuplicateDetector:
         if invoice.invoice_number:
             firm = await self._find_firm_duplicate(invoice)
             if firm:
+                logger.info(f"Found firm duplicate: invoice {firm.id} (number={firm.invoice_number})")
                 result["firm_duplicate"] = firm
+            else:
+                logger.info(f"No firm duplicate found for invoice_number={invoice.invoice_number}")
 
         # 2. FUZZY/POSSIBLE DUPLICATE: Similar date + similar total (same supplier if available)
         if invoice.invoice_date and invoice.total:
@@ -65,10 +79,28 @@ class DuplicateDetector:
         # If no supplier_id, just match by invoice_number alone
         if invoice.supplier_id:
             conditions.append(Invoice.supplier_id == invoice.supplier_id)
+            logger.debug(f"Searching for firm duplicate: invoice_number={invoice.invoice_number}, supplier_id={invoice.supplier_id}")
+        else:
+            logger.debug(f"Searching for firm duplicate (no supplier): invoice_number={invoice.invoice_number}")
 
-        query = select(Invoice).where(and_(*conditions))
+        # Order by ID to get the oldest duplicate first, and use first() instead
+        # of scalar_one_or_none() since there may be multiple duplicates
+        query = select(Invoice).where(and_(*conditions)).order_by(Invoice.id)
         result = await self.db.execute(query)
-        return result.scalar_one_or_none()
+        found = result.scalars().first()
+
+        if not found:
+            # Log what invoices exist with this number for debugging
+            all_with_number = await self.db.execute(
+                select(Invoice).where(
+                    Invoice.kitchen_id == self.kitchen_id,
+                    Invoice.invoice_number == invoice.invoice_number
+                )
+            )
+            all_matches = list(all_with_number.scalars().all())
+            logger.debug(f"All invoices with number {invoice.invoice_number}: {[(i.id, i.supplier_id) for i in all_matches]}")
+
+        return found
 
     async def _find_fuzzy_duplicates(self, invoice: Invoice) -> list[Invoice]:
         """Find similar invoices: close date + close total (same supplier if available)"""

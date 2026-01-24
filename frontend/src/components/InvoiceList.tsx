@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../App'
 
 interface Invoice {
@@ -19,6 +20,34 @@ interface Invoice {
   supplier_name: string | null
   supplier_match_type: string | null
   vendor_name: string | null  // OCR-extracted vendor name (for unmatched display)
+  source: string  // upload, email, api
+  source_reference: string | null
+}
+
+// Source badge component - shows where invoice came from
+const sourceConfig: Record<string, { label: string; color: string; icon: string }> = {
+  upload: { label: 'Upload', color: '#6c757d', icon: '📤' },
+  email: { label: 'Email', color: '#3498db', icon: '📧' },
+  api: { label: 'API', color: '#9b59b6', icon: '🔌' },
+}
+
+const SourceBadge = ({ source }: { source: string }) => {
+  const { label, color, icon } = sourceConfig[source] || sourceConfig.upload
+  return (
+    <span style={{
+      background: color,
+      color: 'white',
+      padding: '0.15rem 0.4rem',
+      borderRadius: '4px',
+      fontSize: '0.7rem',
+      fontWeight: 'bold',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '0.2rem',
+    }}>
+      {icon} {label}
+    </span>
+  )
 }
 
 interface Supplier {
@@ -31,19 +60,41 @@ interface InvoiceListResponse {
   total: number
 }
 
+// Match Review.tsx status colors for consistency (uppercase keys to match API values)
 const statusColors: Record<string, string> = {
-  pending: '#f0ad4e',
-  processed: '#5bc0de',
-  reviewed: '#5cb85c',
-  confirmed: '#428bca',
+  PENDING: '#f59e0b',    // amber/orange
+  PROCESSED: '#3b82f6',  // blue
+  REVIEWED: '#8b5cf6',   // purple
+  CONFIRMED: '#22c55e',  // green
+  NEW: '#06b6d4',        // cyan for new status
 }
 
 export default function InvoiceList() {
   const { token } = useAuth()
-  const [statusFilter, setStatusFilter] = useState<string>('pending_confirmation')
-  const [supplierFilter, setSupplierFilter] = useState<string>('')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Initialize filters from URL params, with defaults
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    const urlStatus = searchParams.get('status')
+    // If status param exists (even empty string), use it; otherwise default to pending_confirmation
+    return urlStatus !== null ? urlStatus : 'pending_confirmation'
+  })
+  const [supplierFilter, setSupplierFilter] = useState<string>(() =>
+    searchParams.get('supplier_id') || ''
+  )
+  const [dateFrom, setDateFrom] = useState<string>(() =>
+    searchParams.get('date_from') || ''
+  )
+  const [dateTo, setDateTo] = useState<string>(() =>
+    searchParams.get('date_to') || ''
+  )
+
+  // Clear URL params after reading them (keeps URL clean)
+  useEffect(() => {
+    if (searchParams.toString()) {
+      setSearchParams({}, { replace: true })
+    }
+  }, [])
 
   // Fetch suppliers for filter dropdown
   const { data: suppliers } = useQuery<Supplier[]>({
@@ -185,7 +236,10 @@ export default function InvoiceList() {
             <a
               key={invoice.id}
               href={`/invoice/${invoice.id}`}
-              style={styles.card}
+              style={{
+                ...styles.card,
+                borderLeft: `4px solid ${statusColors[invoice.status] || '#999'}`,
+              }}
             >
               <div style={styles.cardMain}>
                 <div style={styles.invoiceNumberRow}>
@@ -252,13 +306,18 @@ export default function InvoiceList() {
                     `£${Number(invoice.total).toFixed(2)}`
                   ) : '—'}
                 </div>
-                <div
-                  style={{
-                    ...styles.status,
-                    background: statusColors[invoice.status] || '#999',
-                  }}
-                >
-                  {invoice.status}
+                <div style={styles.badgeRow}>
+                  {invoice.source && invoice.source !== 'upload' && (
+                    <SourceBadge source={invoice.source} />
+                  )}
+                  <div
+                    style={{
+                      ...styles.status,
+                      background: statusColors[invoice.status] || '#999',
+                    }}
+                  >
+                    {invoice.status}
+                  </div>
                 </div>
               </div>
 
@@ -283,7 +342,10 @@ export default function InvoiceList() {
               <a
                 key={invoice.id}
                 href={`/invoice/${invoice.id}`}
-                style={styles.card}
+                style={{
+                  ...styles.card,
+                  borderLeft: `4px solid ${statusColors[invoice.status] || '#999'}`,
+                }}
               >
                 <div style={styles.cardMain}>
                   <div style={styles.invoiceNumberRow}>
@@ -350,13 +412,18 @@ export default function InvoiceList() {
                       `£${Number(invoice.total).toFixed(2)}`
                     ) : '—'}
                   </div>
-                  <div
-                    style={{
-                      ...styles.status,
-                      background: statusColors[invoice.status] || '#999',
-                    }}
-                  >
-                    {invoice.status}
+                  <div style={styles.badgeRow}>
+                    {invoice.source && invoice.source !== 'upload' && (
+                      <SourceBadge source={invoice.source} />
+                    )}
+                    <div
+                      style={{
+                        ...styles.status,
+                        background: statusColors[invoice.status] || '#999',
+                      }}
+                    >
+                      {invoice.status}
+                    </div>
                   </div>
                 </div>
 
@@ -580,6 +647,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   cardRight: {
     textAlign: 'right',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    gap: '0.5rem',
+  },
+  badgeRow: {
+    display: 'flex',
+    gap: '0.4rem',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
   },
   total: {
     fontWeight: 'bold',
@@ -599,7 +676,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'white',
     fontSize: '0.75rem',
     textTransform: 'uppercase',
-    marginTop: '0.5rem',
   },
   confidence: {
     position: 'absolute',

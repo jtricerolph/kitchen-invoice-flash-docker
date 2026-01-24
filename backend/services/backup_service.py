@@ -2,7 +2,8 @@
 Backup service for database and file backups.
 
 Handles:
-- Database export creation
+- Full PostgreSQL database dump (pg_dump)
+- Application data JSON export
 - Invoice file archiving
 - Backup to local/Nextcloud/SMB destinations
 - Retention policy enforcement
@@ -14,6 +15,7 @@ import zipfile
 import tempfile
 import logging
 import shutil
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 from typing import Tuple, Optional, List
@@ -30,6 +32,13 @@ from models.supplier import Supplier
 from services.nextcloud_service import NextcloudService
 
 logger = logging.getLogger(__name__)
+
+# Database connection settings (from environment)
+DB_HOST = os.getenv("DATABASE_HOST", "db")
+DB_PORT = os.getenv("DATABASE_PORT", "5432")
+DB_NAME = os.getenv("DATABASE_NAME", "kitchen_gp")
+DB_USER = os.getenv("DATABASE_USER", "kitchen")
+DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "kitchen_secret")
 
 # Local backup directory (inside persisted data volume)
 LOCAL_BACKUP_DIR = "/app/data/backups"
@@ -146,10 +155,13 @@ class BackupService:
                 "suppliers": [
                     {
                         "id": sup.id,
+                        "kitchen_id": sup.kitchen_id,
                         "name": sup.name,
                         "aliases": sup.aliases,
-                        "category": sup.category,
-                        "is_active": sup.is_active,
+                        "template_config": sup.template_config,
+                        "identifier_config": sup.identifier_config,
+                        "created_at": sup.created_at,
+                        "updated_at": sup.updated_at,
                     }
                     for sup in suppliers
                 ],
@@ -163,10 +175,110 @@ class BackupService:
             with open(output_path, 'w') as f:
                 json.dump(export_data, f, indent=2, cls=DecimalEncoder)
 
+            logger.info(f"Database JSON export created: {len(invoices)} invoices, {len(suppliers)} suppliers")
             return True
 
         except Exception as e:
-            logger.error(f"Database export failed: {e}")
+            logger.error(f"Database JSON export failed: {e}", exc_info=True)
+            return False
+
+    async def _create_postgres_dump(self, output_path: str) -> bool:
+        """
+        Create a full PostgreSQL dump using pg_dump.
+
+        This creates a complete SQL backup that can restore the entire database.
+        """
+        try:
+            logger.info(f"Creating PostgreSQL dump for database {DB_NAME}")
+
+            # Build pg_dump command
+            # Use custom format (-Fc) for compression and flexible restore
+            # But also create a plain SQL for easy viewing
+            env = os.environ.copy()
+            env['PGPASSWORD'] = DB_PASSWORD
+
+            # Create plain SQL dump (human readable, can be used with psql)
+            process = await asyncio.create_subprocess_exec(
+                'pg_dump',
+                '-h', DB_HOST,
+                '-p', DB_PORT,
+                '-U', DB_USER,
+                '-d', DB_NAME,
+                '--no-owner',           # Don't dump ownership
+                '--no-privileges',      # Don't dump privileges
+                '--clean',              # Add DROP statements
+                '--if-exists',          # Add IF EXISTS to DROP
+                '-f', output_path,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                logger.error(f"pg_dump failed with code {process.returncode}: {error_msg}")
+                return False
+
+            # Check file was created and has content
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                size_kb = os.path.getsize(output_path) / 1024
+                logger.info(f"PostgreSQL dump created: {size_kb:.1f} KB")
+                return True
+            else:
+                logger.error("pg_dump created empty or no file")
+                return False
+
+        except FileNotFoundError:
+            logger.error("pg_dump command not found - PostgreSQL client tools not installed")
+            return False
+        except Exception as e:
+            logger.error(f"PostgreSQL dump failed: {e}", exc_info=True)
+            return False
+
+    async def _restore_postgres_dump(self, sql_path: str) -> bool:
+        """
+        Restore database from a PostgreSQL SQL dump.
+
+        WARNING: This will DROP and recreate all tables!
+        """
+        try:
+            logger.info(f"Restoring PostgreSQL database from {sql_path}")
+
+            env = os.environ.copy()
+            env['PGPASSWORD'] = DB_PASSWORD
+
+            # Use psql to restore the dump
+            process = await asyncio.create_subprocess_exec(
+                'psql',
+                '-h', DB_HOST,
+                '-p', DB_PORT,
+                '-U', DB_USER,
+                '-d', DB_NAME,
+                '-f', sql_path,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                # Some errors are expected (like "table does not exist" for DROP IF EXISTS)
+                if "ERROR" in error_msg and "does not exist" not in error_msg:
+                    logger.error(f"psql restore failed: {error_msg}")
+                    return False
+
+            logger.info("PostgreSQL database restored successfully")
+            return True
+
+        except FileNotFoundError:
+            logger.error("psql command not found - PostgreSQL client tools not installed")
+            return False
+        except Exception as e:
+            logger.error(f"PostgreSQL restore failed: {e}", exc_info=True)
             return False
 
     async def create_backup(
@@ -208,28 +320,52 @@ class BackupService:
 
                 # Create ZIP file
                 with zipfile.ZipFile(backup_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    # 1. Database export
+                    # 1. Full PostgreSQL dump (for complete recovery)
+                    pg_dump_path = os.path.join(temp_dir, "database.sql")
+                    if await self._create_postgres_dump(pg_dump_path):
+                        zf.write(pg_dump_path, "database.sql")
+                        logger.info("Added database.sql to backup")
+                    else:
+                        logger.warning("PostgreSQL dump failed - backup will not include full database")
+
+                    # 2. JSON export (for easy viewing/partial restore)
                     db_export_path = os.path.join(temp_dir, "database.json")
                     if await self._create_database_export(db_export_path):
                         zf.write(db_export_path, "database.json")
+                        logger.info("Added database.json to backup")
+                    else:
+                        logger.warning("JSON export failed - backup will not include application data export")
 
-                    # 2. Invoice files (only local ones)
+                    # 3. ALL files in /app/data/ (invoices, disputes, credit notes, etc.)
+                    # This ensures a complete backup for full recovery/transfer
+                    data_dir = "/app/data"
+                    file_count = 0
+                    skipped_dirs = {'backups'}  # Don't backup the backups directory
+
+                    logger.info(f"Scanning {data_dir} for files to backup...")
+
+                    if os.path.exists(data_dir):
+                        for root, dirs, files in os.walk(data_dir):
+                            # Skip backups directory to avoid recursive backup
+                            dirs[:] = [d for d in dirs if d not in skipped_dirs]
+
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                # Get relative path from /app/data/
+                                rel_path = os.path.relpath(file_path, data_dir)
+                                try:
+                                    zf.write(file_path, f"files/{rel_path}")
+                                    file_count += 1
+                                except Exception as e:
+                                    logger.warning(f"Failed to add file {rel_path}: {e}")
+
+                    logger.info(f"Added {file_count} files to backup from {data_dir}")
+
+                    # Also count invoices for metadata
                     result = await self.db.execute(
-                        select(Invoice).where(
-                            Invoice.kitchen_id == self.kitchen_id,
-                            Invoice.file_storage_location == "local"
-                        )
+                        select(Invoice).where(Invoice.kitchen_id == self.kitchen_id)
                     )
                     invoices = result.scalars().all()
-
-                    file_count = 0
-                    for invoice in invoices:
-                        if invoice.image_path and os.path.exists(invoice.image_path):
-                            # Preserve directory structure relative to /app/data/
-                            rel_path = invoice.image_path.replace("/app/data/", "")
-                            zf.write(invoice.image_path, f"files/{rel_path}")
-                            file_count += 1
-
                     backup.invoice_count = len(invoices)
                     backup.file_count = file_count
 
@@ -474,10 +610,20 @@ class BackupService:
                             if not os.path.exists(dst):  # Don't overwrite existing files
                                 shutil.copy2(src, dst)
 
-                # Note: Database restore would be done separately
-                # The database.json is available for manual import if needed
+                # Restore database from SQL dump if present
+                db_sql_path = os.path.join(temp_dir, "database.sql")
+                db_restored = False
+                if os.path.exists(db_sql_path):
+                    db_restored = await self._restore_postgres_dump(db_sql_path)
+                    if db_restored:
+                        logger.info("Database restored from SQL dump")
+                    else:
+                        logger.warning("Database restore failed - files restored but database unchanged")
 
-                return (True, f"Restored files from backup: {backup.filename}")
+                if db_restored:
+                    return (True, f"Fully restored from backup: {backup.filename} (database + files)")
+                else:
+                    return (True, f"Restored files from backup: {backup.filename} (database restore requires manual import)")
 
         except Exception as e:
             logger.error(f"Restore failed: {e}")
@@ -530,7 +676,18 @@ class BackupService:
                                 shutil.copy2(src, dst)
                                 restored_count += 1
 
-                return (True, f"Restored {restored_count} files from uploaded backup")
+                # Restore database from SQL dump if present
+                db_sql_path = os.path.join(temp_dir, "database.sql")
+                db_restored = False
+                if os.path.exists(db_sql_path):
+                    db_restored = await self._restore_postgres_dump(db_sql_path)
+                    if db_restored:
+                        logger.info("Database restored from uploaded backup SQL dump")
+
+                if db_restored:
+                    return (True, f"Fully restored from uploaded backup: database + {restored_count} files")
+                else:
+                    return (True, f"Restored {restored_count} files from uploaded backup (database restore requires manual import)")
 
         except zipfile.BadZipFile:
             return (False, "Corrupted ZIP file")

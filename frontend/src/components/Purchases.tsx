@@ -83,6 +83,14 @@ interface WeeklyAggregate {
   totalSales: number
 }
 
+interface DailyDisputeStats {
+  daily_stats: Record<string, { count: number; total_disputed: number }>
+}
+
+interface DailyLogbookStats {
+  daily_stats: Record<string, Record<string, { count: number; total_cost: number }>>
+}
+
 // Helper to format date as YYYY-MM-DD for input fields and API
 const formatDateForApi = (d: Date): string => {
   return d.toISOString().split('T')[0]
@@ -258,6 +266,55 @@ export default function Purchases() {
       return res.json()
     },
   })
+
+  // Fetch daily dispute stats for the selected date range
+  const { data: disputeStats } = useQuery<DailyDisputeStats>({
+    queryKey: ['daily-dispute-stats', submittedFromDate, submittedToDate],
+    queryFn: async () => {
+      const res = await fetch(`/api/disputes/stats/daily?from_date=${submittedFromDate}&to_date=${submittedToDate}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch dispute stats')
+      return res.json()
+    },
+  })
+
+  // Fetch daily allowance stats for the selected date range (all logbook entry types)
+  const { data: allowanceStats } = useQuery<DailyLogbookStats>({
+    queryKey: ['daily-allowance-stats', submittedFromDate, submittedToDate],
+    queryFn: async () => {
+      const res = await fetch(`/api/logbook/daily-stats?date_from=${submittedFromDate}&date_to=${submittedToDate}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch allowance stats')
+      return res.json()
+    },
+  })
+
+  // Helper to get allowance breakdown for a date
+  const getAllowanceBreakdown = (dateStr: string): { total: number; breakdown: string } => {
+    const dayStats = allowanceStats?.daily_stats?.[dateStr]
+    if (!dayStats) return { total: 0, breakdown: '' }
+
+    const typeLabels: Record<string, string> = {
+      wastage: 'Wastage',
+      staff_meals: 'Staff Meals',
+      complimentary: 'Complimentary',
+      other: 'Other'
+    }
+
+    let total = 0
+    const parts: string[] = []
+
+    for (const [type, stats] of Object.entries(dayStats)) {
+      if (stats && stats.total_cost > 0) {
+        total += stats.total_cost
+        parts.push(`${typeLabels[type] || type}: £${stats.total_cost.toFixed(2)}`)
+      }
+    }
+
+    return { total, breakdown: parts.join('\n') }
+  }
 
   // Calculate date range for last 24 weeks (for weekly comparison chart)
   const weeklyChartDateRange = useMemo(() => {
@@ -798,6 +855,69 @@ export default function Purchases() {
                         </td>
                         <td style={{ ...styles.td, ...styles.footerCell }}>100%</td>
                       </tr>
+                      {/* Disputes row */}
+                      <tr style={styles.statsRow}>
+                        <td style={{ ...styles.td, ...styles.statsLabel }}>Disputes</td>
+                        {week.dates.map((d) => {
+                          const dateStr = d
+                          const inRange = isInRange(dateStr)
+                          const dayStats = disputeStats?.daily_stats?.[dateStr]
+                          const hasDisputes = dayStats && dayStats.total_disputed > 0
+                          return (
+                            <td key={dateStr} style={{ ...styles.td, ...(inRange ? {} : styles.outOfMonthCell) }}>
+                              {hasDisputes ? (
+                                <button
+                                  onClick={() => navigate(`/disputes?date=${dateStr}`)}
+                                  style={styles.statsBtn}
+                                  title={`${dayStats.count} dispute(s)`}
+                                >
+                                  £{dayStats.total_disputed.toFixed(0)}
+                                </button>
+                              ) : (
+                                <span style={styles.emptyCell}>-</span>
+                              )}
+                            </td>
+                          )
+                        })}
+                        <td style={{ ...styles.td, ...styles.statsTotal }}>
+                          £{Object.entries(disputeStats?.daily_stats || {})
+                            .filter(([date]) => week.dates.includes(date))
+                            .reduce((sum, [, s]) => sum + (s?.total_disputed || 0), 0)
+                            .toFixed(2)}
+                        </td>
+                        <td style={{ ...styles.td }}></td>
+                      </tr>
+                      {/* Allowances row (wastage, staff meals, complimentary, etc.) */}
+                      <tr style={styles.statsRow}>
+                        <td style={{ ...styles.td, ...styles.statsLabel }}>Allowances</td>
+                        {week.dates.map((d) => {
+                          const dateStr = d
+                          const inRange = isInRange(dateStr)
+                          const { total, breakdown } = getAllowanceBreakdown(dateStr)
+                          const hasAllowances = total > 0
+                          return (
+                            <td key={dateStr} style={{ ...styles.td, ...(inRange ? {} : styles.outOfMonthCell) }}>
+                              {hasAllowances ? (
+                                <button
+                                  onClick={() => navigate(`/wastage?date_from=${dateStr}&date_to=${dateStr}`)}
+                                  style={styles.wastageBtn}
+                                  title={breakdown}
+                                >
+                                  £{total.toFixed(0)}
+                                </button>
+                              ) : (
+                                <span style={styles.emptyCell}>-</span>
+                              )}
+                            </td>
+                          )
+                        })}
+                        <td style={{ ...styles.td, ...styles.statsTotal }}>
+                          £{week.dates
+                            .reduce((sum, d) => sum + getAllowanceBreakdown(d).total, 0)
+                            .toFixed(2)}
+                        </td>
+                        <td style={{ ...styles.td }}></td>
+                      </tr>
                     </tfoot>
                   </table>
                 </div>
@@ -1135,6 +1255,47 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     background: '#1a1a2e',
     color: 'white',
+  },
+
+  // Stats rows (disputes, wastage)
+  statsRow: {
+    background: '#fafbfc',
+    borderTop: '1px solid #e9ecef',
+  },
+  statsLabel: {
+    textAlign: 'left',
+    paddingLeft: '1rem',
+    fontWeight: '500',
+    color: '#6c757d',
+    fontSize: '0.85rem',
+  },
+  statsBtn: {
+    display: 'inline-block',
+    padding: '0.2rem 0.5rem',
+    background: '#dc3545',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    border: 'none',
+    cursor: 'pointer',
+    minWidth: '28px',
+  },
+  wastageBtn: {
+    display: 'inline-block',
+    padding: '0.2rem 0.5rem',
+    background: '#fd7e14',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    border: 'none',
+    cursor: 'pointer',
+  },
+  statsTotal: {
+    fontWeight: '600',
+    color: '#6c757d',
+    fontSize: '0.85rem',
   },
 
   // Monthly spending calendar

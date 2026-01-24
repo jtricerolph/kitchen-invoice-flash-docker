@@ -25,6 +25,7 @@ class RestaurantBookingDetail(BaseModel):
     people: Optional[int] = None
     table_name: Optional[str] = None
     opening_hour_name: Optional[str] = None
+    is_group_match: Optional[bool] = None  # True if matched via group/exclude field (not the lead booking)
 
 
 class BookingSegment(BaseModel):
@@ -178,7 +179,10 @@ async def get_residents_table_chart(
     resos_bookings = result.scalars().all()
 
     # Build lookup: booking_id -> {date -> resos_booking}
+    # Also handle group bookings via exclude_flag field (format: "#32990,#32991")
     resos_lookup = {}
+    import re
+
     for resos_booking in resos_bookings:
         booking_id = resos_booking.hotel_booking_number
         booking_date = resos_booking.booking_date.isoformat()
@@ -186,15 +190,42 @@ async def get_residents_table_chart(
         if booking_id not in resos_lookup:
             resos_lookup[booking_id] = {}
 
+        # Direct match for the lead/primary booking
         resos_lookup[booking_id][booking_date] = {
             'has_booking': True,
             'time': resos_booking.booking_time.strftime('%H:%M') if resos_booking.booking_time else None,
             'people': resos_booking.people,
             'table_name': resos_booking.table_name,
-            'opening_hour_name': resos_booking.opening_hour_name
+            'opening_hour_name': resos_booking.opening_hour_name,
+            'is_group_match': False  # Direct match, not a group member
         }
 
-    logger.info(f"Built resos_lookup with {len(resos_lookup)} booking IDs")
+        # Parse exclude_flag for group bookings (format: "#32990,#32991")
+        if resos_booking.exclude_flag:
+            # Extract all booking numbers from the exclude_flag field
+            group_booking_ids = re.findall(r'#(\d+)', resos_booking.exclude_flag)
+
+            for group_id in group_booking_ids:
+                # Skip the lead booking itself (already added above)
+                if group_id == booking_id:
+                    continue
+
+                # Add group member with is_group_match=True
+                if group_id not in resos_lookup:
+                    resos_lookup[group_id] = {}
+
+                # Only add if not already present (don't overwrite direct matches)
+                if booking_date not in resos_lookup[group_id]:
+                    resos_lookup[group_id][booking_date] = {
+                        'has_booking': True,
+                        'time': resos_booking.booking_time.strftime('%H:%M') if resos_booking.booking_time else None,
+                        'people': resos_booking.people,
+                        'table_name': resos_booking.table_name,
+                        'opening_hour_name': resos_booking.opening_hour_name,
+                        'is_group_match': True  # Matched via group, not direct
+                    }
+
+    logger.info(f"Built resos_lookup with {len(resos_lookup)} booking IDs (including group matches)")
 
     # Combine rooms with restaurant bookings
     room_rows = []

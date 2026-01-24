@@ -26,6 +26,12 @@ interface DateRangeGPResponse {
   gross_profit_percent: number
   supplier_breakdown: SupplierBreakdown[]
   gl_account_breakdown: GLAccountBreakdown[]
+  // Allowances breakdown by type
+  wastage_total: number | null
+  transfer_total: number | null
+  staff_food_total: number | null
+  manual_adjustment_total: number | null
+  disputes_total: number | null
 }
 
 interface DailyDataPoint {
@@ -147,6 +153,15 @@ export default function GPReport() {
   }, [submittedFromDate, submittedToDate])
 
   const monthOptions = getMonthOptions()
+
+  // Allowances checkbox state - default: all checked EXCEPT wastage
+  const [allowancesSelection, setAllowancesSelection] = useState({
+    wastage: false,       // Wastage: unchecked by default
+    transfer: true,       // Transfer: checked by default
+    staffFood: true,      // Staff Food: checked by default
+    manualAdjustment: true, // Manual Adjustment: checked by default
+    disputes: true        // Open Disputes: checked by default
+  })
 
   // Track if dates have changed since last generation
   const hasUnsavedChanges = fromDate !== submittedFromDate || toDate !== submittedToDate
@@ -469,9 +484,58 @@ export default function GPReport() {
     return <div style={styles.error}>Error loading GP data: {(error as Error).message}</div>
   }
 
-  const { period_label = '', net_food_sales = 0, net_food_purchases = 0, gross_profit = 0, gross_profit_percent = 0 } = data || {}
+  const {
+    period_label = '',
+    net_food_sales = 0,
+    net_food_purchases = 0,
+    gross_profit = 0,
+    gross_profit_percent = 0,
+    wastage_total = null,
+    transfer_total = null,
+    staff_food_total = null,
+    manual_adjustment_total = null,
+    disputes_total = null
+  } = data || {}
 
   const isNegativeGP = gross_profit < 0
+
+  // Check which allowance types have data
+  const hasWastage = wastage_total !== null && wastage_total > 0
+  const hasTransfer = transfer_total !== null && transfer_total > 0
+  const hasStaffFood = staff_food_total !== null && staff_food_total > 0
+  const hasManualAdjustment = manual_adjustment_total !== null && manual_adjustment_total > 0
+  const hasDisputes = disputes_total !== null && disputes_total > 0
+
+  // Check if any allowances data exists
+  const hasAnyAllowancesData = hasWastage || hasTransfer || hasStaffFood || hasManualAdjustment || hasDisputes
+
+  // Calculate selected allowances total based on checkbox selection
+  // Note: API returns decimals as strings, so we need Number() conversion
+  const calculateSelectedAllowances = () => {
+    let total = 0
+    if (allowancesSelection.wastage && hasWastage) total += Number(wastage_total) || 0
+    if (allowancesSelection.transfer && hasTransfer) total += Number(transfer_total) || 0
+    if (allowancesSelection.staffFood && hasStaffFood) total += Number(staff_food_total) || 0
+    if (allowancesSelection.manualAdjustment && hasManualAdjustment) total += Number(manual_adjustment_total) || 0
+    if (allowancesSelection.disputes && hasDisputes) total += Number(disputes_total) || 0
+    return total
+  }
+
+  const selectedAllowancesTotal = calculateSelectedAllowances()
+  const hasSelectedAllowances = selectedAllowancesTotal > 0
+
+  // Calculate GP with selected allowances
+  // Note: API returns decimals as strings, so we need Number() conversion
+  const salesNum = Number(net_food_sales) || 0
+  const purchasesNum = Number(net_food_purchases) || 0
+  const gpWithSelectedAllowances = salesNum > 0
+    ? ((salesNum - purchasesNum + selectedAllowancesTotal) / salesNum * 100)
+    : 0
+
+  // Toggle checkbox handler
+  const toggleAllowance = (key: keyof typeof allowancesSelection) => {
+    setAllowancesSelection(prev => ({ ...prev, [key]: !prev[key] }))
+  }
 
   return (
     <div>
@@ -571,6 +635,109 @@ export default function GPReport() {
                 {Number(gross_profit_percent).toFixed(1)}%
               </span>
             </div>
+
+            {hasAnyAllowancesData && (
+              <>
+                <div style={styles.wastageSection} />
+                <div style={styles.allowancesHeader}>Allowances</div>
+
+                {hasWastage && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.wastage}
+                        onChange={() => toggleAllowance('wastage')}
+                      />
+                      <span>Wastage</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#e74c3c' }}>
+                      {formatCurrency(wastage_total || 0)}
+                    </span>
+                  </div>
+                )}
+
+                {hasTransfer && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.transfer}
+                        onChange={() => toggleAllowance('transfer')}
+                      />
+                      <span>Transfers</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#3498db' }}>
+                      {formatCurrency(transfer_total || 0)}
+                    </span>
+                  </div>
+                )}
+
+                {hasStaffFood && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.staffFood}
+                        onChange={() => toggleAllowance('staffFood')}
+                      />
+                      <span>Staff Food</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#9b59b6' }}>
+                      {formatCurrency(staff_food_total || 0)}
+                    </span>
+                  </div>
+                )}
+
+                {hasManualAdjustment && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.manualAdjustment}
+                        onChange={() => toggleAllowance('manualAdjustment')}
+                      />
+                      <span>Manual Adjustments</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#34495e' }}>
+                      {formatCurrency(manual_adjustment_total || 0)}
+                    </span>
+                  </div>
+                )}
+
+                {hasDisputes && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.disputes}
+                        onChange={() => toggleAllowance('disputes')}
+                      />
+                      <span>Open Disputes</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#e67e22' }}>
+                      {formatCurrency(disputes_total || 0)}
+                    </span>
+                  </div>
+                )}
+
+                <div style={styles.divider} />
+
+                <div style={styles.calcRow}>
+                  <span style={styles.calcLabel}>Selected Allowances</span>
+                  <span style={{ ...styles.calcValue, color: hasSelectedAllowances ? '#27ae60' : '#999' }}>
+                    {formatCurrency(selectedAllowancesTotal)}
+                  </span>
+                </div>
+
+                <div style={styles.calcRow}>
+                  <span style={styles.calcLabelBold}>GP % (with allowances)</span>
+                  <span style={{ ...styles.calcValueBold, color: hasSelectedAllowances ? '#27ae60' : '#999' }}>
+                    {gpWithSelectedAllowances.toFixed(1)}%
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -1012,7 +1179,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: '1.5rem',
     flexWrap: 'wrap',
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
   },
   sectionContainer: {
     background: 'white',
@@ -1057,6 +1224,32 @@ const styles: Record<string, React.CSSProperties> = {
   divider: {
     borderTop: '2px solid #dee2e6',
     margin: '0.5rem 0',
+  },
+  wastageSection: {
+    borderTop: '1px dashed #e67e22',
+    margin: '0.75rem 0 0.5rem 0',
+  },
+  allowancesHeader: {
+    fontSize: '0.9rem',
+    fontWeight: 600,
+    color: '#666',
+    marginBottom: '0.5rem',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.5px',
+  },
+  allowanceRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '0.4rem 0',
+  },
+  allowanceCheckbox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    cursor: 'pointer',
+    fontSize: '0.95rem',
+    color: '#444',
   },
   positiveValue: {
     color: '#155724',

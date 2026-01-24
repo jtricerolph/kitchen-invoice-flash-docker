@@ -3,9 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import * as pdfjsLib from 'pdfjs-dist'
+import { AnnotationMode } from 'pdfjs-dist'
 import LineItemHistoryModal from './LineItemHistoryModal'
 import CreateDisputeModal from './CreateDisputeModal'
 import DisputeDetailModal from './DisputeDetailModal'
+import LinkDisputeModal from './LinkDisputeModal'
 
 // Use local worker file from public directory
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
@@ -20,6 +22,35 @@ const ScaleIcon = ({ style }: { style?: React.CSSProperties }) => (
     <path d="M12 3c-1.27 0-2.4.8-2.82 2H3v2h1.95L2 14c-.47 2 1 4 4 4s4.5-2 4-4L7.05 7H9.18c.35.99 1.17 1.74 2.18 1.94V19H7v2h10v-2h-4.18V8.94c1.01-.2 1.83-.95 2.18-1.94h2.13L14 14c-.47 2 1 4 4 4s4.5-2 4-4l-2.95-7H21V5h-6.18C14.4 3.8 13.27 3 12 3zm0 2c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zM6 10.45L7.5 14h-3L6 10.45zm12 0L19.5 14h-3L18 10.45z" />
   </svg>
 )
+
+// Source badge component - shows where invoice came from
+const sourceConfig: Record<string, { label: string; color: string; icon: string }> = {
+  upload: { label: 'Upload', color: '#6c757d', icon: '📤' },
+  email: { label: 'Email', color: '#3498db', icon: '📧' },
+  api: { label: 'API', color: '#9b59b6', icon: '🔌' },
+}
+
+const SourceBadge = ({ source, sourceReference }: { source: string; sourceReference?: string | null }) => {
+  const { label, color, icon } = sourceConfig[source] || sourceConfig.upload
+  return (
+    <span
+      style={{
+        background: color,
+        color: 'white',
+        padding: '0.4rem 0.6rem',
+        borderRadius: '4px',
+        fontSize: '0.8rem',
+        fontWeight: '600',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '0.25rem',
+      }}
+      title={sourceReference || undefined}
+    >
+      {icon} {label}
+    </span>
+  )
+}
 
 interface Invoice {
   id: number
@@ -56,6 +87,12 @@ interface Invoice {
     disputed_amount: number
     opened_at: string
   }>
+  disputed_line_item_ids: number[]
+  // Source tracking
+  source: string
+  source_reference: string | null
+  // Linked dispute (for credit notes)
+  linked_dispute_id: number | null
 }
 
 interface Supplier {
@@ -132,6 +169,7 @@ interface ProductDefinition {
 interface Settings {
   high_quantity_threshold: number
   dext_manual_send_enabled: boolean
+  pdf_preview_show_annotations: boolean
 }
 
 interface SearchResultItem {
@@ -331,6 +369,7 @@ export default function Review() {
   // Dext integration state
   const [invoiceNotes, setInvoiceNotes] = useState('')
   const [showDextSendConfirm, setShowDextSendConfirm] = useState(false)
+  const [showLinkDisputeModal, setShowLinkDisputeModal] = useState(false)
   // Line items sorting and filtering
   const [lineItemSortColumn, setLineItemSortColumn] = useState<string>('')
   const [lineItemSortDirection, setLineItemSortDirection] = useState<'asc' | 'desc'>('asc')
@@ -704,10 +743,15 @@ export default function Review() {
 
           const context = canvas.getContext('2d')
           if (context) {
+            // If pdf_preview_show_annotations is false, hide PDF annotations
+            const annotationMode = settings?.pdf_preview_show_annotations === false
+              ? AnnotationMode.DISABLE
+              : AnnotationMode.ENABLE
             await page.render({
               canvasContext: context,
               viewport: renderViewport,
               canvas: canvas,
+              annotationMode: annotationMode,
             }).promise
           }
 
@@ -727,7 +771,7 @@ export default function Review() {
     }
 
     renderPdf()
-  }, [invoice, token, id])
+  }, [invoice, token, id, settings?.pdf_preview_show_annotations])
 
   const updateMutation = useMutation({
     mutationFn: async (data: Partial<Invoice>) => {
@@ -1081,6 +1125,50 @@ export default function Review() {
 
       // Stop polling after 2 minutes
       setTimeout(() => clearInterval(pollInterval), 120000)
+    } catch (error) {
+      setAdminOperationResult({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Operation failed'
+      })
+    } finally {
+      setAdminOperationInProgress(false)
+    }
+  }
+
+  const handleRegenerateHighlights = async () => {
+    setAdminOperationInProgress(true)
+    setAdminOperationResult(null)
+
+    try {
+      const res = await fetch(`/api/invoices/${id}/regenerate-highlights`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to regenerate highlights')
+      }
+
+      const result = await res.json()
+      const nonStockCount = result.non_stock_count || 0
+      const hasNotes = result.has_notes
+      let message = ''
+      if (nonStockCount > 0) {
+        message = `PDF highlights regenerated successfully.\n\nHighlighted ${nonStockCount} non-stock item(s).`
+      } else {
+        message = 'PDF highlights cleared (no non-stock items marked).'
+      }
+      if (hasNotes) {
+        message += '\nNotes overlay added.'
+      }
+      setAdminOperationResult({
+        type: 'success',
+        message
+      })
+
+      // Refresh invoice to update PDF preview
+      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
     } catch (error) {
       setAdminOperationResult({
         type: 'error',
@@ -1837,20 +1925,25 @@ export default function Review() {
             </div>
           )}
 
-          {/* Header: Title | Status Badge */}
+          {/* Header: Title | Source Badge | Status Badge */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h3 style={{ margin: 0 }}>Invoice Details</h3>
-            <span style={{
-              padding: '0.4rem 0.8rem',
-              borderRadius: '4px',
-              fontSize: '0.85rem',
-              fontWeight: '600',
-              background: invoice.status === 'CONFIRMED' ? '#22c55e' : invoice.status === 'REVIEWED' ? '#8b5cf6' : invoice.status === 'PROCESSED' ? '#3b82f6' : '#f59e0b',
-              color: 'white'
-            }}>
-              {invoice.status.toUpperCase()}
-              {invoice.document_type === 'delivery_note' && ' (DN)'}
-            </span>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              {invoice.source && invoice.source !== 'upload' && (
+                <SourceBadge source={invoice.source} sourceReference={invoice.source_reference} />
+              )}
+              <span style={{
+                padding: '0.4rem 0.8rem',
+                borderRadius: '4px',
+                fontSize: '0.85rem',
+                fontWeight: '600',
+                background: invoice.status === 'CONFIRMED' ? '#22c55e' : invoice.status === 'REVIEWED' ? '#8b5cf6' : invoice.status === 'PROCESSED' ? '#3b82f6' : '#f59e0b',
+                color: 'white'
+              }}>
+                {invoice.status.toUpperCase()}
+                {invoice.document_type === 'delivery_note' && ' (DN)'}
+              </span>
+            </div>
           </div>
 
           <div style={styles.form}>
@@ -2131,12 +2224,52 @@ export default function Review() {
           </div>
 
           {/* Confirm & Dext (full width, auto-saves on change) */}
-          <div style={{ marginTop: '20px' }}>
+          <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+            {/* Link/Resolved Dispute button - only for credit notes with a supplier */}
+            {invoice?.document_type === 'credit_note' && invoice?.supplier_id && (
+              invoice?.linked_dispute_id ? (
+                <button
+                  onClick={() => setViewingDisputeId(invoice.linked_dispute_id)}
+                  style={{
+                    padding: '0.75rem 1rem',
+                    background: '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '0.9rem',
+                    whiteSpace: 'nowrap'
+                  }}
+                  title="View the dispute resolved by this credit note"
+                >
+                  ✓ Resolved Dispute
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowLinkDisputeModal(true)}
+                  style={{
+                    padding: '0.75rem 1rem',
+                    background: '#28a745',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '0.9rem',
+                    whiteSpace: 'nowrap'
+                  }}
+                  title="Link this credit note to an open dispute"
+                >
+                  Link Dispute
+                </button>
+              )
+            )}
             <button
               onClick={handleConfirm}
               style={{
                 ...styles.confirmBtn,
-                width: '100%',
+                flex: 1,
                 opacity: (hasLineItemErrors || updateMutation.isPending) ? 0.5 : 1,
                 cursor: (hasLineItemErrors || updateMutation.isPending) ? 'not-allowed' : 'pointer'
               }}
@@ -2469,6 +2602,24 @@ export default function Review() {
                 >
                   {adminOperationInProgress ? 'Processing...' : 'Resend to Azure'}
                 </button>
+                <button
+                  onClick={handleRegenerateHighlights}
+                  disabled={adminOperationInProgress}
+                  style={{
+                    padding: '0.4rem 1.2rem',
+                    fontSize: '0.8rem',
+                    background: adminOperationInProgress ? '#ccc' : '#6f42c1',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: adminOperationInProgress ? 'not-allowed' : 'pointer',
+                    minWidth: '160px',
+                    whiteSpace: 'nowrap'
+                  }}
+                  title="Regenerate PDF highlight annotations for non-stock items"
+                >
+                  {adminOperationInProgress ? 'Processing...' : 'Regen Highlights'}
+                </button>
               </div>
             )}
 
@@ -2736,8 +2887,11 @@ export default function Review() {
                   (hasTotal && (!hasQty || !hasPrice)) ||  // total requires both qty and price
                   (hasQty && hasPrice && hasTotal && calculationMismatch) // calculation mismatch (2p tolerance)
 
-                // OCR warning takes priority (darker amber), high quantity is lighter
-                const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : undefined
+                // Check if this line item is disputed
+                const isDisputed = invoice.disputed_line_item_ids?.includes(item.id)
+
+                // OCR warning takes priority (darker amber), high quantity is lighter, disputed is pale pink
+                const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : isDisputed ? '#fff0f3' : undefined
                 const rowStyle = rowBackground ? { backgroundColor: rowBackground } : undefined
                 // Add amber border for stock conflicts
                 const rowStyleWithBorder = hasStockConflict
@@ -2913,6 +3067,19 @@ export default function Review() {
                                 </span>
                               )}
                               {getFirstLineOfDescription(item.description) || '—'}
+                              {invoice.disputed_line_item_ids?.includes(item.id) && (
+                                <span style={{
+                                  marginLeft: '8px',
+                                  color: '#e94560',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 'bold',
+                                  padding: '2px 6px',
+                                  background: '#ffe0e6',
+                                  borderRadius: '3px'
+                                }}>
+                                  [DISPUTED]
+                                </span>
+                              )}
                             </div>
                             {hasStockConflict && (
                               <div style={{
@@ -3867,6 +4034,22 @@ export default function Review() {
           onClose={() => setShowDisputeModal(false)}
           onSuccess={() => {
             refetchInvoice() // Refresh invoice to update dispute count
+          }}
+        />
+      )}
+
+      {/* Link Credit Note to Dispute Modal */}
+      {showLinkDisputeModal && invoice && invoice.supplier_id && (
+        <LinkDisputeModal
+          supplierId={invoice.supplier_id}
+          supplierName={invoice.supplier_name || null}
+          creditNoteInvoiceId={invoice.id}
+          creditNoteNumber={invoice.invoice_number}
+          creditNoteAmount={invoice.total}
+          onClose={() => setShowLinkDisputeModal(false)}
+          onSuccess={() => {
+            setShowLinkDisputeModal(false)
+            refetchInvoice() // Refresh to show "Resolved Dispute" button
           }}
         />
       )}

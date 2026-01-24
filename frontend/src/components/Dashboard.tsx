@@ -1,27 +1,22 @@
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 
+interface GPPeriod {
+  total_revenue: number
+  total_costs: number
+  gp_percentage: number
+  wastage_total: number | null
+  disputes_total: number | null
+  allowances_total: number | null
+  gp_with_allowances: number | null
+}
+
 interface DashboardData {
-  current_period: {
-    total_revenue: number
-    total_costs: number
-    gp_percentage: number
-  } | null
-  previous_period: {
-    total_revenue: number
-    total_costs: number
-    gp_percentage: number
-  } | null
-  forecast_period: {
-    total_revenue: number
-    total_costs: number
-    gp_percentage: number
-  } | null
-  rolling_30_days: {
-    total_revenue: number
-    total_costs: number
-    gp_percentage: number
-  } | null
+  current_period: GPPeriod | null
+  previous_period: GPPeriod | null
+  forecast_period: GPPeriod | null
+  rolling_30_days: GPPeriod | null
   recent_invoices: number
   pending_review: number
 }
@@ -86,6 +81,7 @@ interface DisputeStats {
 
 export default function Dashboard() {
   const { token } = useAuth()
+  const navigate = useNavigate()
 
   // Fetch Resos settings for flag icon mapping
   const { data: resosSettings } = useQuery<ResosSettings>({
@@ -220,10 +216,20 @@ export default function Dashboard() {
     return Array.from(iconSet)
   }
 
-  // Helper to render a covers widget
+  // Helper to render a covers widget - clickable to open calendar for that date
   const renderCoversWidget = (dayData: CoversDayData | null, title: string) => {
+    const handleClick = () => {
+      if (dayData?.date) {
+        navigate(`/resos?date=${dayData.date}`)
+      }
+    }
+
     return (
-      <div style={styles.card}>
+      <div
+        style={{ ...styles.card, cursor: dayData ? 'pointer' : 'default' }}
+        onClick={handleClick}
+        title={dayData ? `Click to view bookings for ${dayData.date}` : undefined}
+      >
         <h3 style={styles.cardTitle}>
           {title}
           {dayData?.has_flagged_bookings && (
@@ -278,6 +284,9 @@ export default function Dashboard() {
           {current ? (
             <>
               <div style={styles.gpValue}>{Number(current.gp_percentage).toFixed(1)}%</div>
+              {current.gp_with_allowances != null && (
+                <div style={styles.wastageAdjusted}>({Number(current.gp_with_allowances).toFixed(1)}% with allowances)</div>
+              )}
               <div style={styles.details}>
                 <span>Revenue: £{Number(current.total_revenue).toFixed(2)}</span>
                 <span>Costs: £{Number(current.total_costs).toFixed(2)}</span>
@@ -308,6 +317,9 @@ export default function Dashboard() {
           {previous ? (
             <>
               <div style={styles.gpValue}>{Number(previous.gp_percentage).toFixed(1)}%</div>
+              {previous.gp_with_allowances != null && (
+                <div style={styles.wastageAdjusted}>({Number(previous.gp_with_allowances).toFixed(1)}% with allowances)</div>
+              )}
               <div style={styles.details}>
                 <span>Revenue: £{Number(previous.total_revenue).toFixed(2)}</span>
                 <span>Costs: £{Number(previous.total_costs).toFixed(2)}</span>
@@ -323,6 +335,9 @@ export default function Dashboard() {
           {data?.rolling_30_days ? (
             <>
               <div style={styles.gpValue}>{Number(data.rolling_30_days.gp_percentage).toFixed(1)}%</div>
+              {data.rolling_30_days.gp_with_allowances != null && (
+                <div style={styles.wastageAdjusted}>({Number(data.rolling_30_days.gp_with_allowances).toFixed(1)}% with allowances)</div>
+              )}
               <div style={styles.details}>
                 <span>Revenue: £{Number(data.rolling_30_days.total_revenue).toFixed(2)}</span>
                 <span>Costs: £{Number(data.rolling_30_days.total_costs).toFixed(2)}</span>
@@ -337,27 +352,40 @@ export default function Dashboard() {
       {/* ===== Documents Section ===== */}
       <h3 style={styles.sectionTitle}>Documents</h3>
       <div style={styles.fourGrid}>
-        <a href="/upload" style={{ ...styles.card, ...styles.uploadCard, textDecoration: 'none' }}>
+        <a href="/upload" style={{ ...styles.card, ...styles.uploadCard, ...styles.cardFlex, textDecoration: 'none' }}>
           <h3 style={styles.cardTitle}>Upload New</h3>
           <div style={styles.uploadIcon}>+</div>
           <p style={styles.statLabel}>Upload invoice</p>
         </a>
 
-        <div style={{ ...styles.card, ...(data?.pending_review ? styles.alertCard : {}) }}>
+        <div
+          style={{
+            ...styles.card,
+            ...styles.cardFlex,
+            ...(data?.pending_review ? styles.alertCard : {}),
+            cursor: (data?.pending_review || 0) > 0 ? 'pointer' : 'default'
+          }}
+          onClick={() => (data?.pending_review || 0) > 0 && navigate('/invoices?status=pending_confirmation')}
+        >
           <h3 style={styles.cardTitle}>Pending Confirmation</h3>
           <div style={styles.statValue}>{data?.pending_review || 0}</div>
           <p style={styles.statLabel}>Awaiting confirmation</p>
-          {(data?.pending_review || 0) > 0 && (
-            <a href="/invoices?status=pending_confirmation" style={styles.link}>
-              Review now →
-            </a>
-          )}
+          <div style={styles.cardLinkArea}>
+            {(data?.pending_review || 0) > 0 && (
+              <span style={styles.linkText}>Review now →</span>
+            )}
+          </div>
         </div>
 
-        <div style={{
-          ...styles.card,
-          ...((disputeStats?.open_disputes || 0) > 0 ? styles.alertCard : {})
-        }}>
+        <div
+          style={{
+            ...styles.card,
+            ...styles.cardFlex,
+            ...((disputeStats?.open_disputes || 0) > 0 ? styles.alertCard : {}),
+            cursor: (disputeStats?.open_disputes || 0) > 0 ? 'pointer' : 'default'
+          }}
+          onClick={() => (disputeStats?.open_disputes || 0) > 0 && navigate('/disputes')}
+        >
           <h3 style={styles.cardTitle}>Disputes</h3>
           <div style={{
             ...styles.statValue,
@@ -378,20 +406,22 @@ export default function Dashboard() {
                 ))}
             </div>
           )}
-          <a href="/disputes" style={styles.link}>
-            View all →
-          </a>
+          <div style={styles.cardLinkArea}>
+            <span style={styles.linkText}>View open →</span>
+          </div>
         </div>
 
-        <div style={styles.card}>
+        <div style={{ ...styles.card, ...styles.cardFlex }}>
           <h3 style={styles.cardTitle}>Recent Invoices</h3>
           <div style={styles.statValue}>{data?.recent_invoices || 0}</div>
           <p style={styles.statLabel}>Uploaded this week</p>
-          {(data?.recent_invoices || 0) > 0 && (
-            <a href={`/invoices?date_from=${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&date_to=${new Date().toISOString().split('T')[0]}`} style={styles.link}>
-              View all →
-            </a>
-          )}
+          <div style={styles.cardLinkArea}>
+            {(data?.recent_invoices || 0) > 0 && (
+              <a href={`/invoices?status=&date_from=${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}&date_to=${new Date().toISOString().split('T')[0]}`} style={styles.linkText}>
+                View all →
+              </a>
+            )}
+          </div>
         </div>
       </div>
 
@@ -538,6 +568,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     color: '#1a1a2e',
   },
+  wastageAdjusted: {
+    fontSize: '0.9rem',
+    color: '#888',
+    marginTop: '-0.25rem',
+    marginBottom: '0.25rem',
+  },
   statValue: {
     fontSize: '2.5rem',
     fontWeight: 'bold',
@@ -632,5 +668,19 @@ const styles: Record<string, React.CSSProperties> = {
   statusBreakdownItem: {
     fontSize: '0.75rem',
     color: '#666',
+  },
+  cardFlex: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  cardLinkArea: {
+    marginTop: 'auto',
+    paddingTop: '0.5rem',
+  },
+  linkText: {
+    color: '#e94560',
+    textDecoration: 'none',
+    fontSize: '0.9rem',
+    fontWeight: 'bold',
   },
 }

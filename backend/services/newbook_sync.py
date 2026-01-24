@@ -605,6 +605,27 @@ class NewbookSyncService:
 
         return results
 
+    async def run_upcoming_sync(self) -> dict:
+        """
+        Run upcoming sync for next 7 days only.
+        This is designed to run more frequently (e.g., every 15 minutes) to keep
+        the most important upcoming room data fresh for ResidentsTableChart.
+        """
+        today = date.today()
+        next_week = today + timedelta(days=7)
+
+        # Sync next 7 days of occupancy
+        result = await self.sync_occupancy(today, next_week, is_forecast=True)
+
+        # Update last upcoming sync timestamp
+        settings = await self._get_settings()
+        settings.newbook_last_upcoming_sync = datetime.utcnow()
+        await self.db.commit()
+
+        return {
+            'upcoming': result
+        }
+
     async def sync_forecast_period(self) -> dict:
         """
         Manual sync for forecast period only (next ~2 months).

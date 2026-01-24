@@ -11,11 +11,15 @@ import Review from './components/Review'
 import Disputes from './components/Disputes'
 import Purchases from './components/Purchases'
 import GPReport from './components/GPReport'
+import PurchasesReport from './components/PurchasesReport'
+import AllowancesReport from './components/AllowancesReport'
 import SearchInvoices from './components/SearchInvoices'
 import SearchLineItems from './components/SearchLineItems'
 import SearchDefinitions from './components/SearchDefinitions'
 import ResidentsTableChart from './pages/ResidentsTableChart'
 import BookingsStats from './pages/BookingsStats'
+import WastageLogbook from './pages/WastageLogbook'
+import SupportButton from './components/SupportButton'
 
 interface User {
   id: number
@@ -161,6 +165,18 @@ function App() {
               }
             />
             <Route
+              path="/purchases-report"
+              element={
+                token ? (isPageAccessible('/gp-report') ? <PurchasesReport /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/allowances-report"
+              element={
+                token ? (isPageAccessible('/gp-report') ? <AllowancesReport /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/newbook"
               element={
                 token ? (isPageAccessible('/newbook') ? <NewbookData /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -202,8 +218,15 @@ function App() {
                 token ? (isPageAccessible('/search') ? <SearchDefinitions /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
             />
+            <Route
+              path="/logbook"
+              element={
+                token ? (isPageAccessible('/logbook') ? <WastageLogbook /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
           </Routes>
         </main>
+        {token && user && <SupportButton />}
       </div>
     </AuthContext.Provider>
   )
@@ -223,7 +246,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
   }
 
   // Check if invoices dropdown should be shown
-  const showInvoices = showNavItem('/invoices') || showNavItem('/purchases')
+  const showInvoices = showNavItem('/invoices') || showNavItem('/purchases') || showNavItem('/logbook')
 
   // Check if bookings dropdown should be shown
   const showBookings = showNavItem('/resos')
@@ -262,9 +285,10 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
                     {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Uploaded Invoices</a>}
-                    {showNavItem('/invoices') && <a href="/disputes" style={styles.dropdownLink}>Disputes</a>}
                     {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
                     {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
+                    {showNavItem('/invoices') && <a href="/disputes" style={styles.dropdownLink}>Disputes</a>}
+                    {showNavItem('/logbook') && <a href="/logbook" style={styles.dropdownLink}>Allowance Logbook</a>}
                   </div>
                 </div>
               )}
@@ -317,6 +341,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
                     {showNavItem('/gp-report') && <a href="/gp" style={styles.dropdownLink}>Kitchen Flash Report</a>}
+                    {showNavItem('/gp-report') && <a href="/purchases-report" style={styles.dropdownLink}>Purchases Report</a>}
+                    {showNavItem('/gp-report') && <a href="/allowances-report" style={styles.dropdownLink}>Allowances Report</a>}
                   </div>
                 </div>
               )}

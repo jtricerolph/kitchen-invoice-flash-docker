@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../App'
 
 interface DailyStats {
@@ -74,12 +75,26 @@ interface ResosSettings {
 
 export default function ResosData() {
   const { token } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
   const [month, setMonth] = useState(today.getMonth() + 1)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [expandedNotes, setExpandedNotes] = useState<Set<number>>(new Set())
   const [selectedServiceType, setSelectedServiceType] = useState<string>('all')
+
+  // Handle URL date param - open modal for that date on mount
+  useEffect(() => {
+    const dateParam = searchParams.get('date')
+    if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      const paramDate = new Date(dateParam)
+      setYear(paramDate.getFullYear())
+      setMonth(paramDate.getMonth() + 1)
+      setSelectedDate(dateParam)
+      // Clear the param from URL after using it
+      setSearchParams({}, { replace: true })
+    }
+  }, [])
 
   // Calendar events state
   const [showEventModal, setShowEventModal] = useState(false)

@@ -27,6 +27,10 @@ class KitchenSettings(Base):
     # Newbook sync configuration
     newbook_last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     newbook_auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Separate sync interval for next 7 days (in minutes, default 15)
+    newbook_upcoming_sync_interval: Mapped[int] = mapped_column(Integer, default=15)
+    newbook_upcoming_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    newbook_last_upcoming_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Newbook allocation GL mapping (CSV-style, e.g. "4100,4101,4102")
     newbook_breakfast_gl_codes: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -92,12 +96,16 @@ class KitchenSettings(Base):
     smtp_from_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     smtp_from_name: Mapped[str | None] = mapped_column(String(255), nullable=True, default="Kitchen Invoice System")
 
+    # Support request email (where screenshot reports are sent)
+    support_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Dext integration
     dext_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     dext_include_notes: Mapped[bool] = mapped_column(Boolean, default=True)
     dext_include_non_stock: Mapped[bool] = mapped_column(Boolean, default=True)
     dext_auto_send_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     dext_manual_send_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    dext_include_annotations: Mapped[bool] = mapped_column(Boolean, default=True)  # Include PDF annotations when sending to Dext
 
     # Nextcloud settings
     nextcloud_host: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -128,12 +136,28 @@ class KitchenSettings(Base):
     backup_last_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     backup_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # IMAP Email Inbox settings
+    imap_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    imap_port: Mapped[int | None] = mapped_column(Integer, nullable=True, default=993)
+    imap_use_ssl: Mapped[bool] = mapped_column(Boolean, default=True)
+    imap_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    imap_password: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    imap_folder: Mapped[str | None] = mapped_column(String(255), nullable=True, default="INBOX")
+    imap_poll_interval: Mapped[int] = mapped_column(Integer, default=15)  # minutes
+    imap_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    imap_confidence_threshold: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True, default=Decimal("0.50"))
+    imap_last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # General settings
     currency_symbol: Mapped[str] = mapped_column(String(5), default="£")
     date_format: Mapped[str] = mapped_column(String(20), default="DD/MM/YYYY")
 
     # Warning thresholds
     high_quantity_threshold: Mapped[int] = mapped_column(default=100)  # Warn if qty > this value
+
+    # PDF annotation settings
+    pdf_annotations_enabled: Mapped[bool] = mapped_column(Boolean, default=True)  # Enable adding annotations to PDFs
+    pdf_preview_show_annotations: Mapped[bool] = mapped_column(Boolean, default=True)  # Show annotations in preview window
 
     # Price change detection settings
     price_change_lookback_days: Mapped[int] = mapped_column(Integer, default=30)  # Days to look back for price comparison

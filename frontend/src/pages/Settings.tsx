@@ -17,12 +17,17 @@ interface SettingsData {
   smtp_use_tls: boolean
   smtp_from_email: string | null
   smtp_from_name: string | null
+  support_email: string | null
   // Dext integration
   dext_email: string | null
   dext_include_notes: boolean
   dext_include_non_stock: boolean
   dext_auto_send_enabled: boolean
   dext_manual_send_enabled: boolean
+  dext_include_annotations: boolean
+  // PDF annotation settings
+  pdf_annotations_enabled: boolean
+  pdf_preview_show_annotations: boolean
 }
 
 interface NewbookSettingsData {
@@ -33,6 +38,9 @@ interface NewbookSettingsData {
   newbook_instance_id: string | null
   newbook_last_sync: string | null
   newbook_auto_sync_enabled: boolean
+  newbook_upcoming_sync_enabled: boolean
+  newbook_upcoming_sync_interval: number
+  newbook_last_upcoming_sync: string | null
   newbook_breakfast_gl_codes: string | null
   newbook_dinner_gl_codes: string | null
   newbook_breakfast_vat_rate: string | null
@@ -90,7 +98,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -169,6 +177,41 @@ interface SearchSettingsData {
   price_change_red_threshold: number
 }
 
+interface ImapSettingsData {
+  imap_host: string | null
+  imap_port: number | null
+  imap_use_ssl: boolean
+  imap_username: string | null
+  imap_password_set: boolean
+  imap_folder: string | null
+  imap_poll_interval: number
+  imap_enabled: boolean
+  imap_confidence_threshold: number | null
+  imap_last_sync: string | null
+}
+
+interface ImapLogEntry {
+  id: number
+  message_id: string
+  email_subject: string | null
+  email_from: string | null
+  email_date: string | null
+  attachments_count: number
+  invoices_created: number
+  confident_invoices: number
+  marked_as_read: boolean
+  processing_status: string
+  error_message: string | null
+  invoice_ids: number[] | null
+  processed_at: string
+}
+
+interface ImapSyncStats {
+  last_24h: { emails_processed: number; invoices_created: number; confident_invoices: number }
+  last_7d: { emails_processed: number; invoices_created: number; confident_invoices: number }
+  last_30d: { emails_processed: number; invoices_created: number; confident_invoices: number }
+}
+
 export default function Settings() {
   const { user, token, logout, restrictedPages: authRestrictedPages } = useAuth()
   const queryClient = useQueryClient()
@@ -187,6 +230,7 @@ export default function Settings() {
   const [smtpUseTls, setSmtpUseTls] = useState(true)
   const [smtpFromEmail, setSmtpFromEmail] = useState('')
   const [smtpFromName, setSmtpFromName] = useState('Kitchen Invoice System')
+  const [supportEmail, setSupportEmail] = useState('')
   const [smtpTestStatus, setSmtpTestStatus] = useState<string | null>(null)
   const [smtpSaveMessage, setSmtpSaveMessage] = useState<string | null>(null)
 
@@ -196,12 +240,15 @@ export default function Settings() {
   const [dextIncludeNonStock, setDextIncludeNonStock] = useState(true)
   const [dextAutoSendEnabled, setDextAutoSendEnabled] = useState(false)
   const [dextManualSendEnabled, setDextManualSendEnabled] = useState(true)
+  const [dextIncludeAnnotations, setDextIncludeAnnotations] = useState(true)
   const [dextSaveMessage, setDextSaveMessage] = useState<string | null>(null)
 
   // Display state
   const [currencySymbol, setCurrencySymbol] = useState('£')
   const [dateFormat, setDateFormat] = useState('DD/MM/YYYY')
   const [highQuantityThreshold, setHighQuantityThreshold] = useState(100)
+  const [pdfAnnotationsEnabled, setPdfAnnotationsEnabled] = useState(true)
+  const [pdfPreviewShowAnnotations, setPdfPreviewShowAnnotations] = useState(true)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
   // Password state
@@ -303,6 +350,20 @@ export default function Settings() {
   const [priceAmberThreshold, setPriceAmberThreshold] = useState(10)
   const [priceRedThreshold, setPriceRedThreshold] = useState(20)
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | null>(null)
+
+  // IMAP Email Inbox state
+  const [imapHost, setImapHost] = useState('')
+  const [imapPort, setImapPort] = useState('993')
+  const [imapUseSsl, setImapUseSsl] = useState(true)
+  const [imapUsername, setImapUsername] = useState('')
+  const [imapPassword, setImapPassword] = useState('')
+  const [imapFolder, setImapFolder] = useState('INBOX')
+  const [imapPollInterval, setImapPollInterval] = useState(15)
+  const [imapEnabled, setImapEnabled] = useState(false)
+  const [imapConfidenceThreshold, setImapConfidenceThreshold] = useState(50)
+  const [imapTestStatus, setImapTestStatus] = useState<string | null>(null)
+  const [imapSaveMessage, setImapSaveMessage] = useState<string | null>(null)
+  const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
 
   // Fetch settings
   const { data: settings, isLoading } = useQuery<SettingsData>({
@@ -547,6 +608,45 @@ export default function Settings() {
     enabled: !!token,
   })
 
+  // Fetch IMAP settings
+  const { data: imapSettings } = useQuery<ImapSettingsData>({
+    queryKey: ['imap-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/imap/settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch IMAP settings')
+      return res.json()
+    },
+    enabled: !!token && !!user?.is_admin,
+  })
+
+  // Fetch IMAP logs
+  const { data: imapLogs } = useQuery<ImapLogEntry[]>({
+    queryKey: ['imap-logs'],
+    queryFn: async () => {
+      const res = await fetch('/api/imap/logs?limit=20', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch IMAP logs')
+      return res.json()
+    },
+    enabled: !!token && !!user?.is_admin && activeSection === 'inbox',
+  })
+
+  // Fetch IMAP sync stats
+  const { data: imapStats } = useQuery<ImapSyncStats>({
+    queryKey: ['imap-stats'],
+    queryFn: async () => {
+      const res = await fetch('/api/imap/logs/stats', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch IMAP stats')
+      return res.json()
+    },
+    enabled: !!token && !!user?.is_admin && activeSection === 'inbox',
+  })
+
   // State for page restrictions
   const [restrictedPages, setRestrictedPages] = useState<Set<string>>(new Set())
   const [accessSaveMessage, setAccessSaveMessage] = useState<string | null>(null)
@@ -571,12 +671,17 @@ export default function Settings() {
       setSmtpUseTls(settings.smtp_use_tls)
       setSmtpFromEmail(settings.smtp_from_email || '')
       setSmtpFromName(settings.smtp_from_name || 'Kitchen Invoice System')
+      setSupportEmail(settings.support_email || '')
       // Dext settings
       setDextEmail(settings.dext_email || '')
       setDextIncludeNotes(settings.dext_include_notes)
       setDextIncludeNonStock(settings.dext_include_non_stock)
       setDextAutoSendEnabled(settings.dext_auto_send_enabled)
       setDextManualSendEnabled(settings.dext_manual_send_enabled)
+      setDextIncludeAnnotations(settings.dext_include_annotations)
+      // PDF annotation settings
+      setPdfAnnotationsEnabled(settings.pdf_annotations_enabled)
+      setPdfPreviewShowAnnotations(settings.pdf_preview_show_annotations)
     }
   }, [settings])
 
@@ -614,6 +719,20 @@ export default function Settings() {
       setPriceRedThreshold(searchSettings.price_change_red_threshold || 20)
     }
   }, [searchSettings])
+
+  // Populate IMAP settings
+  useEffect(() => {
+    if (imapSettings) {
+      setImapHost(imapSettings.imap_host || '')
+      setImapPort(String(imapSettings.imap_port || 993))
+      setImapUseSsl(imapSettings.imap_use_ssl)
+      setImapUsername(imapSettings.imap_username || '')
+      setImapFolder(imapSettings.imap_folder || 'INBOX')
+      setImapPollInterval(imapSettings.imap_poll_interval || 15)
+      setImapEnabled(imapSettings.imap_enabled)
+      setImapConfidenceThreshold((imapSettings.imap_confidence_threshold || 0.5) * 100)
+    }
+  }, [imapSettings])
 
   useEffect(() => {
     if (newbookSettings) {
@@ -1433,11 +1552,13 @@ export default function Settings() {
   }
 
   const handleSaveSettings = () => {
-    const data: Record<string, string | number> = {
+    const data: Record<string, string | number | boolean> = {
       azure_endpoint: azureEndpoint,
       currency_symbol: currencySymbol,
       date_format: dateFormat,
       high_quantity_threshold: highQuantityThreshold,
+      pdf_annotations_enabled: pdfAnnotationsEnabled,
+      pdf_preview_show_annotations: pdfPreviewShowAnnotations,
     }
     if (azureKey) {
       data.azure_key = azureKey
@@ -1574,6 +1695,7 @@ export default function Settings() {
     { id: 'display', label: 'Display', restrictPath: '/settings-display' },
     { id: 'azure', label: 'Azure OCR', restrictPath: '/settings-azure' },
     { id: 'email', label: 'Email Configuration', restrictPath: '/settings-email' },
+    { id: 'inbox', label: 'Email Inbox', adminOnly: true, restrictPath: '/settings-inbox' },
     { id: 'dext', label: 'Dext Integration', restrictPath: '/settings-dext' },
     { id: 'newbook', label: 'Newbook PMS', restrictPath: '/settings-newbook' },
     { id: 'resos', label: 'Resos Bookings', restrictPath: '/settings-resos' },
@@ -1952,6 +2074,35 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* PDF Annotation Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>PDF Annotations</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={pdfAnnotationsEnabled}
+                    onChange={(e) => setPdfAnnotationsEnabled(e.target.checked)}
+                  />
+                  Enable PDF annotations
+                  <small style={{ color: '#666', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
+                    When enabled, the system will add visual annotations (highlights, labels) to PDFs
+                  </small>
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={pdfPreviewShowAnnotations}
+                    onChange={(e) => setPdfPreviewShowAnnotations(e.target.checked)}
+                  />
+                  Show annotations in PDF preview
+                  <small style={{ color: '#666', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
+                    When enabled, annotations will be visible in the preview window on the review page
+                  </small>
+                </label>
+              </div>
+            </div>
+
             {/* Save Button - outside blocks */}
             <button onClick={handleSaveSettings} style={styles.saveBtn} disabled={updateMutation.isPending}>
               {updateMutation.isPending ? 'Saving...' : 'Save Settings'}
@@ -2097,6 +2248,27 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* Support Request Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Support Request Settings</h3>
+              <p style={styles.hint}>Configure where user support requests (with screenshots) are sent.</p>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Support Email
+                  <input
+                    type="email"
+                    value={supportEmail}
+                    onChange={(e) => setSupportEmail(e.target.value)}
+                    style={styles.input}
+                    placeholder="support@yourcompany.com"
+                  />
+                  <small style={{ color: '#666', fontSize: '0.9em' }}>
+                    Users can report issues with a screenshot using the ? button (visible when configured)
+                  </small>
+                </label>
+              </div>
+            </div>
+
             {/* Actions - outside blocks */}
             <div style={styles.buttonRow}>
                 <button
@@ -2111,7 +2283,8 @@ export default function Settings() {
                         smtp_password: smtpPassword || undefined,
                         smtp_use_tls: smtpUseTls,
                         smtp_from_email: smtpFromEmail || null,
-                        smtp_from_name: smtpFromName || null
+                        smtp_from_name: smtpFromName || null,
+                        support_email: supportEmail || null
                       }
 
                       const saveRes = await fetch('/api/settings/', {
@@ -2170,7 +2343,8 @@ export default function Settings() {
                           smtp_password: smtpPassword || undefined,
                           smtp_use_tls: smtpUseTls,
                           smtp_from_email: smtpFromEmail || null,
-                          smtp_from_name: smtpFromName || null
+                          smtp_from_name: smtpFromName || null,
+                          support_email: supportEmail || null
                         })
                       })
                       if (res.ok) {
@@ -2197,6 +2371,329 @@ export default function Settings() {
             {smtpSaveMessage && (
               <div style={{ ...styles.statusMessage, background: smtpSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
                 {smtpSaveMessage}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Email Inbox (IMAP) Section */}
+        {activeSection === 'inbox' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Email Inbox (IMAP)</h2>
+            <p style={styles.hint}>
+              Configure an email inbox to automatically process invoice attachments.
+              Emails with confident invoice attachments will be marked as read.
+            </p>
+
+            {/* IMAP Connection Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>IMAP Connection</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  IMAP Server
+                  <input
+                    type="text"
+                    value={imapHost}
+                    onChange={(e) => setImapHost(e.target.value)}
+                    style={styles.input}
+                    placeholder="imap.gmail.com"
+                  />
+                </label>
+                <label style={styles.label}>
+                  Port
+                  <input
+                    type="number"
+                    value={imapPort}
+                    onChange={(e) => setImapPort(e.target.value)}
+                    style={styles.input}
+                    placeholder="993"
+                  />
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={imapUseSsl}
+                    onChange={(e) => setImapUseSsl(e.target.checked)}
+                  />
+                  Use SSL
+                </label>
+                <label style={styles.label}>
+                  Username / Email
+                  <input
+                    type="text"
+                    value={imapUsername}
+                    onChange={(e) => setImapUsername(e.target.value)}
+                    style={styles.input}
+                    placeholder="invoices@yourcompany.com"
+                  />
+                </label>
+                <label style={styles.label}>
+                  Password
+                  <input
+                    type="password"
+                    value={imapPassword}
+                    onChange={(e) => setImapPassword(e.target.value)}
+                    style={styles.input}
+                    placeholder={imapSettings?.imap_password_set ? '••••••••••••••••' : 'Enter password'}
+                  />
+                  {imapSettings?.imap_password_set && !imapPassword && <span style={styles.keyStatus}>Password is configured</span>}
+                </label>
+                <label style={styles.label}>
+                  Folder
+                  <input
+                    type="text"
+                    value={imapFolder}
+                    onChange={(e) => setImapFolder(e.target.value)}
+                    style={styles.input}
+                    placeholder="INBOX"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Processing Settings Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Processing Settings</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Poll Interval
+                  <select
+                    value={imapPollInterval}
+                    onChange={(e) => setImapPollInterval(parseInt(e.target.value))}
+                    style={styles.input}
+                  >
+                    <option value={5}>Every 5 minutes</option>
+                    <option value={10}>Every 10 minutes</option>
+                    <option value={15}>Every 15 minutes</option>
+                    <option value={30}>Every 30 minutes</option>
+                    <option value={60}>Every hour</option>
+                  </select>
+                </label>
+                <label style={styles.label}>
+                  Confidence Threshold: {imapConfidenceThreshold}%
+                  <input
+                    type="range"
+                    min={30}
+                    max={90}
+                    value={imapConfidenceThreshold}
+                    onChange={(e) => setImapConfidenceThreshold(parseInt(e.target.value))}
+                    style={{ width: '100%' }}
+                  />
+                  <span style={styles.hint}>
+                    Emails are marked as read when any attachment has confidence above this threshold
+                  </span>
+                </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={imapEnabled}
+                    onChange={(e) => setImapEnabled(e.target.checked)}
+                  />
+                  Enable Automatic Polling
+                </label>
+              </div>
+            </div>
+
+            {/* Last Sync Info */}
+            {imapSettings?.imap_last_sync && (
+              <div style={{ ...styles.hint, marginBottom: '1rem' }}>
+                Last sync: {new Date(imapSettings.imap_last_sync).toLocaleString()}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div style={styles.buttonRow}>
+              <button
+                onClick={async () => {
+                  setImapTestStatus('Testing connection...')
+                  try {
+                    const res = await fetch('/api/imap/test-connection', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`
+                      },
+                      body: JSON.stringify({
+                        imap_host: imapHost || undefined,
+                        imap_port: parseInt(imapPort) || undefined,
+                        imap_use_ssl: imapUseSsl,
+                        imap_username: imapUsername || undefined,
+                        imap_password: imapPassword || undefined
+                      })
+                    })
+                    const data = await res.json()
+                    if (data.success) {
+                      setImapTestStatus(`✓ Connected! Available folders: ${data.folders?.join(', ') || 'INBOX'}`)
+                    } else {
+                      setImapTestStatus(`Error: ${data.error}`)
+                    }
+                  } catch (err) {
+                    setImapTestStatus(`Error: ${err}`)
+                  }
+                }}
+                style={styles.testBtn}
+                disabled={!imapHost}
+              >
+                Test Connection
+              </button>
+              <button
+                onClick={async () => {
+                  setImapSyncMessage('Syncing...')
+                  try {
+                    const res = await fetch('/api/imap/sync-now', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` }
+                    })
+                    const data = await res.json()
+                    if (data.success) {
+                      const r = data.results
+                      setImapSyncMessage(
+                        `✓ Sync complete: ${r.emails_processed} emails processed, ` +
+                        `${r.invoices_created} invoices created, ${r.emails_marked_read} marked as read`
+                      )
+                      queryClient.invalidateQueries({ queryKey: ['imap-settings'] })
+                      queryClient.invalidateQueries({ queryKey: ['imap-logs'] })
+                      queryClient.invalidateQueries({ queryKey: ['imap-stats'] })
+                    } else {
+                      setImapSyncMessage(`Error: ${data.error}`)
+                    }
+                  } catch (err) {
+                    setImapSyncMessage(`Error: ${err}`)
+                  }
+                }}
+                style={styles.testBtn}
+                disabled={!imapSettings?.imap_password_set && !imapPassword}
+              >
+                Sync Now
+              </button>
+              <button
+                onClick={async () => {
+                  setImapSaveMessage('Saving...')
+                  try {
+                    const res = await fetch('/api/imap/settings', {
+                      method: 'PATCH',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`
+                      },
+                      body: JSON.stringify({
+                        imap_host: imapHost || null,
+                        imap_port: parseInt(imapPort) || 993,
+                        imap_use_ssl: imapUseSsl,
+                        imap_username: imapUsername || null,
+                        imap_password: imapPassword || undefined,
+                        imap_folder: imapFolder || 'INBOX',
+                        imap_poll_interval: imapPollInterval,
+                        imap_enabled: imapEnabled,
+                        imap_confidence_threshold: imapConfidenceThreshold / 100
+                      })
+                    })
+                    if (res.ok) {
+                      setImapSaveMessage('✓ Settings saved')
+                      setImapPassword('')
+                      queryClient.invalidateQueries({ queryKey: ['imap-settings'] })
+                    } else {
+                      const err = await res.json()
+                      setImapSaveMessage(`Error: ${err.detail}`)
+                    }
+                  } catch (err) {
+                    setImapSaveMessage(`Error: ${err}`)
+                  }
+                }}
+                style={styles.saveBtn}
+              >
+                Save Settings
+              </button>
+            </div>
+
+            {imapTestStatus && (
+              <div style={{ ...styles.statusMessage, background: imapTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                {imapTestStatus}
+              </div>
+            )}
+            {imapSyncMessage && (
+              <div style={{ ...styles.statusMessage, background: imapSyncMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                {imapSyncMessage}
+              </div>
+            )}
+            {imapSaveMessage && (
+              <div style={{ ...styles.statusMessage, background: imapSaveMessage.startsWith('Error') ? '#fee' : '#efe' }}>
+                {imapSaveMessage}
+              </div>
+            )}
+
+            {/* Stats Block */}
+            {imapStats && (
+              <div style={styles.settingsBlock}>
+                <h3 style={styles.blockTitle}>Sync Statistics</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                  <div>
+                    <strong>Last 24 Hours</strong>
+                    <p>{imapStats.last_24h.emails_processed} emails</p>
+                    <p>{imapStats.last_24h.invoices_created} invoices</p>
+                    <p>{imapStats.last_24h.confident_invoices} confident</p>
+                  </div>
+                  <div>
+                    <strong>Last 7 Days</strong>
+                    <p>{imapStats.last_7d.emails_processed} emails</p>
+                    <p>{imapStats.last_7d.invoices_created} invoices</p>
+                    <p>{imapStats.last_7d.confident_invoices} confident</p>
+                  </div>
+                  <div>
+                    <strong>Last 30 Days</strong>
+                    <p>{imapStats.last_30d.emails_processed} emails</p>
+                    <p>{imapStats.last_30d.invoices_created} invoices</p>
+                    <p>{imapStats.last_30d.confident_invoices} confident</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Recent Logs Block */}
+            {imapLogs && imapLogs.length > 0 && (
+              <div style={styles.settingsBlock}>
+                <h3 style={styles.blockTitle}>Recent Processing Logs</h3>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #ddd' }}>
+                      <th style={{ textAlign: 'left', padding: '0.5rem' }}>Date</th>
+                      <th style={{ textAlign: 'left', padding: '0.5rem' }}>Subject</th>
+                      <th style={{ textAlign: 'center', padding: '0.5rem' }}>Attachments</th>
+                      <th style={{ textAlign: 'center', padding: '0.5rem' }}>Invoices</th>
+                      <th style={{ textAlign: 'center', padding: '0.5rem' }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {imapLogs.map((log) => (
+                      <tr key={log.id} style={{ borderBottom: '1px solid #eee' }}>
+                        <td style={{ padding: '0.5rem' }}>
+                          {new Date(log.processed_at).toLocaleString()}
+                        </td>
+                        <td style={{ padding: '0.5rem', maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {log.email_subject || '(no subject)'}
+                        </td>
+                        <td style={{ textAlign: 'center', padding: '0.5rem' }}>
+                          {log.attachments_count}
+                        </td>
+                        <td style={{ textAlign: 'center', padding: '0.5rem' }}>
+                          {log.invoices_created}
+                          {log.confident_invoices > 0 && (
+                            <span style={{ color: '#27ae60' }}> ({log.confident_invoices} confident)</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'center', padding: '0.5rem' }}>
+                          {log.marked_as_read ? (
+                            <span style={{ color: '#27ae60' }}>Read</span>
+                          ) : log.processing_status === 'skipped' ? (
+                            <span style={{ color: '#95a5a6' }}>Skipped</span>
+                          ) : (
+                            <span style={{ color: '#e67e22' }}>Unread</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -2261,6 +2758,17 @@ export default function Settings() {
                     When disabled, only the send status will be displayed (without send/resend buttons)
                   </small>
                 </label>
+                <label style={styles.label}>
+                  <input
+                    type="checkbox"
+                    checked={dextIncludeAnnotations}
+                    onChange={(e) => setDextIncludeAnnotations(e.target.checked)}
+                  />
+                  Include PDF annotations (highlights) when sending to Dext
+                  <small style={{ color: '#666', fontSize: '0.9em', display: 'block', marginTop: '0.25rem' }}>
+                    When enabled, non-stock items will be highlighted in yellow on the PDF attachment
+                  </small>
+                </label>
               </div>
             </div>
 
@@ -2279,7 +2787,8 @@ export default function Settings() {
                       dext_include_notes: dextIncludeNotes,
                       dext_include_non_stock: dextIncludeNonStock,
                       dext_auto_send_enabled: dextAutoSendEnabled,
-                      dext_manual_send_enabled: dextManualSendEnabled
+                      dext_manual_send_enabled: dextManualSendEnabled,
+                      dext_include_annotations: dextIncludeAnnotations
                     })
                   })
                   if (res.ok) {
@@ -2547,6 +3056,40 @@ export default function Settings() {
               />
               Enable automatic daily sync (4:00 AM)
             </label>
+
+            {/* Frequent Upcoming Sync */}
+            <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #eee' }}>
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={newbookSettings?.newbook_upcoming_sync_enabled || false}
+                  onChange={(e) => updateNewbookMutation.mutate({ newbook_upcoming_sync_enabled: e.target.checked })}
+                />
+                Enable frequent upcoming sync (next 7 days)
+              </label>
+              <small style={styles.hint}>Keeps ResidentsTableChart fresh with more frequent updates</small>
+            </div>
+
+            {newbookSettings?.newbook_upcoming_sync_enabled && (
+              <div style={styles.formGroup}>
+                <label>Sync interval (minutes)</label>
+                <input
+                  type="number"
+                  value={newbookSettings?.newbook_upcoming_sync_interval || 15}
+                  onChange={(e) => updateNewbookMutation.mutate({ newbook_upcoming_sync_interval: parseInt(e.target.value) || 15 })}
+                  min={5}
+                  max={60}
+                  style={{ ...styles.input, width: '100px' }}
+                />
+                <small style={styles.hint}>Recommended: 15 minutes</small>
+              </div>
+            )}
+
+            {newbookSettings?.newbook_last_upcoming_sync && (
+              <div style={styles.formGroup}>
+                <small style={styles.hint}>Last frequent sync: {new Date(newbookSettings.newbook_last_upcoming_sync).toLocaleString()}</small>
+              </div>
+            )}
             </div>
 
             {/* Status Message - outside blocks */}

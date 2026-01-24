@@ -15,6 +15,7 @@ from database import AsyncSessionLocal
 from models.settings import KitchenSettings
 from services.newbook_sync import NewbookSyncService
 from services.resos_sync import ResosSyncService
+from services.imap_sync import ImapSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,36 @@ async def run_daily_resos_sync():
                 # Continue with other kitchens
 
 
+async def run_upcoming_newbook_sync():
+    """
+    Upcoming Newbook sync job (next 7 days) that runs more frequently.
+    Interval configured per kitchen in settings (default 15 minutes).
+    Keeps ResidentsTableChart and forecast data fresh.
+    """
+    logger.info("Starting upcoming Newbook sync job")
+
+    async with AsyncSessionLocal() as db:
+        # Get all kitchens with upcoming sync enabled
+        result = await db.execute(
+            select(KitchenSettings).where(
+                KitchenSettings.newbook_upcoming_sync_enabled == True,
+                KitchenSettings.newbook_api_key.isnot(None)
+            )
+        )
+        settings_list = result.scalars().all()
+
+        logger.info(f"Found {len(settings_list)} kitchens with upcoming Newbook sync enabled")
+
+        for settings in settings_list:
+            try:
+                sync_service = NewbookSyncService(db, settings.kitchen_id)
+                results = await sync_service.run_upcoming_sync()
+                logger.info(f"Kitchen {settings.kitchen_id} upcoming Newbook sync completed: {results}")
+            except Exception as e:
+                logger.error(f"Kitchen {settings.kitchen_id} upcoming Newbook sync failed: {e}")
+                # Continue with other kitchens
+
+
 async def run_upcoming_resos_sync():
     """
     Upcoming Resos sync job (next 7 days) that runs more frequently.
@@ -105,6 +136,41 @@ async def run_upcoming_resos_sync():
                 logger.info(f"Kitchen {settings.kitchen_id} upcoming Resos sync completed: {results}")
             except Exception as e:
                 logger.error(f"Kitchen {settings.kitchen_id} upcoming Resos sync failed: {e}")
+                # Continue with other kitchens
+
+
+async def run_imap_inbox_sync():
+    """
+    IMAP email inbox sync job that runs for all kitchens with IMAP enabled.
+    Runs every 15 minutes by default - polls configured email accounts for
+    invoice attachments and processes them through the OCR pipeline.
+    """
+    logger.info("Starting IMAP inbox sync job")
+
+    async with AsyncSessionLocal() as db:
+        # Get all kitchens with IMAP enabled
+        result = await db.execute(
+            select(KitchenSettings).where(
+                KitchenSettings.imap_enabled == True,
+                KitchenSettings.imap_host.isnot(None),
+                KitchenSettings.imap_password.isnot(None)
+            )
+        )
+        settings_list = result.scalars().all()
+
+        logger.info(f"Found {len(settings_list)} kitchens with IMAP enabled")
+
+        for settings in settings_list:
+            try:
+                sync_service = ImapSyncService(settings.kitchen_id, db)
+                results = await sync_service.process_inbox()
+                logger.info(
+                    f"Kitchen {settings.kitchen_id} IMAP sync completed: "
+                    f"{results['emails_processed']} emails, "
+                    f"{results['invoices_created']} invoices created"
+                )
+            except Exception as e:
+                logger.error(f"Kitchen {settings.kitchen_id} IMAP sync failed: {e}")
                 # Continue with other kitchens
 
 
@@ -239,6 +305,16 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # Upcoming Newbook sync (next 7 days) - runs every 15 minutes by default
+    # Note: The interval is configured per kitchen in settings
+    scheduler.add_job(
+        run_upcoming_newbook_sync,
+        IntervalTrigger(minutes=15),
+        id="upcoming_newbook_sync",
+        name="Upcoming Newbook Sync (Next 7 Days)",
+        replace_existing=True
+    )
+
     # Upcoming Resos sync (next 7 days) - runs every 15 minutes by default
     # Note: The interval is configured per kitchen in settings
     scheduler.add_job(
@@ -249,8 +325,18 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # IMAP email inbox sync - runs every 15 minutes
+    # Polls configured email accounts for invoice attachments
+    scheduler.add_job(
+        run_imap_inbox_sync,
+        IntervalTrigger(minutes=15),
+        id="imap_inbox_sync",
+        name="IMAP Email Inbox Sync",
+        replace_existing=True
+    )
+
     scheduler.start()
-    logger.info("Scheduler started - backup at 3:00 AM, archival at 3:30 AM, Newbook sync at 4:00 AM, Resos sync at 4:30 AM, Upcoming sync every 15 min")
+    logger.info("Scheduler started - backup at 3:00 AM, archival at 3:30 AM, Newbook sync at 4:00 AM, Resos sync at 4:30 AM, Upcoming syncs every 15 min, IMAP sync every 15 min")
 
 
 def stop_scheduler():

@@ -25,12 +25,17 @@ class SettingsResponse(BaseModel):
     smtp_use_tls: bool
     smtp_from_email: str | None
     smtp_from_name: str | None
+    support_email: str | None
     # Dext integration
     dext_email: str | None
     dext_include_notes: bool
     dext_include_non_stock: bool
     dext_auto_send_enabled: bool
     dext_manual_send_enabled: bool
+    dext_include_annotations: bool
+    # PDF annotation settings
+    pdf_annotations_enabled: bool
+    pdf_preview_show_annotations: bool
 
     class Config:
         from_attributes = True
@@ -50,12 +55,17 @@ class SettingsUpdate(BaseModel):
     smtp_use_tls: bool | None = None
     smtp_from_email: str | None = None
     smtp_from_name: str | None = None
+    support_email: str | None = None
     # Dext integration
     dext_email: str | None = None
     dext_include_notes: bool | None = None
     dext_include_non_stock: bool | None = None
     dext_auto_send_enabled: bool | None = None
     dext_manual_send_enabled: bool | None = None
+    dext_include_annotations: bool | None = None
+    # PDF annotation settings
+    pdf_annotations_enabled: bool | None = None
+    pdf_preview_show_annotations: bool | None = None
 
 
 @router.get("/", response_model=SettingsResponse)
@@ -94,12 +104,17 @@ async def get_settings(
         smtp_use_tls=settings.smtp_use_tls,
         smtp_from_email=settings.smtp_from_email,
         smtp_from_name=settings.smtp_from_name,
+        support_email=settings.support_email,
         # Dext integration
         dext_email=settings.dext_email,
         dext_include_notes=settings.dext_include_notes,
         dext_include_non_stock=settings.dext_include_non_stock,
         dext_auto_send_enabled=settings.dext_auto_send_enabled,
-        dext_manual_send_enabled=settings.dext_manual_send_enabled
+        dext_manual_send_enabled=settings.dext_manual_send_enabled,
+        dext_include_annotations=settings.dext_include_annotations,
+        # PDF annotation settings
+        pdf_annotations_enabled=settings.pdf_annotations_enabled,
+        pdf_preview_show_annotations=settings.pdf_preview_show_annotations
     )
 
 
@@ -142,12 +157,17 @@ async def update_settings(
         smtp_use_tls=settings.smtp_use_tls,
         smtp_from_email=settings.smtp_from_email,
         smtp_from_name=settings.smtp_from_name,
+        support_email=settings.support_email,
         # Dext integration
         dext_email=settings.dext_email,
         dext_include_notes=settings.dext_include_notes,
         dext_include_non_stock=settings.dext_include_non_stock,
         dext_auto_send_enabled=settings.dext_auto_send_enabled,
-        dext_manual_send_enabled=settings.dext_manual_send_enabled
+        dext_manual_send_enabled=settings.dext_manual_send_enabled,
+        dext_include_annotations=settings.dext_include_annotations,
+        # PDF annotation settings
+        pdf_annotations_enabled=settings.pdf_annotations_enabled,
+        pdf_preview_show_annotations=settings.pdf_preview_show_annotations
     )
 
 

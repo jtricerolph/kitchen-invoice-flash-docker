@@ -35,6 +35,9 @@ class NewbookSettingsResponse(BaseModel):
     newbook_instance_id: str | None
     newbook_last_sync: datetime | None
     newbook_auto_sync_enabled: bool
+    newbook_upcoming_sync_enabled: bool
+    newbook_upcoming_sync_interval: int
+    newbook_last_upcoming_sync: datetime | None
     newbook_breakfast_gl_codes: str | None
     newbook_dinner_gl_codes: str | None
     newbook_breakfast_vat_rate: Decimal | None
@@ -51,6 +54,8 @@ class NewbookSettingsUpdate(BaseModel):
     newbook_api_region: str | None = None  # au, ap, eu, us
     newbook_instance_id: str | None = None
     newbook_auto_sync_enabled: bool | None = None
+    newbook_upcoming_sync_enabled: bool | None = None
+    newbook_upcoming_sync_interval: int | None = None
     newbook_breakfast_gl_codes: str | None = None
     newbook_dinner_gl_codes: str | None = None
     newbook_breakfast_vat_rate: Decimal | None = None
@@ -218,6 +223,9 @@ async def get_newbook_settings(
         newbook_instance_id=settings.newbook_instance_id,
         newbook_last_sync=settings.newbook_last_sync,
         newbook_auto_sync_enabled=settings.newbook_auto_sync_enabled,
+        newbook_upcoming_sync_enabled=settings.newbook_upcoming_sync_enabled,
+        newbook_upcoming_sync_interval=settings.newbook_upcoming_sync_interval,
+        newbook_last_upcoming_sync=settings.newbook_last_upcoming_sync,
         newbook_breakfast_gl_codes=settings.newbook_breakfast_gl_codes,
         newbook_dinner_gl_codes=settings.newbook_dinner_gl_codes,
         newbook_breakfast_vat_rate=settings.newbook_breakfast_vat_rate,
@@ -261,6 +269,9 @@ async def update_newbook_settings(
         newbook_instance_id=settings.newbook_instance_id,
         newbook_last_sync=settings.newbook_last_sync,
         newbook_auto_sync_enabled=settings.newbook_auto_sync_enabled,
+        newbook_upcoming_sync_enabled=settings.newbook_upcoming_sync_enabled,
+        newbook_upcoming_sync_interval=settings.newbook_upcoming_sync_interval,
+        newbook_last_upcoming_sync=settings.newbook_last_upcoming_sync,
         newbook_breakfast_gl_codes=settings.newbook_breakfast_gl_codes,
         newbook_dinner_gl_codes=settings.newbook_dinner_gl_codes,
         newbook_breakfast_vat_rate=settings.newbook_breakfast_vat_rate,

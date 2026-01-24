@@ -77,6 +77,15 @@ class Invoice(Base):
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     original_local_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
+    # Source tracking - where did this invoice come from?
+    source: Mapped[str] = mapped_column(String(50), default="upload")  # upload, email, api
+    source_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # email subject, API caller, etc.
+
+    # Dispute linking - for credit notes linked to disputes
+    linked_dispute_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("invoice_disputes.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Relationships
     kitchen: Mapped["Kitchen"] = relationship("Kitchen", back_populates="invoices")
     supplier: Mapped["Supplier"] = relationship("Supplier", back_populates="invoices")
@@ -91,7 +100,8 @@ class Invoice(Base):
     disputes: Mapped[list["InvoiceDispute"]] = relationship(
         "InvoiceDispute",
         back_populates="invoice",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        foreign_keys="InvoiceDispute.invoice_id"
     )
     credit_notes: Mapped[list["CreditNote"]] = relationship(
         "CreditNote",
@@ -116,6 +126,13 @@ class Invoice(Base):
     dext_sent_by_user: Mapped[Optional["User"]] = relationship(
         "User",
         foreign_keys=[dext_sent_by_user_id]
+    )
+
+    # Linked dispute relationship (for credit notes)
+    linked_dispute: Mapped[Optional["InvoiceDispute"]] = relationship(
+        "InvoiceDispute",
+        foreign_keys=[linked_dispute_id],
+        uselist=False
     )
 
 
