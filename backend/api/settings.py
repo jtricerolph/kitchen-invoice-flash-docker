@@ -36,6 +36,10 @@ class SettingsResponse(BaseModel):
     # PDF annotation settings
     pdf_annotations_enabled: bool
     pdf_preview_show_annotations: bool
+    # OCR post-processing options
+    ocr_clean_product_codes: bool
+    ocr_filter_subtotal_rows: bool
+    ocr_use_weight_as_quantity: bool
 
     class Config:
         from_attributes = True
@@ -66,6 +70,10 @@ class SettingsUpdate(BaseModel):
     # PDF annotation settings
     pdf_annotations_enabled: bool | None = None
     pdf_preview_show_annotations: bool | None = None
+    # OCR post-processing options
+    ocr_clean_product_codes: bool | None = None
+    ocr_filter_subtotal_rows: bool | None = None
+    ocr_use_weight_as_quantity: bool | None = None
 
 
 @router.get("/", response_model=SettingsResponse)
@@ -114,7 +122,11 @@ async def get_settings(
         dext_include_annotations=settings.dext_include_annotations,
         # PDF annotation settings
         pdf_annotations_enabled=settings.pdf_annotations_enabled,
-        pdf_preview_show_annotations=settings.pdf_preview_show_annotations
+        pdf_preview_show_annotations=settings.pdf_preview_show_annotations,
+        # OCR post-processing options
+        ocr_clean_product_codes=settings.ocr_clean_product_codes,
+        ocr_filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
+        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity
     )
 
 
@@ -167,7 +179,11 @@ async def update_settings(
         dext_include_annotations=settings.dext_include_annotations,
         # PDF annotation settings
         pdf_annotations_enabled=settings.pdf_annotations_enabled,
-        pdf_preview_show_annotations=settings.pdf_preview_show_annotations
+        pdf_preview_show_annotations=settings.pdf_preview_show_annotations,
+        # OCR post-processing options
+        ocr_clean_product_codes=settings.ocr_clean_product_codes,
+        ocr_filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
+        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity
     )
 
 

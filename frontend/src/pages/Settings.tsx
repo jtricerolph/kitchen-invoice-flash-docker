@@ -28,6 +28,10 @@ interface SettingsData {
   // PDF annotation settings
   pdf_annotations_enabled: boolean
   pdf_preview_show_annotations: boolean
+  // OCR post-processing options
+  ocr_clean_product_codes: boolean
+  ocr_filter_subtotal_rows: boolean
+  ocr_use_weight_as_quantity: boolean
 }
 
 interface NewbookSettingsData {
@@ -221,6 +225,10 @@ export default function Settings() {
   const [azureEndpoint, setAzureEndpoint] = useState('')
   const [azureKey, setAzureKey] = useState('')
   const [azureTestStatus, setAzureTestStatus] = useState<string | null>(null)
+  // OCR post-processing options
+  const [ocrCleanProductCodes, setOcrCleanProductCodes] = useState(false)
+  const [ocrFilterSubtotalRows, setOcrFilterSubtotalRows] = useState(false)
+  const [ocrUseWeightAsQuantity, setOcrUseWeightAsQuantity] = useState(false)
 
   // SMTP Email state
   const [smtpHost, setSmtpHost] = useState('')
@@ -682,6 +690,10 @@ export default function Settings() {
       // PDF annotation settings
       setPdfAnnotationsEnabled(settings.pdf_annotations_enabled)
       setPdfPreviewShowAnnotations(settings.pdf_preview_show_annotations)
+      // OCR post-processing options
+      setOcrCleanProductCodes(settings.ocr_clean_product_codes || false)
+      setOcrFilterSubtotalRows(settings.ocr_filter_subtotal_rows || false)
+      setOcrUseWeightAsQuantity(settings.ocr_use_weight_as_quantity || false)
     }
   }, [settings])
 
@@ -1559,6 +1571,9 @@ export default function Settings() {
       high_quantity_threshold: highQuantityThreshold,
       pdf_annotations_enabled: pdfAnnotationsEnabled,
       pdf_preview_show_annotations: pdfPreviewShowAnnotations,
+      ocr_clean_product_codes: ocrCleanProductCodes,
+      ocr_filter_subtotal_rows: ocrFilterSubtotalRows,
+      ocr_use_weight_as_quantity: ocrUseWeightAsQuantity,
     }
     if (azureKey) {
       data.azure_key = azureKey
@@ -2152,6 +2167,42 @@ export default function Settings() {
                   {settings?.azure_key_set && !azureKey && <span style={styles.keyStatus}>Key is configured</span>}
                 </label>
               </div>
+            </div>
+
+            {/* OCR Post-Processing Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Post-Processing Options</h3>
+              <p style={styles.hint}>Optional cleanup of OCR results for common invoice quirks.</p>
+
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={ocrCleanProductCodes}
+                  onChange={(e) => setOcrCleanProductCodes(e.target.checked)}
+                  style={styles.checkbox}
+                />
+                Clean product codes (strip section headers like "CHILL/AMBIENT")
+              </label>
+
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={ocrFilterSubtotalRows}
+                  onChange={(e) => setOcrFilterSubtotalRows(e.target.checked)}
+                  style={styles.checkbox}
+                />
+                Filter subtotal rows (remove "Sub Total" lines from line items)
+              </label>
+
+              <label style={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={ocrUseWeightAsQuantity}
+                  onChange={(e) => setOcrUseWeightAsQuantity(e.target.checked)}
+                  style={styles.checkbox}
+                />
+                Use weight as quantity for KG items (when weight × price matches total)
+              </label>
             </div>
 
             {/* Actions - outside blocks */}

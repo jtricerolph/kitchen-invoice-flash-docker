@@ -35,6 +35,8 @@ from migrations.add_imap_integration import run_migration as run_imap_migration
 from migrations.add_support_request import run_migration as run_support_migration
 from migrations.add_pdf_annotation_settings import run_migration as run_pdf_annotation_settings_migration
 from migrations.add_linked_dispute import run_migration as run_linked_dispute_migration
+from migrations.add_ocr_post_processing import run_migration as run_ocr_post_processing_migration
+from migrations.add_ocr_weight_setting import run_migration as run_ocr_weight_setting_migration
 from scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -206,6 +208,20 @@ async def lifespan(app: FastAPI):
         logger.info("Linked dispute migration completed")
     except Exception as e:
         logger.warning(f"Linked dispute migration warning (may be expected): {e}")
+
+    # Run OCR post-processing settings migration
+    try:
+        await run_ocr_post_processing_migration()
+        logger.info("OCR post-processing migration completed")
+    except Exception as e:
+        logger.warning(f"OCR post-processing migration warning (may be expected): {e}")
+
+    # Run OCR weight setting migration
+    try:
+        await run_ocr_weight_setting_migration()
+        logger.info("OCR weight setting migration completed")
+    except Exception as e:
+        logger.warning(f"OCR weight setting migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()

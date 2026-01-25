@@ -249,7 +249,8 @@ async def add_supplier_alias(
         raise HTTPException(status_code=400, detail="Alias cannot be empty")
 
     # Add alias if not already present
-    current_aliases = supplier.aliases or []
+    # Create a new list to ensure SQLAlchemy detects the change (JSON columns don't detect in-place mutations)
+    current_aliases = list(supplier.aliases or [])
     if alias not in current_aliases:
         current_aliases.append(alias)
         supplier.aliases = current_aliases

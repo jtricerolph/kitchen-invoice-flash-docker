@@ -18,6 +18,7 @@ class LineItem(Base):
     # Core fields from Azure extraction
     product_code: Mapped[str] = mapped_column(String(100), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=True)
+    description_alt: Mapped[str] = mapped_column(Text, nullable=True)  # Alternative description (Azure content vs value mismatch)
     unit: Mapped[str] = mapped_column(String(50), nullable=True)  # Unit of measure (UN, Box, KG, etc.)
     quantity: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=True)  # Delivered quantity
     order_quantity: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=True)  # Ordered quantity

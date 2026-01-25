@@ -216,10 +216,20 @@ def _call_azure_sync(image_path: str, azure_endpoint: str, azure_key: str):
 async def process_invoice_with_azure(
     image_path: str,
     azure_endpoint: str,
-    azure_key: str
+    azure_key: str,
+    clean_product_codes: bool = False,
+    filter_subtotal_rows: bool = False,
+    use_weight_as_quantity: bool = False
 ) -> dict:
     """
     Process an invoice image using Azure Document Intelligence.
+
+    Args:
+        image_path: Path to the invoice image
+        azure_endpoint: Azure Document Intelligence endpoint
+        azure_key: Azure API key
+        clean_product_codes: Strip section headers (like "CHILL/AMBIENT") from product codes
+        filter_subtotal_rows: Filter out subtotal/total rows from line items
 
     Returns:
         dict with extracted fields:
@@ -433,8 +443,51 @@ async def process_invoice_with_azure(
                         # Extract product code
                         line_item["product_code"] = safe_get_field(item_fields, "ProductCode")
 
+                        # Clean product code if enabled - strip section headers
+                        # NOTE: May need supplier-specific constraints in future (e.g., only for Brakes/Sysco)
+                        if clean_product_codes and line_item["product_code"]:
+                            if '\n' in line_item["product_code"]:
+                                original_code = line_item["product_code"]
+                                line_item["product_code"] = line_item["product_code"].split('\n')[-1].strip()
+                                logger.debug(f"Cleaned product code: '{original_code}' -> '{line_item['product_code']}'")
+
+                        # Fallback: extract product code from raw_content if Azure missed it
+                        # Only use if first line looks like a product code (alphanumeric, no decimals, reasonable length)
+                        line_item["product_code_fallback"] = False  # Track if fallback was used
+                        if not line_item.get("product_code") and line_item.get("raw_content"):
+                            first_line = line_item["raw_content"].split('\n')[0].strip()
+                            # Valid product code patterns:
+                            # - All digits, 2-6 chars (e.g., "1646", "955")
+                            # - Alphanumeric with optional hyphens, 2-15 chars (e.g., "01SAL4K06", "ABC-123")
+                            # - Must NOT look like a price (no decimal point with 2 digits after)
+                            is_numeric_code = re.match(r'^\d{2,6}$', first_line)
+                            is_alphanum_code = re.match(r'^[A-Z0-9][A-Z0-9\-]{1,14}$', first_line, re.IGNORECASE)
+                            is_price = re.match(r'^\d+\.\d{2}$', first_line)  # e.g., "14.64"
+
+                            if (is_numeric_code or is_alphanum_code) and not is_price:
+                                line_item["product_code"] = first_line
+                                line_item["product_code_fallback"] = True
+                                logger.info(f"Extracted product code from raw_content fallback: '{first_line}'")
+
                         # Extract description
                         line_item["description"] = safe_get_field(item_fields, "Description")
+
+                        # Check for content vs value mismatch in Description field
+                        # If they differ significantly, store the alternative for user selection
+                        line_item["description_alt"] = None
+                        if "Description" in item_fields:
+                            desc_field = item_fields["Description"]
+                            if hasattr(desc_field, 'content') and hasattr(desc_field, 'value'):
+                                content = desc_field.content or ""
+                                value = str(desc_field.value) if desc_field.value else ""
+                                # Normalize for comparison (strip, lowercase)
+                                content_norm = content.strip().lower()
+                                value_norm = value.strip().lower()
+                                # If first lines differ, store alternative
+                                if content_norm.split('\n')[0] != value_norm.split('\n')[0]:
+                                    # Use value as description (current behavior), store content as alt
+                                    line_item["description_alt"] = content
+                                    logger.debug(f"Description mismatch detected: value='{value[:50]}...' content='{content[:50]}...'")
 
                         # Extract unit of measure
                         line_item["unit"] = safe_get_field(item_fields, "Unit")
@@ -588,6 +641,10 @@ async def process_invoice_with_azure(
                             logger.warning(f"Capping pack_quantity {line_item['pack_quantity']} to {MAX_PACK_QTY}")
                             line_item["pack_quantity"] = MAX_PACK_QTY
 
+                        # Track product code fallback extraction
+                        if line_item.get("product_code_fallback"):
+                            ocr_warnings.append(f"SKU extracted from raw content: {line_item['product_code']}")
+
                         # Store warnings in line item
                         if ocr_warnings:
                             line_item["ocr_warnings"] = "; ".join(ocr_warnings)
@@ -600,6 +657,54 @@ async def process_invoice_with_azure(
                             # cost_per_portion NOT calculated here - requires portions_per_unit
                             # which is defined via product_definitions or manual entry
                             line_item["cost_per_portion"] = None
+
+                        # Filter subtotal rows if enabled
+                        # Must check ALL THREE conditions: has "Total" in description, no product_code, no quantity
+                        if filter_subtotal_rows:
+                            desc = (line_item.get("description") or "").lower()
+                            has_total_keyword = "sub total" in desc or desc.endswith("total")
+                            no_product_code = not line_item.get("product_code")
+                            no_quantity = line_item.get("quantity") is None
+
+                            if has_total_keyword and no_product_code and no_quantity:
+                                logger.debug(f"Filtered subtotal row: {line_item.get('description')}")
+                                continue  # Skip this item
+
+                        # Weight-based quantity adjustment for KG items
+                        # When enabled: if unit is KG and qty × price ≠ amount, look for weight in raw_content
+                        if use_weight_as_quantity:
+                            unit = (line_item.get("unit") or "").upper()
+                            qty = line_item.get("quantity")
+                            price = line_item.get("unit_price")
+                            amount = line_item.get("amount")
+
+                            # Only process KG items with all values present
+                            if unit == "KG" and qty is not None and price is not None and amount is not None:
+                                # Check if current qty × price matches amount (with tolerance)
+                                expected = qty * price
+                                if abs(expected - amount) > 0.02:  # Mismatch detected
+                                    # Try to parse weight from raw_content
+                                    raw = line_item.get("raw_content") or ""
+                                    # Pattern: weight on its own line (after newline) with space before KG
+                                    # This avoids matching product sizes like "1.25-1.65KG" in descriptions
+                                    weight_match = re.search(r'\n(\d+\.\d+)\s+KG', raw, re.IGNORECASE)
+                                    # Fallback: try matching at start of content (if weight is first)
+                                    if not weight_match:
+                                        weight_match = re.search(r'^(\d+\.\d+)\s+KG', raw, re.IGNORECASE)
+
+                                    if weight_match:
+                                        weight = float(weight_match.group(1))
+                                        # Validate: weight × price should equal amount
+                                        weight_expected = weight * price
+                                        if abs(weight_expected - amount) <= 0.02:  # Match!
+                                            logger.info(f"Weight adjustment: qty {qty} -> {weight} KG (validated: {weight} × {price} = {amount})")
+                                            # Move original qty to order_quantity, use weight as quantity
+                                            line_item["order_quantity"] = qty
+                                            line_item["quantity"] = weight
+                                        else:
+                                            logger.debug(f"Weight {weight} × price {price} = {weight_expected} doesn't match amount {amount}, keeping original qty")
+                                    else:
+                                        logger.debug(f"No weight pattern found in raw_content for KG item with qty mismatch")
 
                         line_items.append(line_item)
                         desc_preview = (line_item.get('description') or 'N/A')[:30]

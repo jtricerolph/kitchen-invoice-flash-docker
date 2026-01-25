@@ -93,6 +93,8 @@ interface Invoice {
   source_reference: string | null
   // Linked dispute (for credit notes)
   linked_dispute_id: number | null
+  // Total pages from OCR (for multi-page invoices)
+  total_pages: number | null
 }
 
 interface Supplier {
@@ -105,6 +107,7 @@ interface LineItem {
   id: number
   product_code: string | null
   description: string | null
+  description_alt: string | null  // Alternative description (Azure content vs value mismatch)
   unit: string | null
   quantity: number | null
   order_quantity: number | null
@@ -131,6 +134,8 @@ interface LineItem {
   // Future price (for old invoices)
   future_price: number | null
   future_change_percent: number | null
+  // Page number from OCR (for multi-page invoices)
+  page_number: number | null
 }
 
 // Scale icon color based on data completeness
@@ -354,6 +359,7 @@ export default function Review() {
   const [expandedLineItem, setExpandedLineItem] = useState<number | null>(null)
   const [expandedCostBreakdown, setExpandedCostBreakdown] = useState<number | null>(null)
   const [costBreakdownEdits, setCostBreakdownEdits] = useState<Partial<LineItem>>({})
+  const [descSwapItem, setDescSwapItem] = useState<LineItem | null>(null)  // For description swap modal
   const [portionDescription, setPortionDescription] = useState<string>('')
   const [saveAsDefault, setSaveAsDefault] = useState(false)
   const [currentDefinition, setCurrentDefinition] = useState<ProductDefinition | null>(null)
@@ -370,6 +376,10 @@ export default function Review() {
   const [invoiceNotes, setInvoiceNotes] = useState('')
   const [showDextSendConfirm, setShowDextSendConfirm] = useState(false)
   const [showLinkDisputeModal, setShowLinkDisputeModal] = useState(false)
+  // Date picker modal state
+  const [showDatePickerModal, setShowDatePickerModal] = useState(false)
+  const [parsedDates, setParsedDates] = useState<Array<{ date: string; original: string; context: string }>>([])
+  const [parsedDatesLoading, setParsedDatesLoading] = useState(false)
   // Line items sorting and filtering
   const [lineItemSortColumn, setLineItemSortColumn] = useState<string>('')
   const [lineItemSortDirection, setLineItemSortDirection] = useState<'asc' | 'desc'>('asc')
@@ -1076,6 +1086,34 @@ export default function Review() {
     } finally {
       setAdminOperationInProgress(false)
     }
+  }
+
+  const handleFetchParsedDates = async () => {
+    setParsedDatesLoading(true)
+    setParsedDates([])
+    setShowDatePickerModal(true)
+
+    try {
+      const res = await fetch(`/api/invoices/${id}/parse-dates`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!res.ok) {
+        throw new Error('Failed to parse dates')
+      }
+
+      const data = await res.json()
+      setParsedDates(data.found_dates || [])
+    } catch (error) {
+      console.error('Failed to fetch parsed dates:', error)
+    } finally {
+      setParsedDatesLoading(false)
+    }
+  }
+
+  const handleSelectParsedDate = (dateStr: string) => {
+    setInvoiceDate(dateStr)
+    setShowDatePickerModal(false)
   }
 
   const handleResendToAzure = async () => {
@@ -2052,9 +2090,30 @@ export default function Review() {
                         )}
                       </div>
                       {dateWarning !== 'none' && (
-                        <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
-                          {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
+                            {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
+                          </span>
+                          {!invoiceDate && (
+                            <button
+                              type="button"
+                              onClick={handleFetchParsedDates}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '2px 4px',
+                                fontSize: '1rem',
+                                color: '#007bff',
+                                display: 'flex',
+                                alignItems: 'center',
+                              }}
+                              title="Find dates in document"
+                            >
+                              🔍
+                            </button>
+                          )}
+                        </div>
                       )}
                     </>
                   );
@@ -2775,6 +2834,7 @@ export default function Review() {
           )}
         </div>
         {(lineItems && lineItems.length > 0) || bulkEditMode ? (
+          <div style={styles.lineItemsTableContainer}>
           <table style={styles.lineItemsTable}>
             <thead>
               <tr>
@@ -2832,6 +2892,7 @@ export default function Review() {
                 id: -1,
                 product_code: lineItemEdits.product_code || '',
                 description: lineItemEdits.description || '',
+                description_alt: null,
                 unit: lineItemEdits.unit || '',
                 quantity: lineItemEdits.quantity ?? null,
                 order_quantity: null,
@@ -2854,8 +2915,9 @@ export default function Review() {
                 previous_price: null,
                 future_price: null,
                 future_change_percent: null,
+                page_number: null,
                 _originalIndex: -1
-              }] : [])].map((item) => {
+              }] : [])].map((item, index, allItems) => {
                 const bbox = getLineItemBoundingBox(item._originalIndex)
                 const hasOcrWarning = !!item.ocr_warnings
                 const highQtyThreshold = settings?.high_quantity_threshold ?? 100
@@ -2909,8 +2971,28 @@ export default function Review() {
                   ? { borderRight: '2px solid #dc3545', borderTop: '2px solid #dc3545', borderBottom: '2px solid #dc3545', backgroundColor: '#ffe6e6' }
                   : {}
 
+                // Check if we should show page break BEFORE this item
+                // Only show when no sort/filter is active (default order)
+                const showPageBreak =
+                  !lineItemSortColumn &&
+                  !lineItemSearchText &&
+                  !lineItemPriceFilter &&
+                  !lineItemPortionsFilter &&
+                  !lineItemMissingDataFilter &&
+                  index > 0 &&
+                  item.page_number &&
+                  allItems[index - 1]?.page_number &&
+                  item.page_number !== allItems[index - 1].page_number
+
                 return (
                   <React.Fragment key={item.id}>
+                    {showPageBreak && (
+                      <tr style={styles.pageBreakRow}>
+                        <td colSpan={11} style={styles.pageBreakCell}>
+                          ────── Page {item.page_number} of {invoice?.total_pages || '?'} ──────
+                        </td>
+                      </tr>
+                    )}
                     <tr style={rowStyleWithBorder}>
                       <td style={styles.td}>
                         {bbox && (
@@ -3047,7 +3129,22 @@ export default function Review() {
                       ) : (
                         <>
                           <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
-                            {item.product_code || '—'}
+                            {item.ocr_warnings?.includes('SKU extracted from raw') ? (
+                              <span
+                                title="SKU was not detected by Azure OCR - extracted from raw content"
+                                style={{
+                                  background: '#fff3cd',
+                                  padding: '2px 4px',
+                                  borderRadius: '3px',
+                                  border: '1px solid #ffc107',
+                                  cursor: 'help'
+                                }}
+                              >
+                                {item.product_code}
+                              </span>
+                            ) : (
+                              item.product_code || '—'
+                            )}
                           </td>
                           <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
                             <div>
@@ -3067,6 +3164,23 @@ export default function Review() {
                                 </span>
                               )}
                               {getFirstLineOfDescription(item.description) || '—'}
+                              {item.description_alt && item.description !== item.description_alt && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setDescSwapItem(item); }}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    padding: '2px 6px',
+                                    fontSize: '0.9rem',
+                                    color: '#e94560',
+                                    marginLeft: '6px'
+                                  }}
+                                  title="OCR detected alternative description - click to compare"
+                                >
+                                  🔄
+                                </button>
+                              )}
                               {invoice.disputed_line_item_ids?.includes(item.id) && (
                                 <span style={{
                                   marginLeft: '8px',
@@ -3601,6 +3715,7 @@ export default function Review() {
               )}
             </tbody>
           </table>
+          </div>
         ) : (
           <p style={styles.noItems}>No line items extracted</p>
         )}
@@ -3838,6 +3953,67 @@ export default function Review() {
         </div>
       )}
 
+      {/* Date Picker Modal - select date from parsed dates */}
+      {showDatePickerModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowDatePickerModal(false)}>
+          <div style={{ ...styles.rawOcrModal, maxWidth: '500px' }} onClick={(e) => e.stopPropagation()}>
+            <h3>Select Invoice Date</h3>
+            <p style={{ color: '#666', marginBottom: '1rem' }}>
+              Dates found in the document. Click to select.
+            </p>
+
+            {parsedDatesLoading ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>Searching for dates...</p>
+            ) : parsedDates.length === 0 ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>No dates found in document text.</p>
+            ) : (
+              <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                {parsedDates.map((dateInfo, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => handleSelectParsedDate(dateInfo.date)}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      marginBottom: '0.5rem',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      background: '#fff',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = '#f0f7ff'
+                      e.currentTarget.style.borderColor = '#007bff'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = '#fff'
+                      e.currentTarget.style.borderColor = '#ddd'
+                    }}
+                  >
+                    <div style={{ fontWeight: '600', fontSize: '1.1rem', marginBottom: '0.25rem' }}>
+                      {new Date(dateInfo.date).toLocaleDateString('en-GB', {
+                        weekday: 'short',
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric'
+                      })}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                      Original: {dateInfo.original}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.25rem', fontStyle: 'italic' }}>
+                      ...{dateInfo.context}...
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button onClick={() => setShowDatePickerModal(false)} style={styles.closeBtn}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* Line Item Search Modal */}
       {showSearchModal && searchingLineItem && (
         <div style={styles.modalOverlay} onClick={() => setShowSearchModal(false)}>
@@ -4064,6 +4240,66 @@ export default function Review() {
           }}
         />
       )}
+
+      {/* Description Swap Modal */}
+      {descSwapItem && (
+        <div style={styles.modalOverlay} onClick={() => setDescSwapItem(null)}>
+          <div style={styles.descSwapModal} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginBottom: '0.5rem' }}>Choose Description</h3>
+            <p style={styles.modalHint}>
+              OCR extracted two different descriptions. Select the correct one:
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+              {/* Current Description */}
+              <div
+                style={styles.descriptionOption}
+                onClick={() => {
+                  // Keep current - just close
+                  setDescSwapItem(null)
+                }}
+              >
+                <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#666' }}>
+                  Current (Value)
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                  {descSwapItem.description || '(empty)'}
+                </div>
+              </div>
+
+              {/* Alternative Description */}
+              <div
+                style={{ ...styles.descriptionOption, borderColor: '#e94560' }}
+                onClick={async () => {
+                  // Update to alternative
+                  await updateLineItemMutation.mutateAsync({
+                    itemId: descSwapItem.id,
+                    data: {
+                      description: descSwapItem.description_alt,
+                      description_alt: null  // Clear alt after swap
+                    }
+                  })
+                  setDescSwapItem(null)
+                }}
+              >
+                <div style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#e94560' }}>
+                  Alternative (Content) ✓ Select
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                  {descSwapItem.description_alt || '(empty)'}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setDescSwapItem(null)}
+              style={{ ...styles.backBtn, marginTop: '1rem', padding: '0.75rem' }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -4111,8 +4347,11 @@ const styles: Record<string, React.CSSProperties> = {
   createFromExtractedBtn: { padding: '0.25rem 0.5rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'normal' },
   modalLabel: { display: 'flex', flexDirection: 'column', gap: '0.5rem', color: '#333', fontWeight: '500', marginTop: '1rem' },
   lineItemsSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
-  lineItemsTable: { width: '100%', borderCollapse: 'collapse', marginTop: '0.5rem', fontSize: '0.95rem' },
-  th: { textAlign: 'left', padding: '0.75rem 0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#f8f9fa' },
+  lineItemsTableContainer: { maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto', border: '1px solid #eee', borderRadius: '8px' },
+  lineItemsTable: { width: '100%', borderCollapse: 'collapse', fontSize: '0.95rem' },
+  th: { textAlign: 'left', padding: '0.75rem 0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#f8f9fa', position: 'sticky', top: 0, zIndex: 1 } as React.CSSProperties,
+  pageBreakRow: { background: '#f8f9fa' },
+  pageBreakCell: { textAlign: 'center', padding: '0.5rem', color: '#6c757d', fontSize: '0.85rem', fontStyle: 'italic', borderBottom: '1px dashed #dee2e6', borderTop: '1px dashed #dee2e6' } as React.CSSProperties,
   td: { padding: '0.75rem 0.5rem', borderBottom: '1px solid #eee', verticalAlign: 'middle' },
   tableInput: { padding: '0.35rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.9rem', width: '100%' },
   smallBtn: { padding: '0.35rem 0.75rem', background: '#5cb85c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', marginRight: '0.25rem', fontSize: '0.8rem' },
@@ -4190,4 +4429,8 @@ const styles: Record<string, React.CSSProperties> = {
   errorBanner: { display: 'flex', gap: '1rem', padding: '1rem 1.5rem', marginBottom: '1.5rem', background: '#fff3cd', border: '2px solid #ffc107', borderRadius: '8px', color: '#856404' },
   errorBannerIcon: { fontSize: '2rem', flexShrink: 0 },
   errorBannerContent: { flex: 1 },
+  // Description swap modal styles
+  descSwapModal: { background: 'white', padding: '2rem', borderRadius: '12px', maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto' },
+  descriptionOption: { padding: '1rem', borderRadius: '8px', background: '#f9f9f9', border: '2px solid #ccc', cursor: 'pointer', transition: 'background 0.2s' },
+  modalHint: { color: '#666', fontSize: '0.9rem', margin: 0 },
 }

@@ -18,6 +18,7 @@ from models.user import User
 from models.invoice import Invoice, InvoiceStatus
 from models.line_item import LineItem
 from models.product_definition import ProductDefinition
+from models.settings import KitchenSettings
 from auth.jwt import get_current_user
 from ocr.extractor import process_invoice_image
 from services.duplicate_detector import DuplicateDetector
@@ -32,6 +33,56 @@ def normalize_description(text: str | None) -> str:
         return ""
     return " ".join(text.lower().strip().split())
 
+
+def get_total_pages_from_ocr(invoice: Invoice) -> int:
+    """Extract total page count from OCR raw JSON."""
+    import json
+    if not invoice.ocr_raw_json:
+        return 1
+    try:
+        ocr_data = json.loads(invoice.ocr_raw_json)
+        pages = ocr_data.get('pages', [])
+        return len(pages) if pages else 1
+    except Exception:
+        return 1
+
+
+def get_line_item_page_numbers_by_line_number(invoice: Invoice) -> dict[int, int]:
+    """
+    Parse ocr_raw_json to extract page numbers for each line item.
+    Returns dict mapping line_number (1-based) -> page_number (1-based)
+    """
+    import json
+    if not invoice.ocr_raw_json:
+        return {}
+
+    try:
+        ocr_data = json.loads(invoice.ocr_raw_json)
+        documents = ocr_data.get('documents', [])
+        if not documents:
+            return {}
+
+        items_field = documents[0].get('fields', {}).get('Items', {})
+        ocr_items = items_field.get('value', [])
+
+        # Build mapping: line_number (1-based) -> page_number
+        result = {}
+        for idx, ocr_item in enumerate(ocr_items):
+            bounding_regions = ocr_item.get('bounding_regions', [])
+            if bounding_regions:
+                page_num = bounding_regions[0].get('page_number', 1)
+            else:
+                page_num = 1
+
+            # line_number is 1-based (idx + 1)
+            result[idx + 1] = page_num
+
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to parse page numbers from OCR: {e}")
+        return {}
+
+
 DATA_DIR = "/app/data"
 
 
@@ -40,6 +91,7 @@ class LineItemResponse(BaseModel):
     id: int
     product_code: str | None
     description: str | None
+    description_alt: str | None  # Alternative description (Azure content vs value mismatch)
     unit: str | None
     quantity: float | None
     order_quantity: float | None
@@ -66,6 +118,8 @@ class LineItemResponse(BaseModel):
     # Future price (for old invoices)
     future_price: float | None = None
     future_change_percent: float | None = None
+    # Page number from OCR (for multi-page invoices)
+    page_number: int | None = None
 
     class Config:
         from_attributes = True
@@ -95,6 +149,7 @@ class LineItemCreate(BaseModel):
 class LineItemUpdate(BaseModel):
     product_code: Optional[str] = None
     description: Optional[str] = None
+    description_alt: Optional[str] = None  # Alternative description (for swap UI)
     unit: Optional[str] = None
     quantity: Optional[float] = None
     order_quantity: Optional[float] = None
@@ -158,6 +213,8 @@ class InvoiceResponse(BaseModel):
     source_reference: str | None = None
     # Linked dispute (for credit notes)
     linked_dispute_id: int | None = None
+    # Total pages from OCR (for multi-page invoices)
+    total_pages: int | None = None
 
     class Config:
         from_attributes = True
@@ -408,7 +465,9 @@ def invoice_to_response(
         source=invoice.source or "upload",
         source_reference=invoice.source_reference,
         # Linked dispute (for credit notes)
-        linked_dispute_id=invoice.linked_dispute_id
+        linked_dispute_id=invoice.linked_dispute_id,
+        # Total pages from OCR
+        total_pages=get_total_pages_from_ocr(invoice)
     )
 
 
@@ -636,6 +695,7 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
                     invoice_id=invoice.id,
                     product_code=item_data.get("product_code"),
                     description=item_data.get("description"),
+                    description_alt=item_data.get("description_alt"),
                     unit=item_data.get("unit"),
                     quantity=Decimal(str(item_data["quantity"])) if item_data.get("quantity") else None,
                     order_quantity=Decimal(str(item_data["order_quantity"])) if item_data.get("order_quantity") else None,
@@ -1458,6 +1518,9 @@ async def get_line_items(
     )
     items = result.scalars().all()
 
+    # Get page numbers from OCR data (maps line_number -> page_number)
+    page_numbers = get_line_item_page_numbers_by_line_number(invoice)
+
     # Initialize price history service for price status calculation
     price_service = PriceHistoryService(db, current_user.kitchen_id)
 
@@ -1493,6 +1556,7 @@ async def get_line_items(
             id=item.id,
             product_code=item.product_code,
             description=item.description,
+            description_alt=item.description_alt,
             unit=item.unit,
             quantity=float(item.quantity) if item.quantity else None,
             order_quantity=float(item.order_quantity) if item.order_quantity else None,
@@ -1514,7 +1578,8 @@ async def get_line_items(
             price_change_percent=price_change_percent,
             previous_price=previous_price,
             future_price=future_price,
-            future_change_percent=future_change_percent
+            future_change_percent=future_change_percent,
+            page_number=page_numbers.get(item.line_number, 1)
         ))
 
     return responses
@@ -1574,6 +1639,7 @@ async def add_line_item(
         id=line_item.id,
         product_code=line_item.product_code,
         description=line_item.description,
+        description_alt=line_item.description_alt,
         unit=line_item.unit,
         quantity=float(line_item.quantity) if line_item.quantity else None,
         order_quantity=float(line_item.order_quantity) if line_item.order_quantity else None,
@@ -1700,6 +1766,7 @@ async def update_line_item(
         id=line_item.id,
         product_code=line_item.product_code,
         description=line_item.description,
+        description_alt=line_item.description_alt,
         unit=line_item.unit,
         quantity=float(line_item.quantity) if line_item.quantity else None,
         order_quantity=float(line_item.order_quantity) if line_item.order_quantity else None,
@@ -1770,6 +1837,70 @@ async def get_invoice_ocr_data(
         "raw_text": invoice.ocr_raw_text,
         "raw_json": raw_json,
         "confidence": float(invoice.ocr_confidence) if invoice.ocr_confidence else None
+    }
+
+
+@router.get("/{invoice_id}/parse-dates")
+async def parse_dates_from_ocr(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Parse potential dates from invoice OCR raw text content"""
+    from datetime import datetime
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    raw_text = invoice.ocr_raw_text or ""
+
+    # Date patterns to look for (UK/EU formats primarily)
+    # DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD
+    date_patterns = [
+        (r'\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b', 'dmy'),  # DD.MM.YYYY or DD/MM/YYYY
+        (r'\b(\d{1,2})-(\d{1,2})-(\d{4})\b', 'dmy'),        # DD-MM-YYYY
+        (r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b', 'ymd'),        # YYYY-MM-DD (ISO)
+    ]
+
+    found_dates = []
+    seen_dates = set()  # Avoid duplicates
+
+    for pattern, fmt in date_patterns:
+        matches = re.finditer(pattern, raw_text)
+        for match in matches:
+            try:
+                if fmt == 'dmy':
+                    day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
+                else:  # ymd
+                    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+                # Validate date
+                if 1 <= day <= 31 and 1 <= month <= 12 and 1900 <= year <= 2100:
+                    parsed_date = datetime(year, month, day).date()
+                    date_str = parsed_date.isoformat()
+
+                    if date_str not in seen_dates:
+                        seen_dates.add(date_str)
+
+                        # Try to find context around the date (nearby text)
+                        start = max(0, match.start() - 50)
+                        end = min(len(raw_text), match.end() + 20)
+                        context = raw_text[start:end].replace('\n', ' ').strip()
+
+                        found_dates.append({
+                            "date": date_str,
+                            "original": match.group(0),
+                            "context": context
+                        })
+            except (ValueError, IndexError):
+                continue
+
+    # Sort by date (most recent first might be invoice date)
+    found_dates.sort(key=lambda x: x["date"], reverse=True)
+
+    return {
+        "invoice_id": invoice.id,
+        "current_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+        "found_dates": found_dates
     }
 
 
@@ -2688,8 +2819,15 @@ async def reprocess_invoice(
 
     try:
         import json
+        import re
         from ocr.parser import identify_supplier
         from services.duplicate_detector import detect_document_type, DuplicateDetector
+
+        # Load kitchen settings for post-processing options
+        settings_result = await db.execute(
+            select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+        )
+        settings = settings_result.scalar_one_or_none()
 
         # Parse stored OCR data
         raw_json = json.loads(invoice.ocr_raw_json)
@@ -2760,6 +2898,7 @@ async def reprocess_invoice(
                             "unit_price": get_numeric_value(item_fields.get("UnitPrice", {})),
                             "amount": get_numeric_value(item_fields.get("Amount", {})),
                             "tax_rate": get_numeric_value(item_fields.get("TaxRate", {})),
+                            "raw_content": item.get("content"),  # Raw text for weight extraction
                         })
 
         # Apply product definitions
@@ -2767,12 +2906,79 @@ async def reprocess_invoice(
             line_items_data, current_user.kitchen_id, supplier_id, db
         )
 
+        # Apply OCR post-processing settings
+        if settings:
+            processed_items = []
+            for item in line_items_data:
+                # 1. Clean product codes (strip section headers like "CHILL/AMBIENT")
+                if settings.ocr_clean_product_codes and item.get("product_code"):
+                    if '\n' in item["product_code"]:
+                        item["product_code"] = item["product_code"].split('\n')[-1].strip()
+
+                # 1b. Fallback: extract product code from raw_content if Azure missed it
+                ocr_warnings = list(item.get("ocr_warnings", "").split("; ")) if item.get("ocr_warnings") else []
+                if not item.get("product_code") and item.get("raw_content"):
+                    first_line = item["raw_content"].split('\n')[0].strip()
+                    # Valid product code patterns:
+                    # - All digits, 2-6 chars (e.g., "1646", "955")
+                    # - Alphanumeric with optional hyphens, 2-15 chars (e.g., "01SAL4K06", "ABC-123")
+                    # - Must NOT look like a price (no decimal point with 2 digits after)
+                    is_numeric_code = re.match(r'^\d{2,6}$', first_line)
+                    is_alphanum_code = re.match(r'^[A-Z0-9][A-Z0-9\-]{1,14}$', first_line, re.IGNORECASE)
+                    is_price = re.match(r'^\d+\.\d{2}$', first_line)  # e.g., "14.64"
+
+                    if (is_numeric_code or is_alphanum_code) and not is_price:
+                        item["product_code"] = first_line
+                        ocr_warnings.append(f"SKU extracted from raw content: {first_line}")
+                        logger.info(f"Extracted product code from raw_content fallback: '{first_line}'")
+
+                # Update ocr_warnings
+                if ocr_warnings:
+                    item["ocr_warnings"] = "; ".join([w for w in ocr_warnings if w])
+
+                # 2. Filter subtotal rows
+                if settings.ocr_filter_subtotal_rows:
+                    desc = (item.get("description") or "").lower()
+                    has_total_keyword = "sub total" in desc or desc.endswith("total")
+                    no_product_code = not item.get("product_code")
+                    no_quantity = item.get("quantity") is None
+                    if has_total_keyword and no_product_code and no_quantity:
+                        continue  # Skip subtotal rows
+
+                # 3. Use weight as quantity for KG items
+                if settings.ocr_use_weight_as_quantity:
+                    unit = (item.get("unit") or "").upper()
+                    qty = item.get("quantity")
+                    price = item.get("unit_price")
+                    amount = item.get("amount")
+
+                    if unit == "KG" and qty is not None and price is not None and amount is not None:
+                        expected = qty * price
+                        if abs(expected - amount) > 0.02:  # Mismatch detected
+                            raw = item.get("raw_content") or ""
+                            # Pattern: weight on its own line (after newline) with space before KG
+                            # This avoids matching product sizes like "1.25-1.65KG" in descriptions
+                            weight_match = re.search(r'\n(\d+\.\d+)\s+KG', raw, re.IGNORECASE)
+                            # Fallback: try matching at start of content (if weight is first)
+                            if not weight_match:
+                                weight_match = re.search(r'^(\d+\.\d+)\s+KG', raw, re.IGNORECASE)
+                            if weight_match:
+                                weight = float(weight_match.group(1))
+                                weight_expected = weight * price
+                                if abs(weight_expected - amount) <= 0.02:  # Validated
+                                    item["order_quantity"] = qty
+                                    item["quantity"] = weight
+
+                processed_items.append(item)
+            line_items_data = processed_items
+
         # Create line items
         for idx, item_data in enumerate(line_items_data):
             line_item = LineItem(
                 invoice_id=invoice.id,
                 product_code=item_data.get("product_code"),
                 description=item_data.get("description"),
+                description_alt=item_data.get("description_alt"),
                 unit=item_data.get("unit"),
                 quantity=Decimal(str(item_data["quantity"])) if item_data.get("quantity") else None,
                 order_quantity=Decimal(str(item_data["order_quantity"])) if item_data.get("order_quantity") else None,

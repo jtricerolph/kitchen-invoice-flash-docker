@@ -17,6 +17,11 @@ class KitchenSettings(Base):
     azure_endpoint: Mapped[str | None] = mapped_column(String(500), nullable=True)
     azure_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # OCR post-processing options
+    ocr_clean_product_codes: Mapped[bool] = mapped_column(Boolean, default=False)  # Strip section headers from product codes
+    ocr_filter_subtotal_rows: Mapped[bool] = mapped_column(Boolean, default=False)  # Filter subtotal/total rows from line items
+    ocr_use_weight_as_quantity: Mapped[bool] = mapped_column(Boolean, default=False)  # For KG items, use weight as quantity when it matches total
+
     # Newbook API settings
     newbook_api_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     newbook_api_password: Mapped[str | None] = mapped_column(String(500), nullable=True)

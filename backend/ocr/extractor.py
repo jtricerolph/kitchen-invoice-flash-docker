@@ -69,7 +69,10 @@ async def process_invoice_image(
         result = await process_invoice_with_azure(
             image_path,
             settings.azure_endpoint,
-            settings.azure_key
+            settings.azure_key,
+            clean_product_codes=settings.ocr_clean_product_codes,
+            filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
+            use_weight_as_quantity=settings.ocr_use_weight_as_quantity
         )
 
         # Try to identify/match supplier from vendor name
