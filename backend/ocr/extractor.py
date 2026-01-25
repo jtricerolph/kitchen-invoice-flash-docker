@@ -5,6 +5,7 @@ from sqlalchemy import select
 from .parser import identify_supplier
 from .azure_extractor import process_invoice_with_azure
 from services.duplicate_detector import detect_document_type
+from services.pdf_rotation import rotate_pdf_pages
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,18 @@ async def process_invoice_image(
             filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
             use_weight_as_quantity=settings.ocr_use_weight_as_quantity
         )
+
+        # FIRST post-processing step: Rotate PDF pages with non-zero angles
+        # This must happen BEFORE any other processing extracts data from raw_json
+        # because coordinates need to be transformed to match the corrected orientation
+        if image_path.lower().endswith('.pdf') and result.get('raw_json'):
+            try:
+                modified, updated_json = rotate_pdf_pages(image_path, result['raw_json'])
+                if modified:
+                    result['raw_json'] = updated_json
+                    logger.info(f"PDF pages rotated and coordinates transformed for {image_path}")
+            except Exception as e:
+                logger.warning(f"PDF rotation failed (non-fatal): {e}")
 
         # Try to identify/match supplier from vendor name
         supplier_id = None

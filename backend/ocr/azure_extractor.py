@@ -174,7 +174,8 @@ def serialize_azure_result(result: Any) -> dict:
                 'page_number': page.page_number if hasattr(page, 'page_number') else 1,
                 'width': page.width if hasattr(page, 'width') else None,
                 'height': page.height if hasattr(page, 'height') else None,
-                'unit': str(page.unit) if hasattr(page, 'unit') else 'inch'
+                'unit': str(page.unit) if hasattr(page, 'unit') else 'inch',
+                'angle': page.angle if hasattr(page, 'angle') else 0,
             }
             output['pages'].append(page_info)
 
