@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -37,6 +37,7 @@ from migrations.add_pdf_annotation_settings import run_migration as run_pdf_anno
 from migrations.add_linked_dispute import run_migration as run_linked_dispute_migration
 from migrations.add_ocr_post_processing import run_migration as run_ocr_post_processing_migration
 from migrations.add_ocr_weight_setting import run_migration as run_ocr_weight_setting_migration
+from migrations.add_kds_tables import run_migration as run_kds_migration
 from scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -223,6 +224,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"OCR weight setting migration warning (may be expected): {e}")
 
+    # Run KDS migration
+    try:
+        await run_kds_migration()
+        logger.info("KDS migration completed")
+    except Exception as e:
+        logger.warning(f"KDS migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -268,6 +276,7 @@ app.include_router(public.router, prefix="/api/public", tags=["Public"])
 app.include_router(logbook.router, prefix="/api", tags=["Logbook"])
 app.include_router(imap.router, prefix="/api", tags=["IMAP"])
 app.include_router(support.router, prefix="/api", tags=["Support"])
+app.include_router(kds.router, prefix="/api/kds", tags=["KDS"])
 
 
 @app.get("/")

@@ -172,6 +172,19 @@ class KitchenSettings(Base):
     # Admin-only page restrictions (comma-separated list of page paths, e.g., "/settings,/suppliers")
     admin_restricted_pages: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # KDS (Kitchen Display System) settings
+    kds_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    kds_graphql_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    kds_graphql_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kds_graphql_password: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    kds_graphql_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kds_poll_interval_seconds: Mapped[int] = mapped_column(Integer, default=5)
+    kds_timer_green_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    kds_timer_amber_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    kds_timer_red_seconds: Mapped[int] = mapped_column(Integer, default=900)
+    kds_course_order: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=["Starters", "Mains", "Desserts"])
+    kds_show_completed_for_seconds: Mapped[int] = mapped_column(Integer, default=30)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

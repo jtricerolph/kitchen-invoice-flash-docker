@@ -3,12 +3,15 @@ Resos API Endpoints
 
 Handles Resos configuration, sync operations, and booking data retrieval.
 """
+import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func, Date, case
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from database import get_db
 from models.user import User
@@ -27,6 +30,9 @@ class ResosSettingsResponse(BaseModel):
     resos_api_key_set: bool  # Masked
     resos_last_sync: datetime | None
     resos_auto_sync_enabled: bool
+    resos_upcoming_sync_enabled: bool
+    resos_upcoming_sync_interval: int
+    resos_last_upcoming_sync: datetime | None
     resos_large_group_threshold: int
     resos_note_keywords: str | None
     resos_allergy_keywords: str | None
@@ -47,6 +53,8 @@ class ResosSettingsResponse(BaseModel):
 class ResosSettingsUpdate(BaseModel):
     resos_api_key: str | None = None
     resos_auto_sync_enabled: bool | None = None
+    resos_upcoming_sync_enabled: bool | None = None
+    resos_upcoming_sync_interval: int | None = None
     resos_large_group_threshold: int | None = None
     resos_note_keywords: str | None = None
     resos_allergy_keywords: str | None = None
@@ -121,10 +129,15 @@ async def get_resos_settings(
     )
     settings = result.scalar_one()
 
+    logger.info(f"[Resos GET] Returning upcoming_sync_enabled={settings.resos_upcoming_sync_enabled}")
+
     return ResosSettingsResponse(
         resos_api_key_set=bool(settings.resos_api_key),
         resos_last_sync=settings.resos_last_sync,
         resos_auto_sync_enabled=settings.resos_auto_sync_enabled or False,
+        resos_upcoming_sync_enabled=settings.resos_upcoming_sync_enabled or False,
+        resos_upcoming_sync_interval=settings.resos_upcoming_sync_interval or 15,
+        resos_last_upcoming_sync=settings.resos_last_upcoming_sync,
         resos_large_group_threshold=settings.resos_large_group_threshold or 8,
         resos_note_keywords=settings.resos_note_keywords,
         resos_allergy_keywords=settings.resos_allergy_keywords,
@@ -147,15 +160,24 @@ async def update_resos_settings(
     db: AsyncSession = Depends(get_db)
 ):
     """Update Resos settings"""
+    logger.info(f"[Resos PATCH] Received update: {update.model_dump(exclude_unset=True)}")
+
     result = await db.execute(
         select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
     )
     settings = result.scalar_one()
 
+    logger.info(f"[Resos PATCH] Before update - upcoming_sync_enabled={settings.resos_upcoming_sync_enabled}")
+
     if update.resos_api_key is not None:
         settings.resos_api_key = update.resos_api_key
     if update.resos_auto_sync_enabled is not None:
         settings.resos_auto_sync_enabled = update.resos_auto_sync_enabled
+    if update.resos_upcoming_sync_enabled is not None:
+        logger.info(f"[Resos PATCH] Setting upcoming_sync_enabled to {update.resos_upcoming_sync_enabled}")
+        settings.resos_upcoming_sync_enabled = update.resos_upcoming_sync_enabled
+    if update.resos_upcoming_sync_interval is not None:
+        settings.resos_upcoming_sync_interval = update.resos_upcoming_sync_interval
     if update.resos_large_group_threshold is not None:
         settings.resos_large_group_threshold = update.resos_large_group_threshold
     if update.resos_note_keywords is not None:
@@ -183,6 +205,7 @@ async def update_resos_settings(
         settings.sambapos_beverage_gl_codes = update.sambapos_beverage_gl_codes
 
     await db.commit()
+    logger.info(f"[Resos PATCH] After commit - upcoming_sync_enabled={settings.resos_upcoming_sync_enabled}")
     return {"message": "Settings updated successfully"}
 
 
@@ -207,6 +230,36 @@ async def test_resos_connection(
         raise HTTPException(status_code=400, detail="Connection failed")
 
     return {"message": "Connection successful"}
+
+
+@router.get("/debug-upcoming-sync")
+async def debug_upcoming_sync(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to check upcoming sync settings directly"""
+    from sqlalchemy import text
+
+    # Get value via ORM
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one()
+    orm_value = settings.resos_upcoming_sync_enabled
+
+    # Get value via raw SQL
+    raw_result = await db.execute(
+        text("SELECT resos_upcoming_sync_enabled, resos_upcoming_sync_interval FROM kitchen_settings WHERE kitchen_id = :kid"),
+        {"kid": current_user.kitchen_id}
+    )
+    raw_row = raw_result.fetchone()
+
+    return {
+        "orm_value": orm_value,
+        "raw_db_enabled": raw_row[0] if raw_row else None,
+        "raw_db_interval": raw_row[1] if raw_row else None,
+        "column_exists": raw_row is not None
+    }
 
 
 @router.get("/custom-fields")
@@ -378,6 +431,18 @@ async def get_opening_hours_for_date(
 
 
 # ============ Sync Endpoints ============
+
+@router.post("/sync/upcoming")
+async def sync_upcoming(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manual upcoming sync (next 7 days) - triggers immediately and updates last_upcoming_sync timestamp"""
+    sync_service = ResosSyncService(current_user.kitchen_id, db)
+    result = await sync_service.run_upcoming_sync()
+    logger.info(f"[Resos] Manual upcoming sync completed for kitchen {current_user.kitchen_id}")
+    return result
+
 
 @router.post("/sync/forecast")
 async def sync_forecast(

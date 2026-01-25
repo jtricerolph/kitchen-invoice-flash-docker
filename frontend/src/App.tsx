@@ -19,6 +19,7 @@ import SearchDefinitions from './components/SearchDefinitions'
 import ResidentsTableChart from './pages/ResidentsTableChart'
 import BookingsStats from './pages/BookingsStats'
 import WastageLogbook from './pages/WastageLogbook'
+import KDS from './pages/KDS'
 import SupportButton from './components/SupportButton'
 
 interface User {
@@ -224,6 +225,12 @@ function App() {
                 token ? (isPageAccessible('/logbook') ? <WastageLogbook /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
             />
+            <Route
+              path="/kds"
+              element={
+                token ? (isPageAccessible('/kds') ? <KDS /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
           </Routes>
         </main>
         {token && user && <SupportButton />}
@@ -348,6 +355,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               )}
             </div>
           )}
+          {showNavItem('/kds') && <a href="/kds" style={styles.navLink}>KDS</a>}
           {showNavItem('/settings') && <a href="/settings" style={styles.navLink}>Settings</a>}
         </nav>
       </div>

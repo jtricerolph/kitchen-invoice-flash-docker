@@ -102,7 +102,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -125,6 +125,20 @@ interface SambaPOSGroupCode {
 
 interface SambaPOSGLCode {
   code: string
+}
+
+interface KDSSettingsData {
+  kds_enabled: boolean
+  kds_graphql_url: string | null
+  kds_graphql_username: string | null
+  kds_graphql_password_set?: boolean
+  kds_graphql_client_id: string | null
+  kds_poll_interval_seconds: number
+  kds_timer_green_seconds: number
+  kds_timer_amber_seconds: number
+  kds_timer_red_seconds: number
+  kds_course_order: string[]
+  kds_show_completed_for_seconds: number
 }
 
 interface NextcloudSettingsData {
@@ -292,9 +306,8 @@ export default function Settings() {
 
   // Resos state
   const [resosApiKey, setResosApiKey] = useState('')
-  const [resosAutoSyncEnabled, setResosAutoSyncEnabled] = useState(false)
-  const [resosUpcomingSyncEnabled, setResosUpcomingSyncEnabled] = useState(false)
-  const [resosUpcomingSyncInterval, setResosUpcomingSyncInterval] = useState(15)
+  // Note: resosAutoSyncEnabled, resosUpcomingSyncEnabled, resosUpcomingSyncInterval
+  // are read directly from resosSettings and saved immediately via updateResosSyncMutation
   const [resosLargeGroupThreshold, setResosLargeGroupThreshold] = useState(8)
   const [resosNoteKeywords, setResosNoteKeywords] = useState('')
   const [resosAllergyKeywords, setResosAllergyKeywords] = useState('')
@@ -327,6 +340,20 @@ export default function Settings() {
   const [sambaFoodGLCodes, setSambaFoodGLCodes] = useState<Set<string>>(new Set())
   const [sambaBeverageGLCodes, setSambaBeverageGLCodes] = useState<Set<string>>(new Set())
   const [sambaGLCodesSaveMessage, setSambaGLCodesSaveMessage] = useState<string | null>(null)
+
+  // KDS state
+  const [kdsGraphqlUrl, setKdsGraphqlUrl] = useState('')
+  const [kdsGraphqlUsername, setKdsGraphqlUsername] = useState('')
+  const [kdsGraphqlPassword, setKdsGraphqlPassword] = useState('')
+  const [kdsGraphqlClientId, setKdsGraphqlClientId] = useState('')
+  const [kdsPollInterval, setKdsPollInterval] = useState(5)
+  const [kdsTimerGreen, setKdsTimerGreen] = useState(300)
+  const [kdsTimerAmber, setKdsTimerAmber] = useState(600)
+  const [kdsTimerRed, setKdsTimerRed] = useState(900)
+  const [kdsCourseOrder, setKdsCourseOrder] = useState('Starters, Mains, Desserts')
+  const [kdsShowCompleted, setKdsShowCompleted] = useState(30)
+  const [kdsTestStatus, setKdsTestStatus] = useState<string | null>(null)
+  const [kdsSaveMessage, setKdsSaveMessage] = useState<string | null>(null)
 
   // Nextcloud state
   const [nextcloudHost, setNextcloudHost] = useState('')
@@ -534,6 +561,19 @@ export default function Settings() {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch selected GL codes')
+      return res.json()
+    },
+    enabled: !!token,
+  })
+
+  // Fetch KDS settings
+  const { data: kdsSettings } = useQuery<KDSSettingsData>({
+    queryKey: ['kds-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/kds/settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch KDS settings')
       return res.json()
     },
     enabled: !!token,
@@ -781,11 +821,25 @@ export default function Settings() {
     }
   }, [selectedGLCodes])
 
+  // Populate KDS form from settings
+  useEffect(() => {
+    if (kdsSettings) {
+      setKdsGraphqlUrl(kdsSettings.kds_graphql_url || '')
+      setKdsGraphqlUsername(kdsSettings.kds_graphql_username || '')
+      setKdsGraphqlClientId(kdsSettings.kds_graphql_client_id || '')
+      setKdsPollInterval(kdsSettings.kds_poll_interval_seconds || 5)
+      setKdsTimerGreen(kdsSettings.kds_timer_green_seconds || 300)
+      setKdsTimerAmber(kdsSettings.kds_timer_amber_seconds || 600)
+      setKdsTimerRed(kdsSettings.kds_timer_red_seconds || 900)
+      setKdsCourseOrder((kdsSettings.kds_course_order || ['Starters', 'Mains', 'Desserts']).join(', '))
+      setKdsShowCompleted(kdsSettings.kds_show_completed_for_seconds || 30)
+    }
+  }, [kdsSettings])
+
   useEffect(() => {
     if (resosSettings) {
-      setResosAutoSyncEnabled(resosSettings.resos_auto_sync_enabled || false)
-      setResosUpcomingSyncEnabled(resosSettings.resos_upcoming_sync_enabled || false)
-      setResosUpcomingSyncInterval(resosSettings.resos_upcoming_sync_interval || 15)
+      // Note: sync settings (auto_sync_enabled, upcoming_sync_enabled, upcoming_sync_interval)
+      // are now read directly from resosSettings, not local state
       setResosLargeGroupThreshold(resosSettings.resos_large_group_threshold || 8)
       setResosNoteKeywords(resosSettings.resos_note_keywords || '')
       setResosAllergyKeywords(resosSettings.resos_allergy_keywords || '')
@@ -1071,6 +1125,38 @@ export default function Settings() {
     },
   })
 
+  // Resos sync settings mutation (for immediate save on checkbox toggle)
+  const updateResosSyncMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      console.log('[Resos] Sending PATCH with data:', data)
+      const res = await fetch('/api/resos/settings', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error('[Resos] PATCH failed:', res.status, errorText)
+        throw new Error('Failed to update Resos settings')
+      }
+      const result = await res.json()
+      console.log('[Resos] PATCH response:', result)
+      return result
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
+      setResosSaveMessage('✓ Sync settings saved')
+      setTimeout(() => setResosSaveMessage(null), 3000)
+    },
+    onError: (error) => {
+      setResosSaveMessage(`✗ Error: ${error.message}`)
+      setTimeout(() => setResosSaveMessage(null), 5000)
+    },
+  })
+
   const fetchGLAccountsMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch('/api/newbook/gl-accounts/fetch', {
@@ -1332,6 +1418,51 @@ export default function Settings() {
     },
     onError: (error) => {
       setSambaGLCodesSaveMessage(`Error: ${error.message}`)
+    },
+  })
+
+  // KDS mutations
+  const updateKdsMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await fetch('/api/kds/settings', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to save KDS settings')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['kds-settings'] })
+      setKdsSaveMessage('Settings saved successfully')
+      setKdsGraphqlPassword('')
+      setTimeout(() => setKdsSaveMessage(null), 3000)
+    },
+    onError: (error) => {
+      setKdsSaveMessage(`Error: ${error.message}`)
+    },
+  })
+
+  const kdsTestMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/kds/test-connection', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (!data.success) {
+        throw new Error(data.error || 'Connection test failed')
+      }
+      return data
+    },
+    onSuccess: (data) => {
+      setKdsTestStatus(data.message)
+      setTimeout(() => setKdsTestStatus(null), 5000)
+    },
+    onError: (error) => {
+      setKdsTestStatus(`Error: ${error.message}`)
     },
   })
 
@@ -1701,6 +1832,31 @@ export default function Settings() {
 
   const sambaConnectionConfigured = sambaSettings?.sambapos_db_host && sambaSettings?.sambapos_db_password_set
 
+  // KDS handlers
+  const handleSaveKdsConnection = () => {
+    const data: Record<string, unknown> = {
+      kds_graphql_url: kdsGraphqlUrl,
+      kds_graphql_username: kdsGraphqlUsername,
+      kds_graphql_client_id: kdsGraphqlClientId,
+    }
+    if (kdsGraphqlPassword) {
+      data.kds_graphql_password = kdsGraphqlPassword
+    }
+    updateKdsMutation.mutate(data)
+  }
+
+  const handleSaveKdsDisplay = () => {
+    const courseArray = kdsCourseOrder.split(',').map(s => s.trim()).filter(Boolean)
+    updateKdsMutation.mutate({
+      kds_poll_interval_seconds: kdsPollInterval,
+      kds_timer_green_seconds: kdsTimerGreen,
+      kds_timer_amber_seconds: kdsTimerAmber,
+      kds_timer_red_seconds: kdsTimerRed,
+      kds_course_order: courseArray,
+      kds_show_completed_for_seconds: kdsShowCompleted,
+    })
+  }
+
   if (isLoading) {
     return <div style={styles.loading}>Loading settings...</div>
   }
@@ -1724,6 +1880,7 @@ export default function Settings() {
     { id: 'newbook', label: 'Newbook PMS', restrictPath: '/settings-newbook' },
     { id: 'resos', label: 'Resos Bookings', restrictPath: '/settings-resos' },
     { id: 'sambapos', label: 'SambaPOS EPOS', restrictPath: '/settings-sambapos' },
+    { id: 'kds', label: 'Kitchen Display', restrictPath: '/settings-kds' },
     { id: 'suppliers', label: 'Suppliers', restrictPath: '/settings-suppliers' },
     { id: 'search', label: 'Search & Pricing', restrictPath: '/settings-search' },
     { id: 'nextcloud', label: 'Nextcloud Storage', restrictPath: '/settings-nextcloud' },
@@ -1943,9 +2100,9 @@ export default function Settings() {
               <div style={styles.checkboxGroup}>
                 {[
                   { path: '/upload', label: 'Upload Invoices' },
-                  { path: '/invoices', label: 'Invoice List' },
-                  { path: '/suppliers', label: 'Suppliers' },
-                  { path: '/purchases', label: 'Purchases' },
+                  { path: '/invoices', label: 'Invoice List & Disputes' },
+                  { path: '/purchases', label: 'Purchase Chart' },
+                  { path: '/logbook', label: 'Allowance Logbook' },
                 ].map(({ path, label }) => (
                   <label key={path} style={styles.checkboxLabel}>
                     <input
@@ -1972,9 +2129,37 @@ export default function Settings() {
               <h3 style={styles.blockTitle}>Reports</h3>
               <div style={styles.checkboxGroup}>
                 {[
-                  { path: '/gp-report', label: 'GP Report' },
+                  { path: '/gp-report', label: 'Kitchen Flash & Purchase Reports' },
                   { path: '/newbook', label: 'Newbook Data' },
-                  { path: '/resos', label: 'Resos Booking Data' },
+                  { path: '/resos', label: 'Resos Bookings & Stats' },
+                ].map(({ path, label }) => (
+                  <label key={path} style={styles.checkboxLabel}>
+                    <input
+                      type="checkbox"
+                      checked={restrictedPages.has(path)}
+                      onChange={() => {
+                        const newSet = new Set(restrictedPages)
+                        if (newSet.has(path)) {
+                          newSet.delete(path)
+                        } else {
+                          newSet.add(path)
+                        }
+                        setRestrictedPages(newSet)
+                      }}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Search & Tools Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Search & Tools</h3>
+              <div style={styles.checkboxGroup}>
+                {[
+                  { path: '/search', label: 'Search (Invoices, Line Items, Definitions)' },
+                  { path: '/kds', label: 'Kitchen Display System (KDS)' },
                 ].map(({ path, label }) => (
                   <label key={path} style={styles.checkboxLabel}>
                     <input
@@ -2012,6 +2197,7 @@ export default function Settings() {
                   { path: '/settings-newbook', label: 'Newbook PMS' },
                   { path: '/settings-resos', label: 'Resos Bookings' },
                   { path: '/settings-sambapos', label: 'SambaPOS EPOS' },
+                  { path: '/settings-kds', label: 'Kitchen Display' },
                   { path: '/settings-suppliers', label: 'Suppliers' },
                   { path: '/settings-search', label: 'Search & Pricing' },
                   { path: '/settings-nextcloud', label: 'Nextcloud Storage' },
@@ -3623,8 +3809,8 @@ export default function Settings() {
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
                     type="checkbox"
-                    checked={resosAutoSyncEnabled}
-                    onChange={(e) => setResosAutoSyncEnabled(e.target.checked)}
+                    checked={resosSettings?.resos_auto_sync_enabled || false}
+                    onChange={(e) => updateResosSyncMutation.mutate({ resos_auto_sync_enabled: e.target.checked })}
                   />
                   Enable automatic daily sync (4:30 AM)
                 </label>
@@ -3641,21 +3827,21 @@ export default function Settings() {
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
                     type="checkbox"
-                    checked={resosUpcomingSyncEnabled}
-                    onChange={(e) => setResosUpcomingSyncEnabled(e.target.checked)}
+                    checked={resosSettings?.resos_upcoming_sync_enabled || false}
+                    onChange={(e) => updateResosSyncMutation.mutate({ resos_upcoming_sync_enabled: e.target.checked })}
                   />
                   Enable frequent upcoming sync (next 7 days)
                 </label>
                 <small style={styles.hint}>Keeps upcoming bookings fresh with more frequent updates</small>
               </div>
 
-              {resosUpcomingSyncEnabled && (
+              {resosSettings?.resos_upcoming_sync_enabled && (
                 <div style={styles.formGroup}>
                   <label>Sync interval (minutes)</label>
                   <input
                     type="number"
-                    value={resosUpcomingSyncInterval}
-                    onChange={(e) => setResosUpcomingSyncInterval(parseInt(e.target.value) || 15)}
+                    value={resosSettings?.resos_upcoming_sync_interval || 15}
+                    onChange={(e) => updateResosSyncMutation.mutate({ resos_upcoming_sync_interval: parseInt(e.target.value) || 15 })}
                     min={5}
                     max={60}
                     style={styles.textInput}
@@ -3666,7 +3852,36 @@ export default function Settings() {
 
               {resosSettings?.resos_last_upcoming_sync && (
                 <div style={styles.formGroup}>
-                  <small style={styles.hint}>Last upcoming sync: {new Date(resosSettings.resos_last_upcoming_sync).toLocaleString()}</small>
+                  <small style={styles.hint}>Last frequent sync: {new Date(resosSettings.resos_last_upcoming_sync).toLocaleString()}</small>
+                </div>
+              )}
+
+              {resosSettings?.resos_upcoming_sync_enabled && (
+                <div style={styles.formGroup}>
+                  <button
+                    onClick={async () => {
+                      try {
+                        setResosSaveMessage('Syncing upcoming bookings...')
+                        const res = await fetch('/api/resos/sync/upcoming', {
+                          method: 'POST',
+                          headers: { Authorization: `Bearer ${token}` }
+                        })
+                        if (res.ok) {
+                          const data = await res.json()
+                          setResosSaveMessage(`✓ Upcoming sync complete: ${data.upcoming?.bookings_fetched || 0} bookings`)
+                          queryClient.invalidateQueries({ queryKey: ['resos-settings'] })
+                        } else {
+                          setResosSaveMessage('✗ Upcoming sync failed')
+                        }
+                      } catch (error) {
+                        setResosSaveMessage(`✗ Error: ${error}`)
+                      }
+                      setTimeout(() => setResosSaveMessage(null), 10000)
+                    }}
+                    style={styles.secondaryButton}
+                  >
+                    Sync Now (Next 7 Days)
+                  </button>
                 </div>
               )}
 
@@ -3723,9 +3938,8 @@ export default function Settings() {
                     },
                     body: JSON.stringify({
                       resos_api_key: resosApiKey || undefined,
-                      resos_auto_sync_enabled: resosAutoSyncEnabled,
-                      resos_upcoming_sync_enabled: resosUpcomingSyncEnabled,
-                      resos_upcoming_sync_interval: resosUpcomingSyncInterval,
+                      // Note: sync settings (auto_sync_enabled, upcoming_sync_enabled, upcoming_sync_interval)
+                      // are saved immediately on checkbox/input change, not with this Save button
                       resos_large_group_threshold: resosLargeGroupThreshold,
                       resos_note_keywords: resosNoteKeywords,
                       resos_allergy_keywords: resosAllergyKeywords,
@@ -4215,6 +4429,178 @@ export default function Settings() {
                 {sambaGLCodesSaveMessage}
               </div>
             )}
+          </div>
+        )}
+
+        {/* KDS (Kitchen Display System) Section */}
+        {activeSection === 'kds' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Kitchen Display System Settings</h2>
+            <p style={styles.hint}>Configure the KDS to display orders from SambaPOS GraphQL API for kitchen staff.</p>
+
+            {/* Connection Settings */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>SambaPOS GraphQL Connection</h3>
+              <p style={styles.blockHint}>Connect to SambaPOS Message Server to fetch kitchen orders in real-time.</p>
+
+              <label style={styles.label}>
+                GraphQL URL
+                <input
+                  type="text"
+                  value={kdsGraphqlUrl}
+                  onChange={(e) => setKdsGraphqlUrl(e.target.value)}
+                  style={styles.input}
+                  placeholder="http://localhost:9000"
+                />
+              </label>
+
+              <label style={styles.label}>
+                Username
+                <input
+                  type="text"
+                  value={kdsGraphqlUsername}
+                  onChange={(e) => setKdsGraphqlUsername(e.target.value)}
+                  style={styles.input}
+                  placeholder="Admin"
+                />
+              </label>
+
+              <label style={styles.label}>
+                Password
+                <input
+                  type="password"
+                  value={kdsGraphqlPassword}
+                  onChange={(e) => setKdsGraphqlPassword(e.target.value)}
+                  style={styles.input}
+                  placeholder={kdsSettings?.kds_graphql_password_set ? '••••••••' : 'Enter password'}
+                />
+              </label>
+
+              <label style={styles.label}>
+                Client ID (Application Key)
+                <input
+                  type="text"
+                  value={kdsGraphqlClientId}
+                  onChange={(e) => setKdsGraphqlClientId(e.target.value)}
+                  style={styles.input}
+                  placeholder="graphiql"
+                />
+              </label>
+
+              <div style={styles.buttonRow}>
+                <button
+                  onClick={() => kdsTestMutation.mutate()}
+                  style={styles.testBtn}
+                  disabled={kdsTestMutation.isPending || !kdsGraphqlUrl}
+                >
+                  {kdsTestMutation.isPending ? 'Testing...' : 'Test Connection'}
+                </button>
+                <button
+                  onClick={handleSaveKdsConnection}
+                  style={styles.saveBtn}
+                  disabled={updateKdsMutation.isPending}
+                >
+                  {updateKdsMutation.isPending ? 'Saving...' : 'Save Connection'}
+                </button>
+              </div>
+
+              {kdsTestStatus && (
+                <div style={{ ...styles.statusMessage, background: kdsTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                  {kdsTestStatus}
+                </div>
+              )}
+            </div>
+
+            {/* Display Settings */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Display Settings</h3>
+              <p style={styles.blockHint}>Configure how tickets and timers are displayed on the KDS screen.</p>
+
+              <label style={styles.label}>
+                Poll Interval (seconds)
+                <input
+                  type="number"
+                  value={kdsPollInterval}
+                  onChange={(e) => setKdsPollInterval(parseInt(e.target.value) || 5)}
+                  style={styles.input}
+                  min="1"
+                  max="60"
+                />
+              </label>
+
+              <h4 style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>Timer Thresholds (seconds)</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                <label style={styles.label}>
+                  <span style={{ color: '#27ae60' }}>Green until</span>
+                  <input
+                    type="number"
+                    value={kdsTimerGreen}
+                    onChange={(e) => setKdsTimerGreen(parseInt(e.target.value) || 300)}
+                    style={styles.input}
+                    min="0"
+                  />
+                </label>
+                <label style={styles.label}>
+                  <span style={{ color: '#f39c12' }}>Amber until</span>
+                  <input
+                    type="number"
+                    value={kdsTimerAmber}
+                    onChange={(e) => setKdsTimerAmber(parseInt(e.target.value) || 600)}
+                    style={styles.input}
+                    min="0"
+                  />
+                </label>
+                <label style={styles.label}>
+                  <span style={{ color: '#e94560' }}>Red after</span>
+                  <input
+                    type="number"
+                    value={kdsTimerRed}
+                    onChange={(e) => setKdsTimerRed(parseInt(e.target.value) || 900)}
+                    style={styles.input}
+                    min="0"
+                  />
+                </label>
+              </div>
+
+              <label style={styles.label}>
+                Course Order (comma-separated)
+                <input
+                  type="text"
+                  value={kdsCourseOrder}
+                  onChange={(e) => setKdsCourseOrder(e.target.value)}
+                  style={styles.input}
+                  placeholder="Starters, Mains, Desserts"
+                />
+              </label>
+
+              <label style={styles.label}>
+                Show Completed Tickets For (seconds)
+                <input
+                  type="number"
+                  value={kdsShowCompleted}
+                  onChange={(e) => setKdsShowCompleted(parseInt(e.target.value) || 30)}
+                  style={styles.input}
+                  min="0"
+                  max="300"
+                />
+              </label>
+
+              <div style={styles.buttonRow}>
+                <button
+                  onClick={handleSaveKdsDisplay}
+                  style={styles.saveBtn}
+                  disabled={updateKdsMutation.isPending}
+                >
+                  {updateKdsMutation.isPending ? 'Saving...' : 'Save Display Settings'}
+                </button>
+              </div>
+
+              {kdsSaveMessage && (
+                <div style={{ ...styles.statusMessage, background: kdsSaveMessage.startsWith('Error') ? '#fee' : '#efe', marginTop: '1rem' }}>
+                  {kdsSaveMessage}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
