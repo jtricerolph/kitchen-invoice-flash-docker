@@ -3128,7 +3128,11 @@ export default function Settings() {
                 <input
                   type="checkbox"
                   checked={newbookSettings?.newbook_upcoming_sync_enabled || false}
-                  onChange={(e) => updateNewbookMutation.mutate({ newbook_upcoming_sync_enabled: e.target.checked })}
+                  onChange={(e) => {
+                    const newValue = e.target.checked
+                    console.log('[DEBUG] Checkbox onChange fired, newValue:', newValue)
+                    updateNewbookMutation.mutate({ newbook_upcoming_sync_enabled: newValue })
+                  }}
                 />
                 Enable frequent upcoming sync (next 7 days)
               </label>
