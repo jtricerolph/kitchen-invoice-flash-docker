@@ -398,6 +398,7 @@ export default function Settings() {
         throw new Error(`Failed to fetch: ${res.status}`)
       }
       const data = await res.json()
+      console.log('[Newbook] GET settings response:', { upcoming_sync_enabled: data.newbook_upcoming_sync_enabled })
       return data
     },
     staleTime: 0, // Always fetch fresh data
@@ -1018,6 +1019,7 @@ export default function Settings() {
   // Newbook mutations
   const updateNewbookMutation = useMutation({
     mutationFn: async (data: Record<string, unknown>) => {
+      console.log('[Newbook] Sending PATCH with data:', data)
       const res = await fetch('/api/newbook/settings', {
         method: 'PATCH',
         headers: {
@@ -1026,10 +1028,17 @@ export default function Settings() {
         },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to update Newbook settings')
-      return res.json()
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error('[Newbook] PATCH failed:', res.status, errorText)
+        throw new Error('Failed to update Newbook settings')
+      }
+      const result = await res.json()
+      console.log('[Newbook] PATCH response:', result)
+      return result
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      console.log('[Newbook] Mutation success, response data:', data)
       queryClient.invalidateQueries({ queryKey: ['newbook-settings'] })
       setNewbookSaveMessage('Newbook settings saved')
       setNewbookPassword('')
