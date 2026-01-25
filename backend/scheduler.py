@@ -89,6 +89,12 @@ async def run_upcoming_newbook_sync():
     logger.info("Starting upcoming Newbook sync job")
 
     async with AsyncSessionLocal() as db:
+        # First, log all kitchens and their sync status for debugging
+        all_settings = await db.execute(select(KitchenSettings))
+        all_list = all_settings.scalars().all()
+        for s in all_list:
+            logger.debug(f"Kitchen {s.kitchen_id}: upcoming_sync_enabled={s.newbook_upcoming_sync_enabled}, api_key_set={bool(s.newbook_api_key)}")
+
         # Get all kitchens with upcoming sync enabled
         result = await db.execute(
             select(KitchenSettings).where(

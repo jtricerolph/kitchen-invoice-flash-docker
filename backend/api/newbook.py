@@ -3,7 +3,10 @@ Newbook API Endpoints
 
 Handles Newbook configuration, GL account management, and data sync operations.
 """
+import logging
 from datetime import date, datetime, timedelta
+
+logger = logging.getLogger(__name__)
 from decimal import Decimal
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -254,12 +257,19 @@ async def update_newbook_settings(
 
     # Update fields
     update_data = update.model_dump(exclude_unset=True)
+    logger.info(f"Newbook settings update for kitchen {current_user.kitchen_id}: {update_data}")
+
     for field, value in update_data.items():
         if value is not None:
+            old_value = getattr(settings, field, None)
             setattr(settings, field, value)
+            if field == 'newbook_upcoming_sync_enabled':
+                logger.info(f"Newbook upcoming sync enabled changed: {old_value} -> {value}")
 
     await db.commit()
     await db.refresh(settings)
+
+    logger.info(f"Newbook settings saved - upcoming_sync_enabled={settings.newbook_upcoming_sync_enabled}")
 
     return NewbookSettingsResponse(
         newbook_api_username=settings.newbook_api_username,
@@ -277,6 +287,37 @@ async def update_newbook_settings(
         newbook_breakfast_vat_rate=settings.newbook_breakfast_vat_rate,
         newbook_dinner_vat_rate=settings.newbook_dinner_vat_rate
     )
+
+
+@router.get("/debug-upcoming-sync")
+async def debug_upcoming_sync(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to check upcoming sync setting in database"""
+    from sqlalchemy import text
+
+    # Get value from SQLAlchemy model
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    # Also get raw value from database
+    raw_result = await db.execute(
+        text("SELECT newbook_upcoming_sync_enabled, newbook_upcoming_sync_interval FROM kitchen_settings WHERE kitchen_id = :kid"),
+        {"kid": current_user.kitchen_id}
+    )
+    raw_row = raw_result.fetchone()
+
+    return {
+        "kitchen_id": current_user.kitchen_id,
+        "model_value": settings.newbook_upcoming_sync_enabled if settings else None,
+        "model_interval": settings.newbook_upcoming_sync_interval if settings else None,
+        "raw_db_enabled": raw_row[0] if raw_row else "column_not_found",
+        "raw_db_interval": raw_row[1] if raw_row else "column_not_found",
+        "last_sync": settings.newbook_last_upcoming_sync.isoformat() if settings and settings.newbook_last_upcoming_sync else None
+    }
 
 
 @router.post("/test-connection")
