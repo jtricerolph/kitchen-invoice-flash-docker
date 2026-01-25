@@ -16,54 +16,64 @@ logger = logging.getLogger(__name__)
 
 def normalize_angle(angle: Optional[float]) -> int:
     """
-    Round angle to nearest 90 degrees (0, 90, 180, 270).
+    Round angle to nearest 90 degrees.
 
-    Azure returns angle in degrees that content is rotated clockwise.
+    Azure returns angle in degrees (can be negative for CCW rotation).
+    We round to nearest 90° for correction.
     """
-    if angle is None:
+    if angle is None or angle == 0:
         return 0
-    # Normalize to 0-360 range
-    normalized = ((angle % 360) + 360) % 360
-    # Round to nearest 90 degrees
-    return round(normalized / 90) * 90 % 360
+    # Round to nearest 90 degrees, preserving sign
+    rounded = round(angle / 90) * 90
+    # Normalize to -180 to 180 range for cleaner math
+    while rounded > 180:
+        rounded -= 360
+    while rounded < -180:
+        rounded += 360
+    return int(rounded)
 
 
 def transform_polygon(polygon: list, rotation: int, page_width: float, page_height: float) -> list:
     """
     Transform polygon coordinates based on rotation.
 
-    The rotation indicates how much the content was rotated clockwise.
-    We need to transform coordinates as if we're rotating them counter-clockwise
-    (to match the corrected page orientation).
+    The rotation is the detected angle (can be negative for CCW).
+    We compute the correction and transform coordinates to match the corrected PDF.
 
     Args:
         polygon: List of [x, y] coordinate pairs in inches
-        rotation: 90, 180, or 270 degrees
+        rotation: Detected angle in degrees (can be negative, e.g., -90 for CCW)
         page_width: Original page width in inches (before rotation)
         page_height: Original page height in inches (before rotation)
 
     Returns:
         Transformed polygon with coordinates adjusted for rotation
     """
+    # Calculate correction angle (opposite of detected)
+    # -90° detected -> +90° correction
+    correction = -rotation
+    # Normalize to positive 0-360 range
+    correction = int(((correction % 360) + 360) % 360)
+
     transformed = []
     for point in polygon:
         x, y = point[0], point[1]
 
-        if rotation == 90:
-            # Content rotated 90° CW means we rotate coords 90° CCW to match corrected PDF
-            # (x, y) -> (y, width - x)
-            new_x = y
-            new_y = page_width - x
-        elif rotation == 180:
-            # Content rotated 180° means we rotate coords 180° to match
+        if correction == 90:
+            # Applied 90° CW rotation to PDF
+            # For +90° CW: (x, y) -> (height - y, x)
+            new_x = page_height - y
+            new_y = x
+        elif correction == 180:
+            # Applied 180° rotation to PDF
             # (x, y) -> (width - x, height - y)
             new_x = page_width - x
             new_y = page_height - y
-        elif rotation == 270:
-            # Content rotated 270° CW (or 90° CCW) means we rotate coords 90° CW to match
-            # (x, y) -> (height - y, x)
-            new_x = page_height - y
-            new_y = x
+        elif correction == 270:
+            # Applied 270° CW (90° CCW) rotation to PDF
+            # For +270° CW: (x, y) -> (y, width - x)
+            new_x = y
+            new_y = page_width - x
         else:
             new_x, new_y = x, y
 
@@ -163,11 +173,13 @@ def transform_ocr_coordinates(ocr_json: dict, rotations: dict[int, int]) -> dict
             'height': page_info.get('height')
         })
 
-    # Update page dimensions (swap width/height for 90/270 rotations)
+    # Update page dimensions (swap width/height for 90/270 corrections)
     for page_info in ocr_json.get('pages', []):
         page_num = page_info.get('page_number', 1)
         rotation = rotations.get(page_num, 0)
-        if rotation in (90, 270):
+        # Calculate correction angle (opposite of detected)
+        correction = int(((-rotation % 360) + 360) % 360)
+        if correction in (90, 270):
             # Swap width and height
             old_width = page_info.get('width')
             old_height = page_info.get('height')
@@ -206,7 +218,9 @@ def rotate_pdf_pages(pdf_path: str, ocr_raw_json: dict) -> tuple[bool, dict]:
     # Check which pages need rotation
     for page_info in pages_info:
         page_num = page_info.get('page_number', 1)
-        angle = normalize_angle(page_info.get('angle', 0))
+        raw_angle = page_info.get('angle', 0)
+        angle = normalize_angle(raw_angle)
+        logger.info(f"Page {page_num}: raw angle={raw_angle}, normalized={angle}")
         if angle != 0:
             rotations_needed[page_num] = angle
 
@@ -217,22 +231,95 @@ def rotate_pdf_pages(pdf_path: str, ocr_raw_json: dict) -> tuple[bool, dict]:
     logger.info(f"Rotating pages: {rotations_needed}")
 
     try:
-        # Open and rotate PDF
-        doc = fitz.open(pdf_path)
+        import tempfile
+        import shutil
+        import os
 
-        for page_num, rotation in rotations_needed.items():
-            page_idx = page_num - 1
-            if 0 <= page_idx < len(doc):
-                page = doc[page_idx]
-                # PyMuPDF set_rotation sets the page's rotation attribute
-                # The rotation value corrects for content being rotated
-                # If content is at 90° CW, we set rotation to 90 to correct it
-                page.set_rotation(rotation)
-                logger.info(f"Page {page_num}: set rotation to {rotation}° to correct content orientation")
+        # Open source PDF for reading
+        src_doc = fitz.open(pdf_path)
 
-        # Save rotated PDF (overwrites original)
-        doc.save(pdf_path, incremental=False, garbage=4, deflate=True)
-        doc.close()
+        # Create a new document for output
+        out_doc = fitz.open()
+
+        # Process each page in order
+        for page_idx in range(len(src_doc)):
+            page_num = page_idx + 1
+            src_page = src_doc[page_idx]
+            rect = src_page.rect
+
+            rotation = rotations_needed.get(page_num, 0)
+            if rotation == 0:
+                # No rotation needed - just copy the page as-is
+                out_doc.insert_pdf(src_doc, from_page=page_idx, to_page=page_idx)
+                logger.debug(f"Page {page_num}: no rotation needed, copied as-is")
+            else:
+                # Calculate correction: -90° content needs +90° rotation to appear upright
+                correction = -rotation
+                # Normalize to 0-360 for PyMuPDF
+                correction = int(((correction % 360) + 360) % 360)
+
+                logger.info(f"Page {page_num}: detected angle={rotation}°, applying correction={correction}°")
+                logger.info(f"Page {page_num}: original size {rect.width}x{rect.height}")
+
+                # Render page to pixmap at high resolution
+                # Use 2x scale for better quality
+                mat = fitz.Matrix(2, 2)
+                pix = src_page.get_pixmap(matrix=mat)
+
+                # Rotate the pixmap
+                # PyMuPDF Pixmap doesn't have direct rotate, so we use PIL
+                from PIL import Image
+                import io
+
+                # Convert pixmap to PIL Image
+                img_data = pix.tobytes("png")
+                img = Image.open(io.BytesIO(img_data))
+
+                # Rotate image (PIL rotates counter-clockwise, we need clockwise)
+                # correction=90 means rotate 90° CW, which is -90° in PIL (or 270° CCW)
+                pil_rotation = (360 - correction) % 360
+                if pil_rotation != 0:
+                    img = img.rotate(pil_rotation, expand=True)
+
+                logger.info(f"Page {page_num}: rotated image {pil_rotation}° CCW (={correction}° CW)")
+
+                # For 90° or 270° rotation, swap width and height
+                if correction in (90, 270):
+                    new_width, new_height = rect.height, rect.width
+                else:
+                    new_width, new_height = rect.width, rect.height
+
+                # Create new page with correct dimensions
+                new_page = out_doc.new_page(width=new_width, height=new_height)
+
+                # Convert PIL image back to bytes
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format='PNG')
+                img_buffer.seek(0)
+
+                # Insert the rotated image into the new page
+                new_page.insert_image(
+                    fitz.Rect(0, 0, new_width, new_height),
+                    stream=img_buffer.read()
+                )
+
+                logger.info(f"Page {page_num}: re-rendered with {correction}° rotation, new size {new_width}x{new_height}")
+
+        src_doc.close()
+
+        # Save to temp file first, then replace original
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+        try:
+            os.close(temp_fd)  # Close the file descriptor, we just need the path
+            out_doc.save(temp_path, garbage=4, deflate=True)
+            out_doc.close()
+            # Replace original with rotated version
+            shutil.move(temp_path, pdf_path)
+        except Exception:
+            # Clean up temp file on error
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise
 
         logger.info(f"PDF saved with rotated pages: {pdf_path}")
 

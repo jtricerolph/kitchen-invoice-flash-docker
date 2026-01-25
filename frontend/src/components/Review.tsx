@@ -387,6 +387,9 @@ export default function Review() {
   const [lineItemSearchText, setLineItemSearchText] = useState<string>('')
   const [lineItemPortionsFilter, setLineItemPortionsFilter] = useState<string>('')
   const [lineItemMissingDataFilter, setLineItemMissingDataFilter] = useState<string>('')
+  // Current visible page for sticky indicator (multi-page invoices)
+  const [currentVisiblePage, setCurrentVisiblePage] = useState<number>(1)
+  const lineItemsTableRef = useRef<HTMLDivElement>(null)
 
   // Price history modal state
   const [historyModal, setHistoryModal] = useState<{
@@ -1578,6 +1581,41 @@ export default function Review() {
 
     return filtered
   }, [lineItems, lineItemSortColumn, lineItemSortDirection, lineItemPriceFilter, lineItemSearchText, lineItemPortionsFilter, lineItemMissingDataFilter])
+
+  // Track visible page in line items table for sticky indicator
+  useEffect(() => {
+    const container = lineItemsTableRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      // Find all rows with data-page attribute
+      const rows = container.querySelectorAll('tr[data-page]')
+      if (rows.length === 0) return
+
+      const containerTop = container.getBoundingClientRect().top + 50 // Account for sticky header
+
+      // Find the first visible row (closest to top of container)
+      for (const row of rows) {
+        const rect = row.getBoundingClientRect()
+        if (rect.top >= containerTop - 10) {
+          const pageNum = parseInt(row.getAttribute('data-page') || '1', 10)
+          setCurrentVisiblePage(pageNum)
+          return
+        }
+      }
+
+      // If no row found above container top, use the last row's page
+      const lastRow = rows[rows.length - 1]
+      const pageNum = parseInt(lastRow.getAttribute('data-page') || '1', 10)
+      setCurrentVisiblePage(pageNum)
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    // Initial check
+    handleScroll()
+
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [filteredAndSortedLineItems])
 
   // Calculate line item statistics for checks section
   const lineItemStats = useMemo(() => {
@@ -2834,9 +2872,9 @@ export default function Review() {
           )}
         </div>
         {(lineItems && lineItems.length > 0) || bulkEditMode ? (
-          <div style={styles.lineItemsTableContainer}>
+          <div style={styles.lineItemsTableContainer} ref={lineItemsTableRef}>
           <table style={styles.lineItemsTable}>
-            <thead>
+            <thead style={styles.stickyThead}>
               <tr>
                 <th style={{ ...styles.th, width: '30px' }}></th>
                 <th
@@ -2886,6 +2924,14 @@ export default function Review() {
                 <th style={{ ...styles.th, textAlign: 'center', width: '40px' }} title="Cost Breakdown"></th>
                 <th style={{ ...styles.th, width: '70px' }}></th>
               </tr>
+              {/* Sticky page indicator row for multi-page invoices */}
+              {invoice && invoice.total_pages && invoice.total_pages > 1 && !lineItemSortColumn && !lineItemSearchText && !lineItemPriceFilter && !lineItemPortionsFilter && !lineItemMissingDataFilter && (
+                <tr>
+                  <th colSpan={11} style={styles.stickyPageIndicatorCell}>
+                    Page {currentVisiblePage} of {invoice.total_pages}
+                  </th>
+                </tr>
+              )}
             </thead>
             <tbody>
               {[...filteredAndSortedLineItems, ...(editingLineItem === -1 ? [{
@@ -2919,7 +2965,6 @@ export default function Review() {
                 _originalIndex: -1
               }] : [])].map((item, index, allItems) => {
                 const bbox = getLineItemBoundingBox(item._originalIndex)
-                const hasOcrWarning = !!item.ocr_warnings
                 const highQtyThreshold = settings?.high_quantity_threshold ?? 100
                 const isHighQuantity = item.quantity !== null && item.quantity > highQtyThreshold
 
@@ -2952,13 +2997,22 @@ export default function Review() {
                 // Check if this line item is disputed
                 const isDisputed = invoice.disputed_line_item_ids?.includes(item.id)
 
-                // OCR warning takes priority (darker amber), high quantity is lighter, disputed is pale pink
-                const rowBackground = hasOcrWarning ? '#fff3cd' : isHighQuantity ? '#fff8e1' : isDisputed ? '#fff0f3' : undefined
-                const rowStyle = rowBackground ? { backgroundColor: rowBackground } : undefined
-                // Add amber border for stock conflicts
-                const rowStyleWithBorder = hasStockConflict
+                // Check if this is the last item on its page (for page break indicator)
+                const isLastOnPage = invoice && invoice.total_pages && invoice.total_pages > 1 &&
+                  !lineItemSortColumn && !lineItemSearchText && !lineItemPriceFilter && !lineItemPortionsFilter && !lineItemMissingDataFilter &&
+                  item.page_number && index < allItems.length - 1 &&
+                  allItems[index + 1]?.page_number !== item.page_number
+
+                // High quantity is lighter amber, disputed is pale pink (OCR warning now shown on product code cell only)
+                const rowBackground = isHighQuantity ? '#fff8e1' : isDisputed ? '#fff0f3' : undefined
+                const rowStyle: React.CSSProperties | undefined = rowBackground ? { backgroundColor: rowBackground } : undefined
+                // Add amber border for stock conflicts, or dashed border for page breaks
+                let rowStyleWithBorder: React.CSSProperties | undefined = hasStockConflict
                   ? { ...rowStyle, border: '2px solid #ffc107' }
                   : rowStyle
+                if (isLastOnPage && !hasStockConflict) {
+                  rowStyleWithBorder = { ...rowStyleWithBorder, borderBottom: '2px dashed #adb5bd' }
+                }
 
                 // Style for cells with price calculation errors - create a single box spanning qty to total
                 const errorCellStyleLeft = hasPriceCalcError
@@ -2971,29 +3025,9 @@ export default function Review() {
                   ? { borderRight: '2px solid #dc3545', borderTop: '2px solid #dc3545', borderBottom: '2px solid #dc3545', backgroundColor: '#ffe6e6' }
                   : {}
 
-                // Check if we should show page break BEFORE this item
-                // Only show when no sort/filter is active (default order)
-                const showPageBreak =
-                  !lineItemSortColumn &&
-                  !lineItemSearchText &&
-                  !lineItemPriceFilter &&
-                  !lineItemPortionsFilter &&
-                  !lineItemMissingDataFilter &&
-                  index > 0 &&
-                  item.page_number &&
-                  allItems[index - 1]?.page_number &&
-                  item.page_number !== allItems[index - 1].page_number
-
                 return (
                   <React.Fragment key={item.id}>
-                    {showPageBreak && (
-                      <tr style={styles.pageBreakRow}>
-                        <td colSpan={11} style={styles.pageBreakCell}>
-                          ────── Page {item.page_number} of {invoice?.total_pages || '?'} ──────
-                        </td>
-                      </tr>
-                    )}
-                    <tr style={rowStyleWithBorder}>
+                    <tr style={rowStyleWithBorder} data-page={item.page_number || 1}>
                       <td style={styles.td}>
                         {bbox && (
                           <button
@@ -3129,40 +3163,32 @@ export default function Review() {
                       ) : (
                         <>
                           <td style={{ ...styles.td, fontSize: '0.85rem', color: '#666' }}>
-                            {item.ocr_warnings?.includes('SKU extracted from raw') ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                               <span
-                                title="SKU was not detected by Azure OCR - extracted from raw content"
-                                style={{
+                                style={item.ocr_warnings ? {
                                   background: '#fff3cd',
-                                  padding: '2px 4px',
+                                  padding: '2px 6px',
                                   borderRadius: '3px',
-                                  border: '1px solid #ffc107',
-                                  cursor: 'help'
-                                }}
+                                  border: '1px solid #ffc107'
+                                } : undefined}
                               >
-                                {item.product_code}
+                                {item.product_code || '—'}
                               </span>
-                            ) : (
-                              item.product_code || '—'
-                            )}
-                          </td>
-                          <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
-                            <div>
                               {item.ocr_warnings && (
                                 <span
                                   title={item.ocr_warnings}
                                   style={{
-                                    display: 'inline-block',
-                                    marginRight: '6px',
-                                    color: '#856404',
                                     cursor: 'help',
-                                    fontWeight: 'bold',
-                                    fontSize: '1.1rem'
+                                    fontSize: '1rem'
                                   }}
                                 >
                                   ⚠️
                                 </span>
                               )}
+                            </span>
+                          </td>
+                          <td style={{ ...styles.td, ...(item.is_non_stock ? { color: '#856404', fontStyle: 'italic' } : {}) }}>
+                            <div>
                               {getFirstLineOfDescription(item.description) || '—'}
                               {item.description_alt && item.description !== item.description_alt && (
                                 <button
@@ -4347,9 +4373,11 @@ const styles: Record<string, React.CSSProperties> = {
   createFromExtractedBtn: { padding: '0.25rem 0.5rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'normal' },
   modalLabel: { display: 'flex', flexDirection: 'column', gap: '0.5rem', color: '#333', fontWeight: '500', marginTop: '1rem' },
   lineItemsSection: { background: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' },
-  lineItemsTableContainer: { maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto', border: '1px solid #eee', borderRadius: '8px' },
+  lineItemsTableContainer: { maxHeight: '60vh', overflowY: 'auto', overflowX: 'auto', border: '1px solid #eee', borderRadius: '8px', position: 'relative' } as React.CSSProperties,
+  stickyThead: { position: 'sticky', top: 0, zIndex: 2, borderBottom: '2px solid #ddd' } as React.CSSProperties,
+  stickyPageIndicatorCell: { background: '#e9ecef', padding: '0.3rem 1rem', textAlign: 'center', fontSize: '0.85rem', fontWeight: '500', color: '#495057' } as React.CSSProperties,
   lineItemsTable: { width: '100%', borderCollapse: 'collapse', fontSize: '0.95rem' },
-  th: { textAlign: 'left', padding: '0.75rem 0.5rem', borderBottom: '2px solid #ddd', fontWeight: '600', background: '#f8f9fa', position: 'sticky', top: 0, zIndex: 1 } as React.CSSProperties,
+  th: { textAlign: 'left', padding: '0.75rem 0.5rem', fontWeight: '600', background: '#f8f9fa' } as React.CSSProperties,
   pageBreakRow: { background: '#f8f9fa' },
   pageBreakCell: { textAlign: 'center', padding: '0.5rem', color: '#6c757d', fontSize: '0.85rem', fontStyle: 'italic', borderBottom: '1px dashed #dee2e6', borderTop: '1px dashed #dee2e6' } as React.CSSProperties,
   td: { padding: '0.75rem 0.5rem', borderBottom: '1px solid #eee', verticalAlign: 'middle' },
