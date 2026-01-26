@@ -305,6 +305,9 @@ def transform_ticket_for_kds(ticket: dict) -> dict:
             logger.debug(f"Skipping order '{order.get('name')}' - status is '{order_status}', not 'Submitted'")
             continue
 
+        # Extract order tags (modifiers like "Rare", "No sauce", etc.)
+        order_tags = order.get("tags", [])
+
         order_data = {
             "id": order.get("id"),
             "uid": order.get("uid"),
@@ -317,6 +320,7 @@ def transform_ticket_for_kds(ticket: dict) -> dict:
             "kitchen_print": kitchen_print,
             "is_voided": is_voided,
             "voided_at": voided_at,
+            "tags": order_tags,
         }
 
         if kitchen_course not in orders_by_course:

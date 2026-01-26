@@ -3,6 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 
+interface KDSOrderTag {
+  tag: string
+  tagName: string
+}
+
 interface KDSOrder {
   id: number
   uid: string | null
@@ -15,6 +20,7 @@ interface KDSOrder {
   kitchen_print: string | null
   is_voided?: boolean
   voided_at?: string | null
+  tags?: KDSOrderTag[]
 }
 
 interface CourseState {
@@ -537,11 +543,20 @@ export default function KDS() {
                           </div>
                           <div style={styles.ordersList}>
                             {filterOrders(orders).map((order) => (
-                              <div key={order.id} style={styles.orderItem}>
-                                <span style={styles.orderQty}>{order.quantity}x</span>
-                                <span style={styles.orderName}>{order.name}</span>
-                                {order.portion && order.portion !== 'Normal' && (
-                                  <span style={styles.orderPortion}>({order.portion})</span>
+                              <div key={order.id} style={styles.orderItemWrap}>
+                                <div style={styles.orderItem}>
+                                  <span style={styles.orderQty}>{order.quantity}x</span>
+                                  <span style={styles.orderName}>{order.name}</span>
+                                  {order.portion && order.portion !== 'Normal' && (
+                                    <span style={styles.orderPortion}>({order.portion})</span>
+                                  )}
+                                </div>
+                                {order.tags && order.tags.length > 0 && (
+                                  <div style={styles.orderTags}>
+                                    {order.tags.map((t, i) => (
+                                      <div key={i} style={styles.orderTag}>{t.tag}</div>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                             ))}
@@ -670,11 +685,20 @@ export default function KDS() {
                       {/* Orders - filter out void/cancelled */}
                       <div style={styles.modalOrdersList}>
                         {filterOrders(orders).map((order) => (
-                          <div key={order.id} style={styles.modalOrderItem}>
-                            <span style={styles.modalOrderQty}>{order.quantity}x</span>
-                            <span style={{ flex: 1 }}>{order.name}</span>
-                            {order.portion && order.portion !== 'Normal' && (
-                              <span style={{ color: '#888', fontSize: '0.8rem' }}>({order.portion})</span>
+                          <div key={order.id} style={styles.modalOrderItemWrap}>
+                            <div style={styles.modalOrderItem}>
+                              <span style={styles.modalOrderQty}>{order.quantity}x</span>
+                              <span style={{ flex: 1 }}>{order.name}</span>
+                              {order.portion && order.portion !== 'Normal' && (
+                                <span style={{ color: '#888', fontSize: '0.8rem' }}>({order.portion})</span>
+                              )}
+                            </div>
+                            {order.tags && order.tags.length > 0 && (
+                              <div style={styles.modalOrderTags}>
+                                {order.tags.map((t, i) => (
+                                  <div key={i} style={styles.modalOrderTag}>{t.tag}</div>
+                                ))}
+                              </div>
                             )}
                           </div>
                         ))}
@@ -946,10 +970,26 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: '0.15rem',
   },
+  orderItemWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
   orderItem: {
     display: 'flex',
     gap: '0.3rem',
     fontSize: '0.78rem',
+    fontWeight: 'bold',
+  },
+  orderTags: {
+    paddingLeft: '1.8rem',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.05rem',
+  },
+  orderTag: {
+    fontSize: '0.7rem',
+    color: '#e67e22',
+    fontStyle: 'italic',
   },
   orderQty: {
     fontWeight: 'bold',
@@ -1121,6 +1161,21 @@ const styles: Record<string, React.CSSProperties> = {
   modalOrderQty: {
     fontWeight: 'bold',
     minWidth: '2rem',
+  },
+  modalOrderItemWrap: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+  },
+  modalOrderTags: {
+    paddingLeft: '2.4rem',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.05rem',
+  },
+  modalOrderTag: {
+    fontSize: '0.8rem',
+    color: '#e67e22',
+    fontStyle: 'italic',
   },
   // Pending toggle button in sidebar
   pendingButtonActive: {

@@ -77,6 +77,11 @@ class KDSSettingsUpdate(BaseModel):
     kds_show_completed_for_seconds: Optional[int] = None
 
 
+class KDSOrderTagResponse(BaseModel):
+    tag: str
+    tagName: str
+
+
 class KDSOrderResponse(BaseModel):
     id: int
     uid: Optional[str] = None
@@ -89,6 +94,7 @@ class KDSOrderResponse(BaseModel):
     kitchen_print: Optional[str] = None
     is_voided: bool = False
     voided_at: Optional[str] = None  # ISO timestamp when voided
+    tags: list[KDSOrderTagResponse] = []
 
 
 class KDSTicketResponse(BaseModel):
