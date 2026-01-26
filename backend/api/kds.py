@@ -3,8 +3,14 @@ KDS (Kitchen Display System) API Endpoints
 
 Provides endpoints for:
 - Fetching open tickets with kitchen orders
-- Course bumping
+- Course flow: PENDING → AWAY → SENT
 - KDS settings management
+
+Course Flow:
+- When a ticket arrives, the first course is auto-set to "away" (called away from kitchen)
+- Staff presses SENT when food is delivered to the table
+- Staff presses AWAY on next course when clearing previous course / calling away next
+- Strictly sequential: must SENT current before AWAY on next
 """
 
 import logging
@@ -44,6 +50,9 @@ class KDSSettingsResponse(BaseModel):
     kds_timer_green_seconds: int = 300
     kds_timer_amber_seconds: int = 600
     kds_timer_red_seconds: int = 900
+    kds_away_timer_green_seconds: int = 600
+    kds_away_timer_amber_seconds: int = 900
+    kds_away_timer_red_seconds: int = 1200
     kds_course_order: list = ["Starters", "Mains", "Desserts"]
     kds_show_completed_for_seconds: int = 30
 
@@ -61,6 +70,9 @@ class KDSSettingsUpdate(BaseModel):
     kds_timer_green_seconds: Optional[int] = None
     kds_timer_amber_seconds: Optional[int] = None
     kds_timer_red_seconds: Optional[int] = None
+    kds_away_timer_green_seconds: Optional[int] = None
+    kds_away_timer_amber_seconds: Optional[int] = None
+    kds_away_timer_red_seconds: Optional[int] = None
     kds_course_order: Optional[list] = None
     kds_show_completed_for_seconds: Optional[int] = None
 
@@ -93,8 +105,23 @@ class KDSTicketResponse(BaseModel):
     is_bumped: bool = False
 
 
-class CourseBumpRequest(BaseModel):
+class CourseActionRequest(BaseModel):
     ticket_id: int  # Local KDS ticket ID
+    course_name: str
+
+
+class CourseActionResponse(BaseModel):
+    success: bool
+    message: str
+    ticket_id: int
+    course_name: str
+    action: str  # "away" or "sent"
+    timestamp: datetime
+
+
+# Keep old schema for backward compat
+class CourseBumpRequest(BaseModel):
+    ticket_id: int
     course_name: str
 
 
@@ -118,10 +145,130 @@ async def get_kds_settings(db: AsyncSession, kitchen_id: int) -> Optional[Kitche
     return result.scalar_one_or_none()
 
 
+def normalize_course_config(course_order: list, settings: KitchenSettings) -> list[dict]:
+    """Convert old string-based course_order to new object format with per-course timers.
+
+    Old format: ["Starters", "Mains", "Desserts"]
+    New format: [{"name": "Starters", "prep_green": 300, ...}, ...]
+
+    Falls back to global timer thresholds for old string entries.
+    """
+    if not course_order:
+        return []
+    result = []
+    for entry in course_order:
+        if isinstance(entry, str):
+            result.append({
+                "name": entry,
+                "prep_green": settings.kds_timer_green_seconds or 300,
+                "prep_amber": settings.kds_timer_amber_seconds or 600,
+                "prep_red": settings.kds_timer_red_seconds or 900,
+                "away_green": settings.kds_away_timer_green_seconds or 600,
+                "away_amber": settings.kds_away_timer_amber_seconds or 900,
+                "away_red": settings.kds_away_timer_red_seconds or 1200,
+            })
+        elif isinstance(entry, dict) and "name" in entry:
+            result.append(entry)
+    return result
+
+
+def extract_course_names(course_order: list) -> list[str]:
+    """Extract course names from course config (handles both old string and new object format)."""
+    names = []
+    for entry in (course_order or []):
+        if isinstance(entry, str):
+            names.append(entry)
+        elif isinstance(entry, dict) and "name" in entry:
+            names.append(entry["name"])
+    return names
+
+
+def get_ordered_courses_for_ticket(orders_data: list, course_order: list) -> list[str]:
+    """Get the ordered list of courses present in a ticket."""
+    ticket_courses = []
+    seen = set()
+    for order in orders_data:
+        course = order.get("kitchen_course", "Uncategorized")
+        if course not in seen:
+            seen.add(course)
+            ticket_courses.append(course)
+
+    # Extract names from course config (handles both string and object format)
+    config_names = extract_course_names(course_order)
+
+    # Sort by configured course order, then append any not in config
+    ordered = [c for c in config_names if c in seen]
+    ordered.extend([c for c in ticket_courses if c not in set(ordered)])
+    return ordered
+
+
+def initialize_course_states(ordered_courses: list, received_at: datetime) -> dict:
+    """Initialize course states for a new ticket.
+
+    First course is auto-set to 'away' (called away when ticket created).
+    All others start as 'pending'.
+    """
+    states = {}
+    for i, course in enumerate(ordered_courses):
+        if i == 0:
+            states[course] = {
+                "status": "away",
+                "called_away_at": received_at.isoformat(),
+                "sent_at": None,
+                "sent_by": None,
+            }
+        else:
+            states[course] = {
+                "status": "pending",
+                "called_away_at": None,
+                "sent_at": None,
+                "sent_by": None,
+            }
+    return states
+
+
+def migrate_old_course_states(course_states: dict) -> dict:
+    """Convert old format course_states to new format.
+
+    Old: {"Starters": {"bumped": true, "bumped_at": "...", "bumped_by": "..."}}
+    New: {"Starters": {"status": "sent", "called_away_at": null, "sent_at": "...", "sent_by": "..."}}
+    """
+    migrated = {}
+    for course, state in course_states.items():
+        if isinstance(state, dict) and "status" in state:
+            # Already new format
+            migrated[course] = state
+        elif isinstance(state, dict) and "bumped" in state:
+            # Old format
+            if state.get("bumped"):
+                migrated[course] = {
+                    "status": "sent",
+                    "called_away_at": None,
+                    "sent_at": state.get("bumped_at"),
+                    "sent_by": state.get("bumped_by"),
+                }
+            else:
+                migrated[course] = {
+                    "status": "pending",
+                    "called_away_at": None,
+                    "sent_at": None,
+                    "sent_by": None,
+                }
+        else:
+            migrated[course] = {
+                "status": "pending",
+                "called_away_at": None,
+                "sent_at": None,
+                "sent_by": None,
+            }
+    return migrated
+
+
 async def get_or_create_kds_ticket(
     db: AsyncSession,
     kitchen_id: int,
-    sambapos_ticket: dict
+    sambapos_ticket: dict,
+    course_order: list
 ) -> KDSTicket:
     """Get existing KDS ticket or create new one from SambaPOS data."""
     # Check if ticket already exists
@@ -143,8 +290,38 @@ async def get_or_create_kds_ticket(
         kds_ticket.orders_data = sambapos_ticket.get("orders", [])
         kds_ticket.last_sambapos_update = datetime.utcnow()
         kds_ticket.updated_at = datetime.utcnow()
+
+        # Migrate old course_states format if needed
+        if kds_ticket.course_states:
+            first_state = next(iter(kds_ticket.course_states.values()), None)
+            if isinstance(first_state, dict) and "bumped" in first_state and "status" not in first_state:
+                kds_ticket.course_states = migrate_old_course_states(kds_ticket.course_states)
+
+        # Ensure course_states covers all courses in ticket
+        orders = sambapos_ticket.get("orders", [])
+        ordered_courses = get_ordered_courses_for_ticket(orders, course_order)
+        current_states = kds_ticket.course_states or {}
+        for course in ordered_courses:
+            if course not in current_states:
+                current_states[course] = {
+                    "status": "pending",
+                    "called_away_at": None,
+                    "sent_at": None,
+                    "sent_by": None,
+                }
+        # If no course states exist at all, initialize (first course as away)
+        if not kds_ticket.course_states or len(kds_ticket.course_states) == 0:
+            kds_ticket.course_states = initialize_course_states(
+                ordered_courses, kds_ticket.received_at
+            )
+        else:
+            kds_ticket.course_states = current_states
     else:
         # Create new ticket
+        now = datetime.utcnow()
+        orders = sambapos_ticket.get("orders", [])
+        ordered_courses = get_ordered_courses_for_ticket(orders, course_order)
+
         kds_ticket = KDSTicket(
             kitchen_id=kitchen_id,
             sambapos_ticket_id=sambapos_ticket["id"],
@@ -153,10 +330,10 @@ async def get_or_create_kds_ticket(
             table_name=sambapos_ticket.get("table"),
             covers=sambapos_ticket.get("covers"),
             total_amount=sambapos_ticket.get("total_amount"),
-            orders_data=sambapos_ticket.get("orders", []),
-            course_states={},
-            received_at=datetime.utcnow(),
-            last_sambapos_update=datetime.utcnow()
+            orders_data=orders,
+            course_states=initialize_course_states(ordered_courses, now),
+            received_at=now,
+            last_sambapos_update=now
         )
         db.add(kds_ticket)
 
@@ -180,6 +357,10 @@ async def get_settings(
     if not settings:
         return KDSSettingsResponse()
 
+    # Normalize course order: convert old string format to new object format
+    raw_course_order = settings.kds_course_order or ["Starters", "Mains", "Desserts"]
+    normalized_courses = normalize_course_config(raw_course_order, settings)
+
     return KDSSettingsResponse(
         kds_enabled=settings.kds_enabled or False,
         kds_graphql_url=settings.kds_graphql_url,
@@ -190,7 +371,10 @@ async def get_settings(
         kds_timer_green_seconds=settings.kds_timer_green_seconds or 300,
         kds_timer_amber_seconds=settings.kds_timer_amber_seconds or 600,
         kds_timer_red_seconds=settings.kds_timer_red_seconds or 900,
-        kds_course_order=settings.kds_course_order or ["Starters", "Mains", "Desserts"],
+        kds_away_timer_green_seconds=settings.kds_away_timer_green_seconds or 600,
+        kds_away_timer_amber_seconds=settings.kds_away_timer_amber_seconds or 900,
+        kds_away_timer_red_seconds=settings.kds_away_timer_red_seconds or 1200,
+        kds_course_order=normalized_courses,
         kds_show_completed_for_seconds=settings.kds_show_completed_for_seconds or 30
     )
 
@@ -238,6 +422,8 @@ async def get_tickets(
     if not settings:
         raise HTTPException(status_code=404, detail="Kitchen settings not found")
 
+    course_order = settings.kds_course_order or ["Starters", "Mains", "Desserts"]
+
     # Check if KDS is enabled and configured
     kds_url = settings.kds_graphql_url
     kds_username = settings.kds_graphql_username
@@ -277,7 +463,7 @@ async def get_tickets(
 
         # Get or create local KDS ticket
         kds_ticket = await get_or_create_kds_ticket(
-            db, current_user.kitchen_id, transformed
+            db, current_user.kitchen_id, transformed, course_order
         )
 
         # Skip tickets that have been bumped (completed)
@@ -378,16 +564,21 @@ async def mark_closed_tickets(
     await db.commit()
 
 
-@router.post("/bump-course", response_model=CourseBumpResponse)
-async def bump_course(
-    request: CourseBumpRequest,
+# =============================================================================
+# Course Flow Endpoints
+# =============================================================================
+
+@router.post("/course-away", response_model=CourseActionResponse)
+async def course_away(
+    request: CourseActionRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Bump a course for a ticket (mark it as sent to table).
+    Mark a course as 'away' (called away from kitchen).
 
-    This records the bump locally and updates the ticket's course state.
+    This starts the prep timer for the course. Only allowed if the previous
+    course has been marked as 'sent'.
     """
     # Get the KDS ticket
     result = await db.execute(
@@ -404,71 +595,200 @@ async def bump_course(
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     if kds_ticket.is_bumped:
-        raise HTTPException(status_code=400, detail="Ticket already fully bumped")
+        raise HTTPException(status_code=400, detail="Ticket already completed")
 
     now = datetime.utcnow()
+    course_states = dict(kds_ticket.course_states or {})
+
+    # Validate the course exists
+    course_state = course_states.get(request.course_name)
+    if not course_state:
+        raise HTTPException(status_code=400, detail=f"Course '{request.course_name}' not found in ticket")
+
+    # Validate course is currently pending
+    if course_state.get("status") != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Course '{request.course_name}' is already '{course_state.get('status')}'"
+        )
+
+    # Validate sequential: previous course must be sent
+    settings = await get_kds_settings(db, current_user.kitchen_id)
+    course_order = settings.kds_course_order or ["Starters", "Mains", "Desserts"]
+    ordered_courses = get_ordered_courses_for_ticket(kds_ticket.orders_data or [], course_order)
+
+    course_idx = None
+    for i, c in enumerate(ordered_courses):
+        if c == request.course_name:
+            course_idx = i
+            break
+
+    if course_idx is not None and course_idx > 0:
+        prev_course = ordered_courses[course_idx - 1]
+        prev_state = course_states.get(prev_course, {})
+        if prev_state.get("status") not in ("sent", "cleared"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Previous course '{prev_course}' must be sent before calling away '{request.course_name}'"
+            )
+
+        # Mark previous course as "cleared" (table cleared for next course)
+        if prev_state.get("status") == "sent":
+            course_states[prev_course] = {
+                **prev_state,
+                "status": "cleared",
+                "cleared_at": now.isoformat(),
+            }
+            # Audit log for cleared
+            cleared_bump = KDSCourseBump(
+                ticket_id=kds_ticket.id,
+                course_name=prev_course,
+                action="cleared",
+                bumped_at=now,
+                bumped_by_user_id=current_user.id,
+            )
+            db.add(cleared_bump)
+
+    # Update course state to "away"
+    course_states[request.course_name] = {
+        "status": "away",
+        "called_away_at": now.isoformat(),
+        "sent_at": course_state.get("sent_at"),
+        "sent_by": course_state.get("sent_by"),
+    }
+    kds_ticket.course_states = course_states
+    kds_ticket.updated_at = now
+
+    # Create audit record
+    bump = KDSCourseBump(
+        ticket_id=kds_ticket.id,
+        course_name=request.course_name,
+        action="away",
+        bumped_at=now,
+        bumped_by_user_id=current_user.id,
+    )
+    db.add(bump)
+
+    await db.commit()
+
+    return CourseActionResponse(
+        success=True,
+        message=f"Course '{request.course_name}' called away",
+        ticket_id=kds_ticket.id,
+        course_name=request.course_name,
+        action="away",
+        timestamp=now
+    )
+
+
+@router.post("/course-sent", response_model=CourseActionResponse)
+async def course_sent(
+    request: CourseActionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Mark a course as 'sent' (food delivered to table).
+
+    This stops the prep timer and starts the away timer.
+    Course must currently be in 'away' status.
+    """
+    # Get the KDS ticket
+    result = await db.execute(
+        select(KDSTicket).where(
+            and_(
+                KDSTicket.id == request.ticket_id,
+                KDSTicket.kitchen_id == current_user.kitchen_id
+            )
+        )
+    )
+    kds_ticket = result.scalar_one_or_none()
+
+    if not kds_ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    if kds_ticket.is_bumped:
+        raise HTTPException(status_code=400, detail="Ticket already completed")
+
+    now = datetime.utcnow()
+    course_states = dict(kds_ticket.course_states or {})
+
+    # Validate the course exists
+    course_state = course_states.get(request.course_name)
+    if not course_state:
+        raise HTTPException(status_code=400, detail=f"Course '{request.course_name}' not found in ticket")
+
+    # Validate course is currently away
+    if course_state.get("status") != "away":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Course '{request.course_name}' must be 'away' before marking as 'sent' (current: '{course_state.get('status')}')"
+        )
 
     # Get previous bump for time calculation
     prev_bump_result = await db.execute(
         select(KDSCourseBump)
         .where(KDSCourseBump.ticket_id == kds_ticket.id)
         .order_by(KDSCourseBump.bumped_at.desc())
+        .limit(1)
     )
     prev_bump = prev_bump_result.scalar_one_or_none()
-
     time_since_previous = None
     if prev_bump:
         time_since_previous = int((now - prev_bump.bumped_at).total_seconds())
 
-    # Create bump record
+    # Update course state to "sent"
+    course_states[request.course_name] = {
+        "status": "sent",
+        "called_away_at": course_state.get("called_away_at"),
+        "sent_at": now.isoformat(),
+        "sent_by": current_user.name or current_user.email,
+    }
+    kds_ticket.course_states = course_states
+    kds_ticket.updated_at = now
+
+    # Create audit record
     bump = KDSCourseBump(
         ticket_id=kds_ticket.id,
         course_name=request.course_name,
+        action="sent",
         bumped_at=now,
         bumped_by_user_id=current_user.id,
         time_since_previous_seconds=time_since_previous
     )
     db.add(bump)
 
-    # Update ticket's course states
-    course_states = kds_ticket.course_states or {}
-    course_states[request.course_name] = {
-        "bumped": True,
-        "bumped_at": now.isoformat(),
-        "bumped_by": current_user.name or current_user.email
-    }
-    kds_ticket.course_states = course_states
-
-    # Check if all courses are bumped
-    settings = await get_kds_settings(db, current_user.kitchen_id)
-    course_order = settings.kds_course_order or ["Starters", "Mains", "Desserts"] if settings else ["Starters", "Mains", "Desserts"]
-
-    # Get courses present in this ticket
-    orders_data = kds_ticket.orders_data or []
-    ticket_courses = set()
-    for order in orders_data:
-        course = order.get("kitchen_course", "Uncategorized")
-        ticket_courses.add(course)
-
-    # Check if all ticket courses are bumped
-    all_bumped = all(
-        course_states.get(course, {}).get("bumped", False)
-        for course in ticket_courses
-    )
-
-    if all_bumped:
-        kds_ticket.is_bumped = True
-        kds_ticket.bumped_at = now
-
-    kds_ticket.updated_at = now
     await db.commit()
 
-    return CourseBumpResponse(
+    return CourseActionResponse(
         success=True,
-        message=f"Course '{request.course_name}' bumped successfully",
+        message=f"Course '{request.course_name}' marked as sent",
         ticket_id=kds_ticket.id,
         course_name=request.course_name,
-        bumped_at=now
+        action="sent",
+        timestamp=now
+    )
+
+
+# Keep backward-compatible bump-course endpoint (acts as course-sent)
+@router.post("/bump-course", response_model=CourseBumpResponse)
+async def bump_course(
+    request: CourseBumpRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Legacy endpoint: Bump a course (mark as sent).
+    Redirects to course-sent logic.
+    """
+    action_req = CourseActionRequest(ticket_id=request.ticket_id, course_name=request.course_name)
+    result = await course_sent(action_req, current_user, db)
+    return CourseBumpResponse(
+        success=result.success,
+        message=result.message,
+        ticket_id=result.ticket_id,
+        course_name=result.course_name,
+        bumped_at=result.timestamp
     )
 
 
@@ -478,7 +798,7 @@ async def bump_full_ticket(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Bump entire ticket (mark all courses as complete)."""
+    """Bump entire ticket (mark as complete). Used after all courses are sent."""
     result = await db.execute(
         select(KDSTicket).where(
             and_(

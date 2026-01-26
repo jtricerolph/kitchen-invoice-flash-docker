@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useState, useEffect, createContext, useContext } from 'react'
 import Login from './pages/Login'
 import Settings from './pages/Settings'
@@ -107,11 +107,14 @@ function App() {
     return !restrictedPages.includes(path)
   }
 
+  const location = useLocation()
+  const isFullscreenPage = location.pathname === '/kds'
+
   return (
     <AuthContext.Provider value={{ user, token, restrictedPages, login, logout }}>
-      <div style={styles.app}>
-        {token && user && <Header user={user} restrictedPages={restrictedPages} />}
-        <main style={styles.main}>
+      <div style={isFullscreenPage ? styles.appFullscreen : styles.app}>
+        {token && user && !isFullscreenPage && <Header user={user} restrictedPages={restrictedPages} />}
+        <main style={isFullscreenPage ? styles.mainFullscreen : styles.main}>
           <Routes>
             <Route
               path="/login"
@@ -233,7 +236,7 @@ function App() {
             />
           </Routes>
         </main>
-        {token && user && <SupportButton />}
+        {token && user && !isFullscreenPage && <SupportButton />}
       </div>
     </AuthContext.Provider>
   )
@@ -368,6 +371,11 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: '100vh',
     background: '#f5f5f5',
   },
+  appFullscreen: {
+    height: '100vh',
+    overflow: 'hidden',
+    background: '#1a1a2e',
+  },
   header: {
     background: '#1a1a2e',
     color: 'white',
@@ -438,6 +446,12 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: '1200px',
     margin: '0 auto',
     padding: '2rem',
+  },
+  mainFullscreen: {
+    height: '100vh',
+    margin: 0,
+    padding: 0,
+    maxWidth: 'none',
   },
 }
 

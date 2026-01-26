@@ -69,6 +69,7 @@ class KDSCourseBump(Base):
     ticket_id: Mapped[int] = mapped_column(ForeignKey("kds_tickets.id", ondelete="CASCADE"), index=True)
 
     course_name: Mapped[str] = mapped_column(String(100))  # e.g., "Starters", "Mains", "Desserts"
+    action: Mapped[str] = mapped_column(String(20), default="sent")  # "away" or "sent"
     bumped_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     bumped_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 

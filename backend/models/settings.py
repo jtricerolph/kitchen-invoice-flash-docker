@@ -185,6 +185,11 @@ class KitchenSettings(Base):
     kds_course_order: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=["Starters", "Mains", "Desserts"])
     kds_show_completed_for_seconds: Mapped[int] = mapped_column(Integer, default=30)
 
+    # Away timer thresholds (time since food sent to table - "eating" phase)
+    kds_away_timer_green_seconds: Mapped[int] = mapped_column(Integer, default=600)   # 10 minutes
+    kds_away_timer_amber_seconds: Mapped[int] = mapped_column(Integer, default=900)   # 15 minutes
+    kds_away_timer_red_seconds: Mapped[int] = mapped_column(Integer, default=1200)    # 20 minutes
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

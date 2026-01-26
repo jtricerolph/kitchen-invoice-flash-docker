@@ -127,6 +127,16 @@ interface SambaPOSGLCode {
   code: string
 }
 
+interface KDSCourseConfig {
+  name: string
+  prep_green: number
+  prep_amber: number
+  prep_red: number
+  away_green: number
+  away_amber: number
+  away_red: number
+}
+
 interface KDSSettingsData {
   kds_enabled: boolean
   kds_graphql_url: string | null
@@ -137,7 +147,10 @@ interface KDSSettingsData {
   kds_timer_green_seconds: number
   kds_timer_amber_seconds: number
   kds_timer_red_seconds: number
-  kds_course_order: string[]
+  kds_away_timer_green_seconds: number
+  kds_away_timer_amber_seconds: number
+  kds_away_timer_red_seconds: number
+  kds_course_order: KDSCourseConfig[]
   kds_show_completed_for_seconds: number
 }
 
@@ -347,10 +360,12 @@ export default function Settings() {
   const [kdsGraphqlPassword, setKdsGraphqlPassword] = useState('')
   const [kdsGraphqlClientId, setKdsGraphqlClientId] = useState('')
   const [kdsPollInterval, setKdsPollInterval] = useState(5)
-  const [kdsTimerGreen, setKdsTimerGreen] = useState(300)
-  const [kdsTimerAmber, setKdsTimerAmber] = useState(600)
-  const [kdsTimerRed, setKdsTimerRed] = useState(900)
-  const [kdsCourseOrder, setKdsCourseOrder] = useState('Starters, Mains, Desserts')
+  // Per-course config (timers stored as minutes in UI state)
+  const [kdsCourses, setKdsCourses] = useState<{ name: string; prep_green: number; prep_amber: number; prep_red: number; away_green: number; away_amber: number; away_red: number }[]>([
+    { name: 'Starters', prep_green: 5, prep_amber: 10, prep_red: 15, away_green: 10, away_amber: 15, away_red: 20 },
+    { name: 'Mains', prep_green: 5, prep_amber: 10, prep_red: 15, away_green: 10, away_amber: 15, away_red: 20 },
+    { name: 'Desserts', prep_green: 5, prep_amber: 10, prep_red: 15, away_green: 10, away_amber: 15, away_red: 20 },
+  ])
   const [kdsShowCompleted, setKdsShowCompleted] = useState(30)
   const [kdsTestStatus, setKdsTestStatus] = useState<string | null>(null)
   const [kdsSaveMessage, setKdsSaveMessage] = useState<string | null>(null)
@@ -828,10 +843,17 @@ export default function Settings() {
       setKdsGraphqlUsername(kdsSettings.kds_graphql_username || '')
       setKdsGraphqlClientId(kdsSettings.kds_graphql_client_id || '')
       setKdsPollInterval(kdsSettings.kds_poll_interval_seconds || 5)
-      setKdsTimerGreen(kdsSettings.kds_timer_green_seconds || 300)
-      setKdsTimerAmber(kdsSettings.kds_timer_amber_seconds || 600)
-      setKdsTimerRed(kdsSettings.kds_timer_red_seconds || 900)
-      setKdsCourseOrder((kdsSettings.kds_course_order || ['Starters', 'Mains', 'Desserts']).join(', '))
+      // Load per-course config, converting seconds to minutes for UI
+      const courses = (kdsSettings.kds_course_order || []).map((c: KDSCourseConfig) => ({
+        name: c.name,
+        prep_green: c.prep_green / 60,
+        prep_amber: c.prep_amber / 60,
+        prep_red: c.prep_red / 60,
+        away_green: c.away_green / 60,
+        away_amber: c.away_amber / 60,
+        away_red: c.away_red / 60,
+      }))
+      if (courses.length > 0) setKdsCourses(courses)
       setKdsShowCompleted(kdsSettings.kds_show_completed_for_seconds || 30)
     }
   }, [kdsSettings])
@@ -1846,15 +1868,45 @@ export default function Settings() {
   }
 
   const handleSaveKdsDisplay = () => {
-    const courseArray = kdsCourseOrder.split(',').map(s => s.trim()).filter(Boolean)
+    // Convert minutes back to seconds for storage
+    const courseConfig = kdsCourses.map(c => ({
+      name: c.name,
+      prep_green: Math.round(c.prep_green * 60),
+      prep_amber: Math.round(c.prep_amber * 60),
+      prep_red: Math.round(c.prep_red * 60),
+      away_green: Math.round(c.away_green * 60),
+      away_amber: Math.round(c.away_amber * 60),
+      away_red: Math.round(c.away_red * 60),
+    }))
     updateKdsMutation.mutate({
       kds_poll_interval_seconds: kdsPollInterval,
-      kds_timer_green_seconds: kdsTimerGreen,
-      kds_timer_amber_seconds: kdsTimerAmber,
-      kds_timer_red_seconds: kdsTimerRed,
-      kds_course_order: courseArray,
+      kds_course_order: courseConfig,
       kds_show_completed_for_seconds: kdsShowCompleted,
     })
+  }
+
+  // Course config helpers
+  const updateCourseField = (index: number, field: string, value: string | number) => {
+    setKdsCourses(prev => prev.map((c, i) => i === index ? { ...c, [field]: value } : c))
+  }
+  const moveCourse = (index: number, direction: -1 | 1) => {
+    const newIdx = index + direction
+    if (newIdx < 0 || newIdx >= kdsCourses.length) return
+    setKdsCourses(prev => {
+      const arr = [...prev]
+      ;[arr[index], arr[newIdx]] = [arr[newIdx], arr[index]]
+      return arr
+    })
+  }
+  const removeCourse = (index: number) => {
+    setKdsCourses(prev => prev.filter((_, i) => i !== index))
+  }
+  const addCourse = () => {
+    setKdsCourses(prev => [...prev, {
+      name: '',
+      prep_green: 5, prep_amber: 10, prep_red: 15,
+      away_green: 10, away_amber: 15, away_red: 20,
+    }])
   }
 
   if (isLoading) {
@@ -4528,50 +4580,80 @@ export default function Settings() {
                 />
               </label>
 
-              <h4 style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>Timer Thresholds (seconds)</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
-                <label style={styles.label}>
-                  <span style={{ color: '#27ae60' }}>Green until</span>
-                  <input
-                    type="number"
-                    value={kdsTimerGreen}
-                    onChange={(e) => setKdsTimerGreen(parseInt(e.target.value) || 300)}
-                    style={styles.input}
-                    min="0"
-                  />
-                </label>
-                <label style={styles.label}>
-                  <span style={{ color: '#f39c12' }}>Amber until</span>
-                  <input
-                    type="number"
-                    value={kdsTimerAmber}
-                    onChange={(e) => setKdsTimerAmber(parseInt(e.target.value) || 600)}
-                    style={styles.input}
-                    min="0"
-                  />
-                </label>
-                <label style={styles.label}>
-                  <span style={{ color: '#e94560' }}>Red after</span>
-                  <input
-                    type="number"
-                    value={kdsTimerRed}
-                    onChange={(e) => setKdsTimerRed(parseInt(e.target.value) || 900)}
-                    style={styles.input}
-                    min="0"
-                  />
-                </label>
-              </div>
+              <h4 style={{ marginTop: '1rem', marginBottom: '0.5rem' }}>Courses &amp; Timer Thresholds</h4>
+              <p style={{ fontSize: '0.85rem', color: '#666', marginBottom: '0.75rem' }}>
+                Define courses in order. Each course has its own prep (time since called away) and away (time since food sent) timer thresholds in minutes.
+              </p>
 
-              <label style={styles.label}>
-                Course Order (comma-separated)
-                <input
-                  type="text"
-                  value={kdsCourseOrder}
-                  onChange={(e) => setKdsCourseOrder(e.target.value)}
-                  style={styles.input}
-                  placeholder="Starters, Mains, Desserts"
-                />
-              </label>
+              {kdsCourses.map((course, idx) => (
+                <div key={idx} style={{ border: '1px solid #ddd', borderRadius: '6px', padding: '0.75rem', marginBottom: '0.5rem', background: '#fafafa' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <button
+                      onClick={() => moveCourse(idx, -1)}
+                      disabled={idx === 0}
+                      style={{ ...styles.smallBtn, opacity: idx === 0 ? 0.3 : 1 }}
+                      title="Move up"
+                    >&#9650;</button>
+                    <button
+                      onClick={() => moveCourse(idx, 1)}
+                      disabled={idx === kdsCourses.length - 1}
+                      style={{ ...styles.smallBtn, opacity: idx === kdsCourses.length - 1 ? 0.3 : 1 }}
+                      title="Move down"
+                    >&#9660;</button>
+                    <input
+                      type="text"
+                      value={course.name}
+                      onChange={(e) => updateCourseField(idx, 'name', e.target.value)}
+                      style={{ ...styles.input, flex: 1, marginBottom: 0 }}
+                      placeholder="Course name"
+                    />
+                    <button
+                      onClick={() => removeCourse(idx)}
+                      style={{ ...styles.smallBtn, color: '#e94560', borderColor: '#e94560' }}
+                      title="Remove course"
+                    >&#10005;</button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 1fr 1fr', gap: '0.4rem', alignItems: 'center', fontSize: '0.85rem' }}>
+                    <span style={{ fontWeight: 'bold' }}>Prep</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span style={{ color: '#27ae60', fontSize: '0.8rem' }}>Green</span>
+                      <input type="number" value={course.prep_green} onChange={(e) => updateCourseField(idx, 'prep_green', parseFloat(e.target.value) || 0)} style={{ ...styles.input, marginBottom: 0, width: '60px' }} min="0" step="0.5" />
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>min</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span style={{ color: '#f39c12', fontSize: '0.8rem' }}>Amber</span>
+                      <input type="number" value={course.prep_amber} onChange={(e) => updateCourseField(idx, 'prep_amber', parseFloat(e.target.value) || 0)} style={{ ...styles.input, marginBottom: 0, width: '60px' }} min="0" step="0.5" />
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>min</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span style={{ color: '#e94560', fontSize: '0.8rem' }}>Red</span>
+                      <input type="number" value={course.prep_red} onChange={(e) => updateCourseField(idx, 'prep_red', parseFloat(e.target.value) || 0)} style={{ ...styles.input, marginBottom: 0, width: '60px' }} min="0" step="0.5" />
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>min</span>
+                    </label>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 1fr 1fr', gap: '0.4rem', alignItems: 'center', fontSize: '0.85rem', marginTop: '0.3rem' }}>
+                    <span style={{ fontWeight: 'bold' }}>Away</span>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span style={{ color: '#27ae60', fontSize: '0.8rem' }}>Green</span>
+                      <input type="number" value={course.away_green} onChange={(e) => updateCourseField(idx, 'away_green', parseFloat(e.target.value) || 0)} style={{ ...styles.input, marginBottom: 0, width: '60px' }} min="0" step="0.5" />
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>min</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span style={{ color: '#f39c12', fontSize: '0.8rem' }}>Amber</span>
+                      <input type="number" value={course.away_amber} onChange={(e) => updateCourseField(idx, 'away_amber', parseFloat(e.target.value) || 0)} style={{ ...styles.input, marginBottom: 0, width: '60px' }} min="0" step="0.5" />
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>min</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span style={{ color: '#e94560', fontSize: '0.8rem' }}>Red</span>
+                      <input type="number" value={course.away_red} onChange={(e) => updateCourseField(idx, 'away_red', parseFloat(e.target.value) || 0)} style={{ ...styles.input, marginBottom: 0, width: '60px' }} min="0" step="0.5" />
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>min</span>
+                    </label>
+                  </div>
+                </div>
+              ))}
+              <button onClick={addCourse} style={{ ...styles.saveBtn, background: '#3498db', marginBottom: '1rem' }}>
+                + Add Course
+              </button>
 
               <label style={styles.label}>
                 Show Completed Tickets For (seconds)
@@ -5584,6 +5666,19 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
     fontWeight: '500',
+  },
+  smallBtn: {
+    width: '28px',
+    height: '28px',
+    background: 'white',
+    border: '1px solid #ccc',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '0.75rem',
+    flexShrink: 0,
   },
   actionBtn: {
     padding: '0.5rem 1rem',
