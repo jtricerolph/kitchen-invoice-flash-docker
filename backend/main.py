@@ -40,6 +40,7 @@ from migrations.add_ocr_weight_setting import run_migration as run_ocr_weight_se
 from migrations.add_kds_tables import run_migration as run_kds_migration
 from migrations.add_kds_course_flow import run_migration as run_kds_course_flow_migration
 from scheduler import start_scheduler, stop_scheduler
+from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +243,16 @@ async def lifespan(app: FastAPI):
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
+    # Start SignalR listener for real-time KDS updates
+    try:
+        await start_signalr_listener()
+        logger.info("SignalR listener started")
+    except Exception as e:
+        logger.warning(f"SignalR listener failed to start (KDS will use polling): {e}")
+
     yield
     # Shutdown: Clean up resources
+    await stop_signalr_listener()
     stop_scheduler()
     await engine.dispose()
 

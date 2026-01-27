@@ -13,10 +13,12 @@ Course Flow:
 - Strictly sequential: must SENT current before AWAY on next
 """
 
+import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from pydantic import BaseModel
@@ -31,6 +33,7 @@ from services.kds_graphql import (
     transform_ticket_for_kds,
     parse_kitchen_course
 )
+from services.signalr_listener import kds_event_bus
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,6 +83,7 @@ class KDSSettingsUpdate(BaseModel):
 class KDSOrderTagResponse(BaseModel):
     tag: str
     tagName: str
+    quantity: Optional[float] = 1
 
 
 class KDSOrderResponse(BaseModel):
@@ -325,6 +329,19 @@ async def get_or_create_kds_ticket(
     else:
         # Create new ticket
         now = datetime.utcnow()
+
+        # Use SambaPOS ticket creation time as the timer start
+        # (when the first order was submitted), falling back to now
+        submitted_at = now
+        submitted_at_str = sambapos_ticket.get("submitted_at")
+        if submitted_at_str:
+            try:
+                parsed = datetime.fromisoformat(submitted_at_str.replace("Z", "+00:00"))
+                # Convert to naive UTC for consistency with DB
+                submitted_at = parsed.replace(tzinfo=None)
+            except (ValueError, AttributeError):
+                logger.warning(f"Failed to parse submitted_at: {submitted_at_str}, using current time")
+
         orders = sambapos_ticket.get("orders", [])
         ordered_courses = get_ordered_courses_for_ticket(orders, course_order)
 
@@ -337,8 +354,8 @@ async def get_or_create_kds_ticket(
             covers=sambapos_ticket.get("covers"),
             total_amount=sambapos_ticket.get("total_amount"),
             orders_data=orders,
-            course_states=initialize_course_states(ordered_courses, now),
-            received_at=now,
+            course_states=initialize_course_states(ordered_courses, submitted_at),
+            received_at=submitted_at,
             last_sambapos_update=now
         )
         db.add(kds_ticket)
@@ -925,3 +942,48 @@ async def test_connection(
         "message": "Connected to SambaPOS GraphQL API",
         "server": kds_url
     }
+
+
+# =============================================================================
+# SSE (Server-Sent Events) for Real-Time Updates
+# =============================================================================
+
+@router.get("/events")
+async def kds_events(request: Request):
+    """
+    Server-Sent Events stream for real-time KDS updates.
+
+    The SignalR listener pushes events here when SambaPOS broadcasts
+    TICKET_REFRESH messages. Frontend subscribes to this for instant
+    refresh instead of relying solely on polling.
+
+    No auth required for SSE (connection is long-lived and the
+    KDS display may not have convenient auth headers for EventSource).
+    """
+    import json
+
+    async def event_generator():
+        queue = kds_event_bus.subscribe()
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive comment to prevent connection timeout
+                    yield ": keepalive\n\n"
+        finally:
+            kds_event_bus.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

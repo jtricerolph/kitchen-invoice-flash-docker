@@ -154,15 +154,16 @@ class SambaPOSGraphQLClient:
               quantity
               price
               priceTag
+              date
               tags {
                 tag
                 tagName
+                quantity
               }
               states {
                 stateName
                 state
                 stateValue
-                stateDateTime
               }
             }
             entities {
@@ -200,9 +201,11 @@ class SambaPOSGraphQLClient:
               portion
               quantity
               price
+              date
               tags {
                 tag
                 tagName
+                quantity
               }
               states {
                 stateName
@@ -276,6 +279,8 @@ def transform_ticket_for_kds(ticket: dict) -> dict:
     # Group orders by kitchen course
     orders_by_course = {}
     all_orders = []
+    deferred_voided = []
+    earliest_kitchen_order_date = None  # Track earliest kitchen-printable order time
 
     for order in ticket.get("orders", []):
         kitchen_course = parse_kitchen_course(order) or "Uncategorized"
@@ -300,7 +305,7 @@ def transform_ticket_for_kds(ticket: dict) -> dict:
         # Get void timestamp if available
         voided_at = gstatus_datetime if is_voided and gstatus in ["Void", "Cancelled", "Canceled"] else None
 
-        # Skip items that are not submitted and not voided (e.g., "New" status)
+        # Skip non-voided items that are not submitted (e.g., "New" status)
         if not is_voided and order_status not in ["Submitted"]:
             logger.debug(f"Skipping order '{order.get('name')}' - status is '{order_status}', not 'Submitted'")
             continue
@@ -323,10 +328,26 @@ def transform_ticket_for_kds(ticket: dict) -> dict:
             "tags": order_tags,
         }
 
-        if kitchen_course not in orders_by_course:
-            orders_by_course[kitchen_course] = []
-        orders_by_course[kitchen_course].append(order_data)
-        all_orders.append(order_data)
+        if is_voided:
+            # Defer voided orders - only add to existing course groups later
+            deferred_voided.append((kitchen_course, order_data))
+        else:
+            if kitchen_course not in orders_by_course:
+                orders_by_course[kitchen_course] = []
+            orders_by_course[kitchen_course].append(order_data)
+            all_orders.append(order_data)
+
+            # Track earliest kitchen-printable order date
+            order_date = order.get("date")
+            if order_date:
+                if earliest_kitchen_order_date is None or order_date < earliest_kitchen_order_date:
+                    earliest_kitchen_order_date = order_date
+
+    # Add voided orders only to course groups that already exist (avoids "Uncategorized" ghost courses)
+    for course, order_data in deferred_voided:
+        if course in orders_by_course:
+            orders_by_course[course].append(order_data)
+            all_orders.append(order_data)
 
     # Skip tickets with no kitchen orders
     if not all_orders:
@@ -352,4 +373,5 @@ def transform_ticket_for_kds(ticket: dict) -> dict:
         "total_amount": ticket.get("totalAmount"),
         "orders": all_orders,
         "orders_by_course": orders_by_course,
+        "submitted_at": earliest_kitchen_order_date or ticket.get("date"),  # First kitchen order time, fallback to ticket date
     }

@@ -37,3 +37,6 @@ apscheduler==3.10.4
 # SambaPOS MSSQL integration
 aioodbc==0.5.0
 pyodbc==5.1.0
+
+# SambaPOS SignalR real-time listener (KDS)
+websockets>=12.0

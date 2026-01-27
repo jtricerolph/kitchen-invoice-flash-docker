@@ -6,6 +6,7 @@ import { useAuth } from '../App'
 interface KDSOrderTag {
   tag: string
   tagName: string
+  quantity?: number
 }
 
 interface KDSOrder {
@@ -178,6 +179,22 @@ export default function KDS() {
     const interval = setInterval(() => setTick((t) => t + 1), 1000)
     return () => clearInterval(interval)
   }, [])
+
+  // Subscribe to SSE for real-time updates from SignalR listener
+  useEffect(() => {
+    const eventSource = new EventSource('/api/kds/events')
+
+    eventSource.onmessage = () => {
+      // Any event from the SignalR listener means a ticket changed - refetch immediately
+      queryClient.invalidateQueries({ queryKey: ['kds-tickets'] })
+    }
+
+    eventSource.onerror = () => {
+      // SSE will auto-reconnect; no action needed
+    }
+
+    return () => eventSource.close()
+  }, [queryClient])
 
   // Course AWAY mutation (mark course as called away)
   const courseAwayMutation = useMutation({
@@ -554,7 +571,9 @@ export default function KDS() {
                                 {order.tags && order.tags.length > 0 && (
                                   <div style={styles.orderTags}>
                                     {order.tags.map((t, i) => (
-                                      <div key={i} style={styles.orderTag}>{t.tag}</div>
+                                      <div key={i} style={styles.orderTag}>
+                                        {t.quantity && t.quantity > 1 ? `${Math.round(t.quantity)}x ` : ''}{t.tag}
+                                      </div>
                                     ))}
                                   </div>
                                 )}
@@ -682,26 +701,35 @@ export default function KDS() {
                           </span>
                         )}
                       </div>
-                      {/* Orders - filter out void/cancelled */}
+                      {/* Orders - show all, voided with strikethrough */}
                       <div style={styles.modalOrdersList}>
-                        {filterOrders(orders).map((order) => (
-                          <div key={order.id} style={styles.modalOrderItemWrap}>
-                            <div style={styles.modalOrderItem}>
-                              <span style={styles.modalOrderQty}>{order.quantity}x</span>
-                              <span style={{ flex: 1 }}>{order.name}</span>
-                              {order.portion && order.portion !== 'Normal' && (
-                                <span style={{ color: '#888', fontSize: '0.8rem' }}>({order.portion})</span>
+                        {orders.map((order) => {
+                          const voided = order.is_voided || ['void', 'cancelled', 'canceled'].includes((order.status || '').toLowerCase())
+                          return (
+                            <div key={order.id} style={styles.modalOrderItemWrap}>
+                              <div style={{
+                                ...styles.modalOrderItem,
+                                ...(voided ? { textDecoration: 'line-through', opacity: 0.5, color: '#e94560' } : {}),
+                              }}>
+                                <span style={styles.modalOrderQty}>{order.quantity}x</span>
+                                <span style={{ flex: 1 }}>{order.name}</span>
+                                {order.portion && order.portion !== 'Normal' && (
+                                  <span style={{ color: '#888', fontSize: '0.8rem' }}>({order.portion})</span>
+                                )}
+                                {voided && <span style={{ fontSize: '0.7rem', color: '#e94560', marginLeft: '0.3rem' }}>VOID</span>}
+                              </div>
+                              {!voided && order.tags && order.tags.length > 0 && (
+                                <div style={styles.modalOrderTags}>
+                                  {order.tags.map((t, i) => (
+                                    <div key={i} style={styles.modalOrderTag}>
+                                      {t.quantity && t.quantity > 1 ? `${Math.round(t.quantity)}x ` : ''}{t.tag}
+                                    </div>
+                                  ))}
+                                </div>
                               )}
                             </div>
-                            {order.tags && order.tags.length > 0 && (
-                              <div style={styles.modalOrderTags}>
-                                {order.tags.map((t, i) => (
-                                  <div key={i} style={styles.modalOrderTag}>{t.tag}</div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </div>
                   )
