@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 
 from database import get_db
@@ -98,6 +99,8 @@ class KDSOrderResponse(BaseModel):
     kitchen_print: Optional[str] = None
     is_voided: bool = False
     voided_at: Optional[str] = None  # ISO timestamp when voided
+    is_sent: bool = False  # This individual order has been sent to table
+    is_addition: bool = False  # Order was added after ticket first appeared in KDS
     tags: list[KDSOrderTagResponse] = []
 
 
@@ -226,6 +229,7 @@ def initialize_course_states(ordered_courses: list, received_at: datetime) -> di
                 "called_away_at": received_at.isoformat(),
                 "sent_at": None,
                 "sent_by": None,
+                "sent_order_ids": [],
             }
         else:
             states[course] = {
@@ -233,6 +237,7 @@ def initialize_course_states(ordered_courses: list, received_at: datetime) -> di
                 "called_away_at": None,
                 "sent_at": None,
                 "sent_by": None,
+                "sent_order_ids": [],
             }
     return states
 
@@ -294,12 +299,27 @@ async def get_or_create_kds_ticket(
     kds_ticket = result.scalar_one_or_none()
 
     if kds_ticket:
+        # Detect new orders BEFORE overwriting orders_data
+        old_order_ids = {o.get("id") for o in (kds_ticket.orders_data or [])}
+        incoming_orders = sambapos_ticket.get("orders", [])
+        new_order_ids = {o.get("id") for o in incoming_orders}
+        added_order_ids = new_order_ids - old_order_ids
+
+        if added_order_ids:
+            logger.info(f"KDS: Ticket {sambapos_ticket.get('number')} — detected {len(added_order_ids)} new order(s): {added_order_ids}")
+
         # Update with latest data
         kds_ticket.table_name = sambapos_ticket.get("table")
         kds_ticket.covers = sambapos_ticket.get("covers")
-        kds_ticket.orders_data = sambapos_ticket.get("orders", [])
+        kds_ticket.orders_data = incoming_orders
         kds_ticket.last_sambapos_update = datetime.utcnow()
         kds_ticket.updated_at = datetime.utcnow()
+
+        # Un-bump completed tickets if new orders were added
+        if added_order_ids and kds_ticket.is_bumped:
+            kds_ticket.is_bumped = False
+            kds_ticket.bumped_at = None
+            logger.info(f"KDS: Ticket {kds_ticket.ticket_number} un-bumped — {len(added_order_ids)} new order(s) added")
 
         # Migrate old course_states format if needed
         if kds_ticket.course_states:
@@ -308,9 +328,11 @@ async def get_or_create_kds_ticket(
                 kds_ticket.course_states = migrate_old_course_states(kds_ticket.course_states)
 
         # Ensure course_states covers all courses in ticket
-        orders = sambapos_ticket.get("orders", [])
-        ordered_courses = get_ordered_courses_for_ticket(orders, course_order)
-        current_states = kds_ticket.course_states or {}
+        ordered_courses = get_ordered_courses_for_ticket(incoming_orders, course_order)
+        # IMPORTANT: dict() creates a shallow copy so SQLAlchemy detects the change
+        # when we reassign kds_ticket.course_states later (same-object assignment
+        # is silently ignored by SQLAlchemy's JSONB dirty tracking)
+        current_states = dict(kds_ticket.course_states or {})
         for course in ordered_courses:
             if course not in current_states:
                 current_states[course] = {
@@ -318,7 +340,34 @@ async def get_or_create_kds_ticket(
                     "called_away_at": None,
                     "sent_at": None,
                     "sent_by": None,
+                    "sent_order_ids": [],
                 }
+
+        # Backfill sent_order_ids for existing course states that don't have it
+        for course_name in current_states:
+            if "sent_order_ids" not in current_states[course_name]:
+                current_states[course_name]["sent_order_ids"] = []
+
+        # Reactivate cleared/sent courses that received new orders
+        if added_order_ids:
+            courses_with_new_orders = {
+                o.get("kitchen_course", "Uncategorized")
+                for o in incoming_orders if o.get("id") in added_order_ids
+            }
+            now_iso = datetime.utcnow().isoformat()
+            for course_name in courses_with_new_orders:
+                if course_name in current_states:
+                    status = current_states[course_name].get("status")
+                    if status in ("cleared", "sent"):
+                        logger.info(f"KDS: Reopening course '{course_name}' on ticket {kds_ticket.ticket_number} — new orders added")
+                        current_states[course_name] = {
+                            "status": "away",
+                            "called_away_at": now_iso,
+                            "sent_at": None,
+                            "sent_by": None,
+                            "sent_order_ids": current_states[course_name].get("sent_order_ids", []),
+                        }
+
         # If no course states exist at all, initialize (first course as away)
         if not kds_ticket.course_states or len(kds_ticket.course_states) == 0:
             kds_ticket.course_states = initialize_course_states(
@@ -326,6 +375,10 @@ async def get_or_create_kds_ticket(
             )
         else:
             kds_ticket.course_states = current_states
+
+        # Ensure SQLAlchemy persists JSONB changes (belt-and-braces)
+        flag_modified(kds_ticket, "course_states")
+        flag_modified(kds_ticket, "orders_data")
     else:
         # Create new ticket
         now = datetime.utcnow()
@@ -354,6 +407,7 @@ async def get_or_create_kds_ticket(
             covers=sambapos_ticket.get("covers"),
             total_amount=sambapos_ticket.get("total_amount"),
             orders_data=orders,
+            initial_order_ids=[o.get("id") for o in orders],
             course_states=initialize_course_states(ordered_courses, submitted_at),
             received_at=submitted_at,
             last_sambapos_update=now
@@ -497,6 +551,21 @@ async def get_tickets(
         now = datetime.utcnow()
         elapsed = (now - kds_ticket.received_at).total_seconds()
 
+        # Annotate orders with is_sent and is_addition flags
+        initial_ids = set(kds_ticket.initial_order_ids or [])
+        ticket_course_states = kds_ticket.course_states or {}
+        annotated_orders = []
+        for o in transformed.get("orders", []):
+            course_name = o.get("kitchen_course", "Uncategorized")
+            sent_ids = set(ticket_course_states.get(course_name, {}).get("sent_order_ids", []))
+            order_is_sent = o.get("id") in sent_ids
+            annotated_orders.append(KDSOrderResponse(
+                **o,
+                is_sent=order_is_sent,
+                # Clear addition flag once the order has been sent
+                is_addition=False if order_is_sent else (o.get("id") not in initial_ids if initial_ids else False),
+            ))
+
         # Build response
         response_tickets.append(KDSTicketResponse(
             id=kds_ticket.id,
@@ -506,7 +575,7 @@ async def get_tickets(
             covers=kds_ticket.covers,
             received_at=kds_ticket.received_at,
             time_elapsed_seconds=int(elapsed),
-            orders=[KDSOrderResponse(**o) for o in transformed.get("orders", [])],
+            orders=annotated_orders,
             orders_by_course=transformed.get("orders_by_course", {}),
             course_states=kds_ticket.course_states or {},
             is_bumped=kds_ticket.is_bumped
@@ -546,6 +615,21 @@ async def get_local_tickets(db: AsyncSession, kitchen_id: int) -> list[KDSTicket
                 orders_by_course[course] = []
             orders_by_course[course].append(order)
 
+        # Annotate orders with is_sent and is_addition flags
+        initial_ids = set(kds_ticket.initial_order_ids or [])
+        ticket_course_states = kds_ticket.course_states or {}
+        annotated_orders = []
+        for o in orders:
+            course_name = o.get("kitchen_course", "Uncategorized")
+            sent_ids = set(ticket_course_states.get(course_name, {}).get("sent_order_ids", []))
+            order_is_sent = o.get("id") in sent_ids
+            annotated_orders.append(KDSOrderResponse(
+                **o,
+                is_sent=order_is_sent,
+                # Clear addition flag once the order has been sent
+                is_addition=False if order_is_sent else (o.get("id") not in initial_ids if initial_ids else False),
+            ))
+
         response_tickets.append(KDSTicketResponse(
             id=kds_ticket.id,
             sambapos_ticket_id=kds_ticket.sambapos_ticket_id,
@@ -554,7 +638,7 @@ async def get_local_tickets(db: AsyncSession, kitchen_id: int) -> list[KDSTicket
             covers=kds_ticket.covers,
             received_at=kds_ticket.received_at,
             time_elapsed_seconds=int(elapsed),
-            orders=[KDSOrderResponse(**o) for o in orders],
+            orders=annotated_orders,
             orders_by_course=orders_by_course,
             course_states=kds_ticket.course_states or {},
             is_bumped=kds_ticket.is_bumped
@@ -678,6 +762,7 @@ async def course_away(
         "called_away_at": now.isoformat(),
         "sent_at": course_state.get("sent_at"),
         "sent_by": course_state.get("sent_by"),
+        "sent_order_ids": course_state.get("sent_order_ids", []),
     }
     kds_ticket.course_states = course_states
     kds_ticket.updated_at = now
@@ -760,12 +845,21 @@ async def course_sent(
     if prev_bump:
         time_since_previous = int((now - prev_bump.bumped_at).total_seconds())
 
+    # Gather all non-voided order IDs in this course and mark as sent
+    course_order_ids = [
+        o.get("id") for o in (kds_ticket.orders_data or [])
+        if o.get("kitchen_course") == request.course_name and not o.get("is_voided")
+    ]
+    existing_sent = set(course_state.get("sent_order_ids", []))
+    all_sent = list(existing_sent | set(course_order_ids))
+
     # Update course state to "sent"
     course_states[request.course_name] = {
         "status": "sent",
         "called_away_at": course_state.get("called_away_at"),
         "sent_at": now.isoformat(),
         "sent_by": current_user.name or current_user.email,
+        "sent_order_ids": all_sent,
     }
     kds_ticket.course_states = course_states
     kds_ticket.updated_at = now

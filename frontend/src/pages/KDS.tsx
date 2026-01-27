@@ -21,6 +21,8 @@ interface KDSOrder {
   kitchen_print: string | null
   is_voided?: boolean
   voided_at?: string | null
+  is_sent?: boolean
+  is_addition?: boolean
   tags?: KDSOrderTag[]
 }
 
@@ -382,9 +384,11 @@ export default function KDS() {
       for (const courseName of courses) {
         const status = ticket.course_states[courseName]?.status || 'pending'
         if (status === 'sent' || status === 'cleared') continue
-        const orders = ticket.orders_by_course[courseName] || []
+        // Use annotated orders so we can skip individually-sent orders
+        const orders = ticket.orders.filter(o => (o.kitchen_course || 'Uncategorized') === courseName)
         for (const order of orders) {
           if (order.is_voided) continue
+          if (order.is_sent) continue  // Already sent — not pending
           if (!courseMap[courseName]) courseMap[courseName] = {}
           const key = `${order.name}||${order.portion || ''}`
           if (!courseMap[courseName][key]) {
@@ -477,7 +481,8 @@ export default function KDS() {
                   {/* Courses */}
                   <div style={styles.coursesContainer}>
                     {orderedCourses.map((courseName, courseIdx) => {
-                      const orders = ticket.orders_by_course[courseName] || []
+                      // Use annotated orders (with is_sent/is_addition) grouped by course
+                      const orders = ticket.orders.filter(o => (o.kitchen_course || 'Uncategorized') === courseName)
                       const courseState = ticket.course_states[courseName]
                       const status = courseState?.status || 'pending'
                       const isCleared = status === 'cleared'
@@ -561,11 +566,19 @@ export default function KDS() {
                           <div style={styles.ordersList}>
                             {filterOrders(orders).map((order) => (
                               <div key={order.id} style={styles.orderItemWrap}>
-                                <div style={styles.orderItem}>
+                                <div style={{
+                                  ...styles.orderItem,
+                                  ...(order.is_sent ? { textDecoration: 'line-through', opacity: 0.45 } : {}),
+                                }}>
                                   <span style={styles.orderQty}>{order.quantity}x</span>
                                   <span style={styles.orderName}>{order.name}</span>
                                   {order.portion && order.portion !== 'Normal' && (
                                     <span style={styles.orderPortion}>({order.portion})</span>
+                                  )}
+                                  {order.is_addition && (
+                                    <span style={{ color: '#f39c12', fontSize: '0.75rem', fontWeight: 700, marginLeft: '0.3rem' }}>
+                                      *NEW*
+                                    </span>
                                   )}
                                 </div>
                                 {order.tags && order.tags.length > 0 && (
@@ -666,7 +679,8 @@ export default function KDS() {
               {/* All courses with full detail */}
               <div style={styles.modalCourses}>
                 {orderedCourses.map((courseName) => {
-                  const orders = ticket.orders_by_course[courseName] || []
+                  // Use annotated orders (with is_sent/is_addition) grouped by course
+                  const orders = ticket.orders.filter(o => (o.kitchen_course || 'Uncategorized') === courseName)
                   const courseState = ticket.course_states[courseName]
                   const status = courseState?.status || 'pending'
 
@@ -701,22 +715,28 @@ export default function KDS() {
                           </span>
                         )}
                       </div>
-                      {/* Orders - show all, voided with strikethrough */}
+                      {/* Orders - show all, voided with strikethrough, sent with strikethrough */}
                       <div style={styles.modalOrdersList}>
                         {orders.map((order) => {
                           const voided = order.is_voided || ['void', 'cancelled', 'canceled'].includes((order.status || '').toLowerCase())
+                          const sent = !voided && order.is_sent
                           return (
                             <div key={order.id} style={styles.modalOrderItemWrap}>
                               <div style={{
                                 ...styles.modalOrderItem,
                                 ...(voided ? { textDecoration: 'line-through', opacity: 0.5, color: '#e94560' } : {}),
+                                ...(sent ? { textDecoration: 'line-through', opacity: 0.5 } : {}),
                               }}>
                                 <span style={styles.modalOrderQty}>{order.quantity}x</span>
                                 <span style={{ flex: 1 }}>{order.name}</span>
                                 {order.portion && order.portion !== 'Normal' && (
                                   <span style={{ color: '#888', fontSize: '0.8rem' }}>({order.portion})</span>
                                 )}
+                                {order.is_addition && (
+                                  <span style={{ fontSize: '0.7rem', color: '#f39c12', fontWeight: 700, marginLeft: '0.3rem' }}>*NEW*</span>
+                                )}
                                 {voided && <span style={{ fontSize: '0.7rem', color: '#e94560', marginLeft: '0.3rem' }}>VOID</span>}
+                                {sent && <span style={{ fontSize: '0.7rem', color: '#8e8ea0', marginLeft: '0.3rem' }}>SENT</span>}
                               </div>
                               {!voided && order.tags && order.tags.length > 0 && (
                                 <div style={styles.modalOrderTags}>

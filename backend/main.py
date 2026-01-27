@@ -39,6 +39,7 @@ from migrations.add_ocr_post_processing import run_migration as run_ocr_post_pro
 from migrations.add_ocr_weight_setting import run_migration as run_ocr_weight_setting_migration
 from migrations.add_kds_tables import run_migration as run_kds_migration
 from migrations.add_kds_course_flow import run_migration as run_kds_course_flow_migration
+from migrations.add_kds_order_tracking import run_migration as run_kds_order_tracking_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -239,6 +240,13 @@ async def lifespan(app: FastAPI):
         logger.info("KDS course flow migration completed")
     except Exception as e:
         logger.warning(f"KDS course flow migration warning (may be expected): {e}")
+
+    # Run KDS order tracking migration
+    try:
+        await run_kds_order_tracking_migration()
+        logger.info("KDS order tracking migration completed")
+    except Exception as e:
+        logger.warning(f"KDS order tracking migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()

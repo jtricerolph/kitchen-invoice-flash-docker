@@ -49,6 +49,9 @@ class KDSTicket(Base):
     # Cached order data (refreshed on each poll)
     orders_data: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
+    # Order IDs captured at ticket creation (for detecting +ADDITION orders later)
+    initial_order_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
