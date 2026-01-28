@@ -152,6 +152,7 @@ interface KDSSettingsData {
   kds_away_timer_red_seconds: number
   kds_course_order: KDSCourseConfig[]
   kds_show_completed_for_seconds: number
+  kds_bookings_refresh_seconds: number
 }
 
 interface NextcloudSettingsData {
@@ -367,6 +368,7 @@ export default function Settings() {
     { name: 'Desserts', prep_green: 5, prep_amber: 10, prep_red: 15, away_green: 10, away_amber: 15, away_red: 20 },
   ])
   const [kdsShowCompleted, setKdsShowCompleted] = useState(30)
+  const [kdsBookingsRefresh, setKdsBookingsRefresh] = useState(60)
   const [kdsTestStatus, setKdsTestStatus] = useState<string | null>(null)
   const [kdsSaveMessage, setKdsSaveMessage] = useState<string | null>(null)
 
@@ -842,7 +844,7 @@ export default function Settings() {
       setKdsGraphqlUrl(kdsSettings.kds_graphql_url || '')
       setKdsGraphqlUsername(kdsSettings.kds_graphql_username || '')
       setKdsGraphqlClientId(kdsSettings.kds_graphql_client_id || '')
-      setKdsPollInterval(kdsSettings.kds_poll_interval_seconds || 5)
+      setKdsPollInterval(kdsSettings.kds_poll_interval_seconds || 6000)
       // Load per-course config, converting seconds to minutes for UI
       const courses = (kdsSettings.kds_course_order || []).map((c: KDSCourseConfig) => ({
         name: c.name,
@@ -855,6 +857,7 @@ export default function Settings() {
       }))
       if (courses.length > 0) setKdsCourses(courses)
       setKdsShowCompleted(kdsSettings.kds_show_completed_for_seconds || 30)
+      setKdsBookingsRefresh(kdsSettings.kds_bookings_refresh_seconds || 60)
     }
   }, [kdsSettings])
 
@@ -1882,6 +1885,7 @@ export default function Settings() {
       kds_poll_interval_seconds: kdsPollInterval,
       kds_course_order: courseConfig,
       kds_show_completed_for_seconds: kdsShowCompleted,
+      kds_bookings_refresh_seconds: kdsBookingsRefresh,
     })
   }
 
@@ -4664,6 +4668,18 @@ export default function Settings() {
                   style={styles.input}
                   min="0"
                   max="300"
+                />
+              </label>
+
+              <label style={styles.label}>
+                Bookings Refresh Interval (seconds)
+                <input
+                  type="number"
+                  value={kdsBookingsRefresh}
+                  onChange={(e) => setKdsBookingsRefresh(parseInt(e.target.value) || 60)}
+                  style={styles.input}
+                  min="10"
+                  max="600"
                 />
               </label>
 

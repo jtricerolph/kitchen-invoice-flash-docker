@@ -47,9 +47,12 @@ const priorityColors: Record<string, string> = {
 export default function Disputes() {
   const { token } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [statusFilter, setStatusFilter] = useState<string>('not_resolved') // Default to show all non-resolved disputes
+  const urlDate = searchParams.get('date') || ''
+  // When navigating from purchases with a date, show all statuses for that date
+  const [statusFilter, setStatusFilter] = useState<string>(urlDate ? '' : 'not_resolved')
   const [priorityFilter, setPriorityFilter] = useState<string>('')
   const [supplierFilter, setSupplierFilter] = useState<string>('')
+  const [dateFilter, setDateFilter] = useState<string>(urlDate)
   const [selectedDispute, setSelectedDispute] = useState<Dispute | null>(null)
 
   // Fetch suppliers for filter dropdown
@@ -74,10 +77,11 @@ export default function Disputes() {
   }
   if (priorityFilter) queryParams.append('priority', priorityFilter)
   if (supplierFilter) queryParams.append('supplier_id', supplierFilter)
+  if (dateFilter) queryParams.append('opened_date', dateFilter)
   const queryString = queryParams.toString()
 
   const { data, isLoading, error } = useQuery<DisputeListResponse>({
-    queryKey: ['disputes', statusFilter, priorityFilter, supplierFilter],
+    queryKey: ['disputes', statusFilter, priorityFilter, supplierFilter, dateFilter],
     queryFn: async () => {
       const url = queryString ? `/api/disputes?${queryString}` : '/api/disputes'
       const res = await fetch(url, {
@@ -165,12 +169,20 @@ export default function Disputes() {
           ))}
         </select>
 
-        {(statusFilter !== 'not_resolved' || priorityFilter || supplierFilter) && (
+        <input
+          type="date"
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+          style={styles.filterSelect}
+        />
+
+        {(statusFilter !== 'not_resolved' || priorityFilter || supplierFilter || dateFilter) && (
           <button
             onClick={() => {
               setStatusFilter('not_resolved')
               setPriorityFilter('')
               setSupplierFilter('')
+              setDateFilter('')
             }}
             style={styles.clearBtn}
           >
@@ -182,12 +194,13 @@ export default function Disputes() {
       {disputes.length === 0 ? (
         <div style={styles.empty}>
           <p>No disputes found.</p>
-          {(statusFilter !== 'not_resolved' || priorityFilter || supplierFilter) ? (
+          {(statusFilter !== 'not_resolved' || priorityFilter || supplierFilter || dateFilter) ? (
             <button
               onClick={() => {
                 setStatusFilter('not_resolved')
                 setPriorityFilter('')
                 setSupplierFilter('')
+                setDateFilter('')
               }}
               style={styles.link}
             >

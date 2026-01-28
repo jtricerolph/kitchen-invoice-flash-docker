@@ -176,25 +176,30 @@ class SambaPOSGraphQLClient:
         return await self.graphql_query(query)
 
     async def get_ticket_by_id(self, ticket_id: int) -> dict:
-        """Query for a specific ticket by ID."""
-        query = """
-        query GetTicket($ticketId: Int!) {
-          getTicket(id: $ticketId) {
+        """Query for a specific ticket by ID.
+
+        Uses inline ID rather than GraphQL variables because the SambaPOS
+        Message Server has a NullReferenceException bug when processing
+        variable bindings for getTicket.
+        """
+        query = f"""
+        {{
+          getTicket(id: {int(ticket_id)}) {{
             id
             uid
             number
             date
             lastUpdateTime
             totalAmount
-            tags {
+            tags {{
               tag
               tagName
-            }
-            states {
+            }}
+            states {{
               stateName
               state
-            }
-            orders {
+            }}
+            orders {{
               id
               uid
               name
@@ -202,25 +207,25 @@ class SambaPOSGraphQLClient:
               quantity
               price
               date
-              tags {
+              tags {{
                 tag
                 tagName
                 quantity
-              }
-              states {
+              }}
+              states {{
                 stateName
                 state
                 stateValue
-              }
-            }
-            entities {
+              }}
+            }}
+            entities {{
               type
               name
-            }
-          }
-        }
+            }}
+          }}
+        }}
         """
-        return await self.graphql_query(query, {"ticketId": ticket_id})
+        return await self.graphql_query(query)
 
 
 def parse_kitchen_course(order: dict) -> Optional[str]:

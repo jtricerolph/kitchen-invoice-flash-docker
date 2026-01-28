@@ -72,6 +72,30 @@ interface KDSSettings {
   kds_away_timer_red_seconds: number
   kds_course_order: CourseConfig[]
   kds_show_completed_for_seconds: number
+  kds_bookings_refresh_seconds: number
+}
+
+interface KDSBookingItem {
+  booking_time: string
+  people: number
+  status: string
+  table_name: string | null
+  seating_area: string | null
+  is_hotel_guest: boolean | null
+  is_dbb: boolean | null
+  is_package: boolean | null
+  is_flagged: boolean
+  flag_reasons: string | null
+  allergies: string | null
+  kds_stage: string | null
+}
+
+interface KDSBookingsData {
+  period_name: string | null
+  total_bookings: number
+  total_covers: number
+  flag_icon_mapping: Record<string, string> | null
+  bookings: KDSBookingItem[]
 }
 
 const defaultCourseConfig: CourseConfig[] = [
@@ -85,7 +109,7 @@ const defaultSettings: KDSSettings = {
   kds_graphql_url: null,
   kds_graphql_username: null,
   kds_graphql_client_id: null,
-  kds_poll_interval_seconds: 5,
+  kds_poll_interval_seconds: 6000,
   kds_timer_green_seconds: 300,
   kds_timer_amber_seconds: 600,
   kds_timer_red_seconds: 900,
@@ -94,6 +118,7 @@ const defaultSettings: KDSSettings = {
   kds_away_timer_red_seconds: 1200,
   kds_course_order: defaultCourseConfig,
   kds_show_completed_for_seconds: 30,
+  kds_bookings_refresh_seconds: 60,
 }
 
 // SVG Icon components
@@ -146,6 +171,7 @@ export default function KDS() {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [selectedTicket, setSelectedTicket] = useState<KDSTicket | null>(null)
   const [showPending, setShowPending] = useState(false)
+  const [showBookings, setShowBookings] = useState(false)
   // Tick counter for live timer updates
   const [, setTick] = useState(0)
 
@@ -176,6 +202,20 @@ export default function KDS() {
     refetchInterval: settings.kds_poll_interval_seconds * 1000,
   })
 
+  // Fetch bookings for current service period (Resos)
+  const { data: bookingsData } = useQuery<KDSBookingsData>({
+    queryKey: ['kds-bookings'],
+    queryFn: async () => {
+      const res = await fetch('/api/kds/bookings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch bookings')
+      return res.json()
+    },
+    enabled: !!token,
+    refetchInterval: (settings.kds_bookings_refresh_seconds || 60) * 1000,
+  })
+
   // Tick every second for live timers
   useEffect(() => {
     const interval = setInterval(() => setTick((t) => t + 1), 1000)
@@ -184,18 +224,38 @@ export default function KDS() {
 
   // Subscribe to SSE for real-time updates from SignalR listener
   useEffect(() => {
-    const eventSource = new EventSource('/api/kds/events')
+    let es: EventSource | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let stopped = false
 
-    eventSource.onmessage = () => {
-      // Any event from the SignalR listener means a ticket changed - refetch immediately
-      queryClient.invalidateQueries({ queryKey: ['kds-tickets'] })
+    const connect = () => {
+      if (stopped) return
+      es = new EventSource('/api/kds/events')
+
+      es.onmessage = () => {
+        queryClient.invalidateQueries({ queryKey: ['kds-tickets'] })
+        queryClient.invalidateQueries({ queryKey: ['kds-bookings'] })
+      }
+
+      es.onerror = () => {
+        // If the connection was permanently closed (e.g. 502), manually reconnect
+        if (es && es.readyState === EventSource.CLOSED) {
+          es.close()
+          es = null
+          if (!stopped) {
+            reconnectTimer = setTimeout(connect, 5000)
+          }
+        }
+      }
     }
 
-    eventSource.onerror = () => {
-      // SSE will auto-reconnect; no action needed
-    }
+    connect()
 
-    return () => eventSource.close()
+    return () => {
+      stopped = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (es) es.close()
+    }
   }, [queryClient])
 
   // Course AWAY mutation (mark course as called away)
@@ -217,6 +277,7 @@ export default function KDS() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['kds-tickets'] })
+      queryClient.invalidateQueries({ queryKey: ['kds-bookings'] })
     },
   })
 
@@ -239,6 +300,7 @@ export default function KDS() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['kds-tickets'] })
+      queryClient.invalidateQueries({ queryKey: ['kds-bookings'] })
     },
   })
 
@@ -254,6 +316,7 @@ export default function KDS() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['kds-tickets'] })
+      queryClient.invalidateQueries({ queryKey: ['kds-bookings'] })
     },
   })
 
@@ -415,16 +478,6 @@ export default function KDS() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
   }
 
-  // Filter out voided and cancelled orders completely
-  const filterOrders = (orders: KDSOrder[]): KDSOrder[] => {
-    return orders.filter(order => {
-      if (order.is_voided) return false
-      const s = (order.status || '').toLowerCase()
-      if (s === 'void' || s === 'cancelled' || s === 'canceled') return false
-      return true
-    })
-  }
-
   return (
     <div style={styles.container}>
       {/* Main content area */}
@@ -537,7 +590,7 @@ export default function KDS() {
                                   style={styles.sentButton}
                                   disabled={courseSentMutation.isPending}
                                 >
-                                  SENT
+                                  SEND
                                 </button>
                               </>
                             )}
@@ -559,29 +612,40 @@ export default function KDS() {
                                 ...styles.courseTimer,
                                 color: sentTimerColor,
                               }}>
-                                SENT {formatTimer(sentElapsed)}
+                                SEND {formatTimer(sentElapsed)}
                               </span>
                             )}
                           </div>
                           <div style={styles.ordersList}>
-                            {filterOrders(orders).map((order) => (
+                            {orders.filter(order => {
+                              const voided = order.is_voided || ['void', 'cancelled', 'canceled'].includes((order.status || '').toLowerCase())
+                              return voided ? (isPending || isAway) : true
+                            }).map((order) => {
+                              const voided = order.is_voided || ['void', 'cancelled', 'canceled'].includes((order.status || '').toLowerCase())
+                              return (
                               <div key={order.id} style={styles.orderItemWrap}>
                                 <div style={{
                                   ...styles.orderItem,
-                                  ...(order.is_sent ? { textDecoration: 'line-through', opacity: 0.45 } : {}),
+                                  ...(voided ? { textDecoration: 'line-through', opacity: 0.5, color: '#e94560' } : {}),
+                                  ...(!voided && order.is_sent ? { textDecoration: 'line-through', opacity: 0.45 } : {}),
                                 }}>
                                   <span style={styles.orderQty}>{order.quantity}x</span>
                                   <span style={styles.orderName}>{order.name}</span>
                                   {order.portion && order.portion !== 'Normal' && (
                                     <span style={styles.orderPortion}>({order.portion})</span>
                                   )}
-                                  {order.is_addition && (
+                                  {voided && (
+                                    <span style={{ color: '#e94560', fontSize: '0.75rem', fontWeight: 700, marginLeft: 'auto' }}>
+                                      *VOID*
+                                    </span>
+                                  )}
+                                  {!voided && order.is_addition && (
                                     <span style={{ color: '#f39c12', fontSize: '0.75rem', fontWeight: 700, marginLeft: '0.3rem' }}>
                                       *NEW*
                                     </span>
                                   )}
                                 </div>
-                                {order.tags && order.tags.length > 0 && (
+                                {!voided && order.tags && order.tags.length > 0 && (
                                   <div style={styles.orderTags}>
                                     {order.tags.map((t, i) => (
                                       <div key={i} style={styles.orderTag}>
@@ -591,7 +655,8 @@ export default function KDS() {
                                   </div>
                                 )}
                               </div>
-                            ))}
+                              )
+                            })}
                           </div>
                         </div>
                       )
@@ -612,7 +677,91 @@ export default function KDS() {
               )
             })}
           </div>
-          {/* Pending orders overlay panel - bottom right, toggled from sidebar */}
+          {/* Right-side overlay panels container - stacked at bottom right */}
+          {(showBookings || showPending) && (
+            <div style={styles.sidePanelContainer}>
+          {/* Bookings overlay panel */}
+          {showBookings && (() => {
+            const data = bookingsData
+            const iconMapping = data?.flag_icon_mapping || {}
+            const defaultIcons: Record<string, string> = {
+              'allergies': '🦀',
+              'large_group': '👥',
+              'note_keyword_birthday': '🎂',
+              'note_keyword_anniversary': '💍',
+            }
+            const getIcon = (flag: string): string => {
+              if (iconMapping[flag]) return iconMapping[flag]
+              if (flag.startsWith('note_keyword_')) {
+                const kw = flag.replace('note_keyword_', '')
+                if (iconMapping[kw]) return iconMapping[kw]
+              }
+              return defaultIcons[flag] || '⚠️'
+            }
+            const statusColor = (s: string, kdsStage: string | null): string => {
+              if (kdsStage) return '#2ecc71'  // green for KDS-tracked
+              const sl = s.toLowerCase()
+              if (sl === 'left') return '#9b59b6'      // purple
+              if (sl === 'seated') return '#e74c3c'    // red
+              if (sl === 'arrived') return '#e91e63'    // pink
+              if (sl === 'confirmed' || sl === 'approved' || sl === 'booked') return '#3498db' // blue
+              return '#666'
+            }
+            const fmtTime = (t: string): string => {
+              if (!t) return ''
+              // Handle ISO datetime or HH:MM string
+              if (t.includes('T')) {
+                const d = new Date(t)
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+              }
+              return t.slice(0, 5)
+            }
+
+            if (!data || data.bookings.length === 0) return (
+              <div style={styles.bookingsPanel}>
+                <div style={styles.bookingsPanelHeader}>
+                  {data?.period_name || 'BOOKINGS'}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: '#888', padding: '0.3rem 0' }}>No bookings</div>
+              </div>
+            )
+            return (
+              <div style={styles.bookingsPanel}>
+                <div style={styles.bookingsPanelHeader}>
+                  {data.period_name || 'BOOKINGS'}
+                  <span style={{ color: '#aaa', fontWeight: 'normal', marginLeft: '0.4rem' }}>
+                    {data.total_bookings} bookings · {data.total_covers} covers
+                  </span>
+                </div>
+                {data.bookings.map((b, i) => (
+                  <div key={i} style={{
+                    ...styles.bookingCard,
+                    borderLeftColor: statusColor(b.status, b.kds_stage),
+                  }}>
+                    <div style={styles.bookingLine1}>
+                      <span style={styles.bookingTime}>{fmtTime(b.booking_time)}</span>
+                      {b.table_name && <span style={styles.bookingTable}>{b.table_name}</span>}
+                      {!b.table_name && b.seating_area && <span style={styles.bookingTable}>{b.seating_area}</span>}
+                      <span style={styles.bookingCovers}>{b.people}pax</span>
+                    </div>
+                    {b.kds_stage && (
+                      <div style={styles.bookingKdsStage}>{b.kds_stage}</div>
+                    )}
+                    {(b.is_hotel_guest || b.is_dbb || b.is_package || b.is_flagged) && (
+                      <div style={styles.bookingIcons}>
+                        {b.is_hotel_guest && <span title="Hotel guest">🛏️</span>}
+                        {(b.is_dbb || b.is_package) && <span title="Package/DBB">🍽️</span>}
+                        {b.is_flagged && b.flag_reasons && b.flag_reasons.split(',').map((f, fi) => (
+                          <span key={fi} title={f.trim()}>{getIcon(f.trim())}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+          {/* Pending orders panel */}
           {showPending && (() => {
             const pendingCourses = getPendingOrdersByCourse()
             if (pendingCourses.length === 0) return (
@@ -641,6 +790,8 @@ export default function KDS() {
               </div>
             )
           })()}
+          </div>
+        )}
           </>
         )}
       </div>
@@ -715,28 +866,22 @@ export default function KDS() {
                           </span>
                         )}
                       </div>
-                      {/* Orders - show all, voided with strikethrough, sent with strikethrough */}
+                      {/* Orders - show all, voided with strikethrough */}
                       <div style={styles.modalOrdersList}>
                         {orders.map((order) => {
                           const voided = order.is_voided || ['void', 'cancelled', 'canceled'].includes((order.status || '').toLowerCase())
-                          const sent = !voided && order.is_sent
                           return (
                             <div key={order.id} style={styles.modalOrderItemWrap}>
                               <div style={{
                                 ...styles.modalOrderItem,
                                 ...(voided ? { textDecoration: 'line-through', opacity: 0.5, color: '#e94560' } : {}),
-                                ...(sent ? { textDecoration: 'line-through', opacity: 0.5 } : {}),
                               }}>
                                 <span style={styles.modalOrderQty}>{order.quantity}x</span>
                                 <span style={{ flex: 1 }}>{order.name}</span>
                                 {order.portion && order.portion !== 'Normal' && (
                                   <span style={{ color: '#888', fontSize: '0.8rem' }}>({order.portion})</span>
                                 )}
-                                {order.is_addition && (
-                                  <span style={{ fontSize: '0.7rem', color: '#f39c12', fontWeight: 700, marginLeft: '0.3rem' }}>*NEW*</span>
-                                )}
                                 {voided && <span style={{ fontSize: '0.7rem', color: '#e94560', marginLeft: '0.3rem' }}>VOID</span>}
-                                {sent && <span style={{ fontSize: '0.7rem', color: '#8e8ea0', marginLeft: '0.3rem' }}>SENT</span>}
                               </div>
                               {!voided && order.tags && order.tags.length > 0 && (
                                 <div style={styles.modalOrderTags}>
@@ -799,6 +944,20 @@ export default function KDS() {
           title="Toggle pending orders"
         >
           <span style={styles.pendingButtonText}>PENDING{'\n'}ORDERS</span>
+        </button>
+
+        {/* Bookings toggle */}
+        <button
+          onClick={() => setShowBookings((b) => !b)}
+          style={{
+            ...styles.toolbarButton,
+            ...(showBookings ? styles.bookingsButtonActive : {}),
+            height: 'auto',
+            padding: '0.4rem 0',
+          }}
+          title="Toggle bookings"
+        >
+          <span style={styles.bookingsButtonText}>BOOKINGS</span>
         </button>
 
         <div style={{ flex: 1 }} />
@@ -1060,20 +1219,27 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 'bold',
     fontSize: '0.7rem',
   },
-  // Pending panel - bottom right floating
-  pendingPanel: {
+  // Side panel container - fixed at bottom right, stacks bookings + pending
+  sidePanelContainer: {
     position: 'fixed' as const,
     bottom: '0.5rem',
-    right: '62px', // clear the toolbar
+    right: '62px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '0.5rem',
+    maxHeight: '85vh',
+    zIndex: 10,
+  },
+  // Pending panel - inside side panel container
+  pendingPanel: {
     background: '#2d2d44',
     borderRadius: '6px',
     border: '1px solid #4a4a6a',
     padding: '0.5rem',
     maxHeight: '40vh',
     overflowY: 'auto' as const,
-    minWidth: '160px',
-    maxWidth: '220px',
-    zIndex: 10,
+    minWidth: '200px',
+    maxWidth: '280px',
   },
   pendingPanelHeader: {
     fontSize: '0.7rem',
@@ -1239,5 +1405,85 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.3,
     whiteSpace: 'pre-line' as const,
     textAlign: 'center' as const,
+  },
+  bookingsButtonActive: {
+    borderColor: '#3498db',
+    color: '#3498db',
+  },
+  bookingsButtonText: {
+    writingMode: 'vertical-rl' as const,
+    transform: 'rotate(180deg)',
+    fontSize: '0.55rem',
+    fontWeight: 'bold',
+    letterSpacing: '0.05em',
+    lineHeight: 1.3,
+    textAlign: 'center' as const,
+  },
+  bookingsPanel: {
+    background: '#2d2d44',
+    borderRadius: '6px',
+    border: '1px solid #4a4a6a',
+    padding: '0.5rem',
+    maxHeight: '50vh',
+    overflowY: 'auto' as const,
+    minWidth: '200px',
+    maxWidth: '280px',
+  },
+  bookingsPanelHeader: {
+    fontSize: '0.7rem',
+    fontWeight: 'bold',
+    color: '#3498db',
+    marginBottom: '0.4rem',
+    paddingBottom: '0.3rem',
+    borderBottom: '1px solid #4a4a6a',
+  },
+  bookingCard: {
+    border: '1px solid #4a4a6a',
+    borderLeftWidth: '3px',
+    borderLeftColor: '#666',
+    borderRadius: '4px',
+    paddingLeft: '0.4rem',
+    paddingRight: '0.3rem',
+    paddingTop: '0.25rem',
+    paddingBottom: '0.25rem',
+    marginBottom: '0.35rem',
+    background: 'rgba(255,255,255,0.03)',
+  },
+  bookingLine1: {
+    display: 'flex',
+    gap: '0.3rem',
+    alignItems: 'center',
+    fontSize: '0.75rem',
+    color: '#ccc',
+  },
+  bookingTime: {
+    fontWeight: 'bold',
+    color: '#fff',
+    minWidth: '2.5rem',
+  },
+  bookingTable: {
+    color: '#aaa',
+    fontSize: '0.7rem',
+  },
+  bookingCovers: {
+    marginLeft: 'auto',
+    fontWeight: 'bold',
+    fontSize: '0.7rem',
+    color: '#ccc',
+  },
+  bookingIcons: {
+    display: 'flex',
+    gap: '0.25rem',
+    fontSize: '0.75rem',
+    marginTop: '0.15rem',
+    paddingLeft: '0.1rem',
+    filter: 'drop-shadow(0 0 2px rgba(255,255,255,0.8))',
+  },
+  bookingKdsStage: {
+    fontSize: '0.6rem',
+    fontWeight: 'bold',
+    color: '#2ecc71',
+    letterSpacing: '0.05em',
+    marginTop: '0.1rem',
   },
 }

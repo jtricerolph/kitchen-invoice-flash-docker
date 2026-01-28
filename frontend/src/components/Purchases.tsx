@@ -84,7 +84,14 @@ interface WeeklyAggregate {
 }
 
 interface DailyDisputeStats {
-  daily_stats: Record<string, { count: number; total_disputed: number }>
+  daily_stats: Record<string, {
+    count: number
+    total_disputed: number
+    unresolved_count: number
+    unresolved_total: number
+    resolved_count: number
+    resolved_total: number
+  }>
 }
 
 interface DailyLogbookStats {
@@ -291,29 +298,50 @@ export default function Purchases() {
     },
   })
 
-  // Helper to get allowance breakdown for a date
-  const getAllowanceBreakdown = (dateStr: string): { total: number; breakdown: string } => {
+  // Helper to get allowance breakdown for a date, split into wastage vs other
+  const getAllowanceBreakdown = (dateStr: string): {
+    wastageTotal: number; otherTotal: number; total: number;
+    wastageBreakdown: string; otherBreakdown: string; breakdown: string
+  } => {
     const dayStats = allowanceStats?.daily_stats?.[dateStr]
-    if (!dayStats) return { total: 0, breakdown: '' }
+    if (!dayStats) return { wastageTotal: 0, otherTotal: 0, total: 0, wastageBreakdown: '', otherBreakdown: '', breakdown: '' }
 
     const typeLabels: Record<string, string> = {
       wastage: 'Wastage',
-      staff_meals: 'Staff Meals',
-      complimentary: 'Complimentary',
-      other: 'Other'
+      transfer: 'Transfer',
+      staff_food: 'Staff Food',
+      manual_adjustment: 'Manual Adjustment'
     }
 
-    let total = 0
-    const parts: string[] = []
+    let wastageTotal = 0
+    let otherTotal = 0
+    const allParts: string[] = []
+    const wastageParts: string[] = []
+    const otherParts: string[] = []
 
     for (const [type, stats] of Object.entries(dayStats)) {
       if (stats && stats.total_cost > 0) {
-        total += stats.total_cost
-        parts.push(`${typeLabels[type] || type}: £${stats.total_cost.toFixed(2)}`)
+        const label = typeLabels[type] || type
+        const formatted = `${label}: £${stats.total_cost.toFixed(2)}`
+        allParts.push(formatted)
+        if (type === 'wastage') {
+          wastageTotal += stats.total_cost
+          wastageParts.push(formatted)
+        } else {
+          otherTotal += stats.total_cost
+          otherParts.push(formatted)
+        }
       }
     }
 
-    return { total, breakdown: parts.join('\n') }
+    return {
+      wastageTotal,
+      otherTotal,
+      total: wastageTotal + otherTotal,
+      wastageBreakdown: wastageParts.join('\n'),
+      otherBreakdown: otherParts.join('\n'),
+      breakdown: allParts.join('\n')
+    }
   }
 
   // Calculate date range for last 24 weeks (for weekly comparison chart)
@@ -866,13 +894,26 @@ export default function Purchases() {
                           return (
                             <td key={dateStr} style={{ ...styles.td, ...(inRange ? {} : styles.outOfMonthCell) }}>
                               {hasDisputes ? (
-                                <button
-                                  onClick={() => navigate(`/disputes?date=${dateStr}`)}
-                                  style={styles.statsBtn}
-                                  title={`${dayStats.count} dispute(s)`}
-                                >
-                                  £{dayStats.total_disputed.toFixed(0)}
-                                </button>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
+                                  {dayStats.unresolved_total > 0 && (
+                                    <button
+                                      onClick={() => navigate(`/disputes?date=${dateStr}`)}
+                                      style={styles.statsBtn}
+                                      title={`${dayStats.unresolved_count} unresolved dispute(s)`}
+                                    >
+                                      £{dayStats.unresolved_total.toFixed(2)}
+                                    </button>
+                                  )}
+                                  {dayStats.resolved_total > 0 && (
+                                    <button
+                                      onClick={() => navigate(`/disputes?date=${dateStr}`)}
+                                      style={styles.statsBtnResolved}
+                                      title={`${dayStats.resolved_count} resolved dispute(s)`}
+                                    >
+                                      £{dayStats.resolved_total.toFixed(2)}
+                                    </button>
+                                  )}
+                                </div>
                               ) : (
                                 <span style={styles.emptyCell}>-</span>
                               )}
@@ -880,31 +921,53 @@ export default function Purchases() {
                           )
                         })}
                         <td style={{ ...styles.td, ...styles.statsTotal }}>
-                          £{Object.entries(disputeStats?.daily_stats || {})
-                            .filter(([date]) => week.dates.includes(date))
-                            .reduce((sum, [, s]) => sum + (s?.total_disputed || 0), 0)
-                            .toFixed(2)}
+                          {(() => {
+                            const weekEntries = Object.entries(disputeStats?.daily_stats || {})
+                              .filter(([d]) => week.dates.includes(d))
+                            const weekUnresolved = weekEntries.reduce((sum, [, s]) => sum + (s?.unresolved_total || 0), 0)
+                            const weekResolved = weekEntries.reduce((sum, [, s]) => sum + (s?.resolved_total || 0), 0)
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                {weekUnresolved > 0 && <span style={{ color: '#dc3545' }}>£{weekUnresolved.toFixed(2)}</span>}
+                                {weekResolved > 0 && <span style={{ color: '#6c757d' }}>£{weekResolved.toFixed(2)}</span>}
+                                {weekUnresolved === 0 && weekResolved === 0 && <span>£0.00</span>}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td style={{ ...styles.td }}></td>
                       </tr>
-                      {/* Allowances row (wastage, staff meals, complimentary, etc.) */}
+                      {/* Allowances row (wastage in purple, other allowances in amber) */}
                       <tr style={styles.statsRow}>
                         <td style={{ ...styles.td, ...styles.statsLabel }}>Allowances</td>
                         {week.dates.map((d) => {
                           const dateStr = d
                           const inRange = isInRange(dateStr)
-                          const { total, breakdown } = getAllowanceBreakdown(dateStr)
+                          const { wastageTotal, otherTotal, total, wastageBreakdown, otherBreakdown } = getAllowanceBreakdown(dateStr)
                           const hasAllowances = total > 0
                           return (
                             <td key={dateStr} style={{ ...styles.td, ...(inRange ? {} : styles.outOfMonthCell) }}>
                               {hasAllowances ? (
-                                <button
-                                  onClick={() => navigate(`/wastage?date_from=${dateStr}&date_to=${dateStr}`)}
-                                  style={styles.wastageBtn}
-                                  title={breakdown}
-                                >
-                                  £{total.toFixed(0)}
-                                </button>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
+                                  {wastageTotal > 0 && (
+                                    <button
+                                      onClick={() => navigate(`/logbook?date_from=${dateStr}&date_to=${dateStr}`)}
+                                      style={styles.wastageBtn}
+                                      title={wastageBreakdown}
+                                    >
+                                      £{wastageTotal.toFixed(2)}
+                                    </button>
+                                  )}
+                                  {otherTotal > 0 && (
+                                    <button
+                                      onClick={() => navigate(`/logbook?date_from=${dateStr}&date_to=${dateStr}`)}
+                                      style={styles.allowancePurpleBtn}
+                                      title={otherBreakdown}
+                                    >
+                                      £{otherTotal.toFixed(2)}
+                                    </button>
+                                  )}
+                                </div>
                               ) : (
                                 <span style={styles.emptyCell}>-</span>
                               )}
@@ -912,9 +975,17 @@ export default function Purchases() {
                           )
                         })}
                         <td style={{ ...styles.td, ...styles.statsTotal }}>
-                          £{week.dates
-                            .reduce((sum, d) => sum + getAllowanceBreakdown(d).total, 0)
-                            .toFixed(2)}
+                          {(() => {
+                            const weekWastage = week.dates.reduce((sum, d) => sum + getAllowanceBreakdown(d).wastageTotal, 0)
+                            const weekOther = week.dates.reduce((sum, d) => sum + getAllowanceBreakdown(d).otherTotal, 0)
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                {weekWastage > 0 && <span style={{ color: '#fd7e14' }}>£{weekWastage.toFixed(2)}</span>}
+                                {weekOther > 0 && <span style={{ color: '#6f42c1' }}>£{weekOther.toFixed(2)}</span>}
+                                {weekWastage === 0 && weekOther === 0 && <span>£0.00</span>}
+                              </div>
+                            )
+                          })()}
                         </td>
                         <td style={{ ...styles.td }}></td>
                       </tr>
@@ -1280,6 +1351,29 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     cursor: 'pointer',
     minWidth: '28px',
+  },
+  statsBtnResolved: {
+    display: 'inline-block',
+    padding: '0.2rem 0.5rem',
+    background: '#6c757d',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    border: 'none',
+    cursor: 'pointer',
+    minWidth: '28px',
+  },
+  allowancePurpleBtn: {
+    display: 'inline-block',
+    padding: '0.2rem 0.5rem',
+    background: '#6f42c1',
+    color: 'white',
+    borderRadius: '4px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    border: 'none',
+    cursor: 'pointer',
   },
   wastageBtn: {
     display: 'inline-block',

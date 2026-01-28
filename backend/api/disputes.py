@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
 from decimal import Decimal
@@ -161,6 +161,7 @@ async def get_disputes(
     priority: Optional[str] = None,
     invoice_id: Optional[int] = None,
     supplier_id: Optional[int] = None,
+    opened_date: Optional[date] = None,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -200,6 +201,11 @@ async def get_disputes(
     if invoice_id:
         query = query.where(InvoiceDispute.invoice_id == invoice_id)
 
+    if opened_date:
+        day_start = datetime.combine(opened_date, datetime.min.time())
+        day_end = datetime.combine(opened_date + timedelta(days=1), datetime.min.time())
+        query = query.where(InvoiceDispute.opened_at >= day_start, InvoiceDispute.opened_at < day_end)
+
     # Count total (before pagination)
     count_query = select(func.count()).select_from(InvoiceDispute).where(InvoiceDispute.kitchen_id == current_user.kitchen_id)
     if supplier_id:
@@ -218,6 +224,10 @@ async def get_disputes(
             pass
     if invoice_id:
         count_query = count_query.where(InvoiceDispute.invoice_id == invoice_id)
+    if opened_date:
+        day_start = datetime.combine(opened_date, datetime.min.time())
+        day_end = datetime.combine(opened_date + timedelta(days=1), datetime.min.time())
+        count_query = count_query.where(InvoiceDispute.opened_at >= day_start, InvoiceDispute.opened_at < day_end)
 
     total_result = await db.execute(count_query)
     total = total_result.scalar()
@@ -724,13 +734,32 @@ async def get_daily_dispute_stats(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get daily dispute statistics for a date range (for purchases chart integration)"""
-    from sqlalchemy import cast, Date
+    """Get daily dispute statistics for a date range (for purchases chart integration).
+    Returns totals split by resolved/unresolved status for color-coding."""
+    from sqlalchemy import cast, Date, case
+
+    resolved_statuses = [DisputeStatus.RESOLVED, DisputeStatus.CLOSED]
 
     query = select(
         cast(InvoiceDispute.opened_at, Date).label("date"),
         func.count(InvoiceDispute.id).label("count"),
-        func.sum(InvoiceDispute.disputed_amount).label("total_disputed")
+        func.sum(InvoiceDispute.disputed_amount).label("total_disputed"),
+        # Unresolved breakdown
+        func.sum(case(
+            (InvoiceDispute.status.notin_(resolved_statuses), InvoiceDispute.disputed_amount),
+            else_=0
+        )).label("unresolved_total"),
+        func.count(case(
+            (InvoiceDispute.status.notin_(resolved_statuses), InvoiceDispute.id),
+        )).label("unresolved_count"),
+        # Resolved breakdown
+        func.sum(case(
+            (InvoiceDispute.status.in_(resolved_statuses), InvoiceDispute.disputed_amount),
+            else_=0
+        )).label("resolved_total"),
+        func.count(case(
+            (InvoiceDispute.status.in_(resolved_statuses), InvoiceDispute.id),
+        )).label("resolved_count"),
     ).where(
         InvoiceDispute.kitchen_id == current_user.kitchen_id
     )
@@ -750,7 +779,11 @@ async def get_daily_dispute_stats(
         "daily_stats": {
             row.date.isoformat(): {
                 "count": row.count,
-                "total_disputed": float(row.total_disputed or 0)
+                "total_disputed": float(row.total_disputed or 0),
+                "unresolved_count": row.unresolved_count,
+                "unresolved_total": float(row.unresolved_total or 0),
+                "resolved_count": row.resolved_count,
+                "resolved_total": float(row.resolved_total or 0),
             }
             for row in rows
         }

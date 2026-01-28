@@ -178,7 +178,7 @@ class KitchenSettings(Base):
     kds_graphql_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     kds_graphql_password: Mapped[str | None] = mapped_column(String(500), nullable=True)
     kds_graphql_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    kds_poll_interval_seconds: Mapped[int] = mapped_column(Integer, default=5)
+    kds_poll_interval_seconds: Mapped[int] = mapped_column(Integer, default=6000)
     kds_timer_green_seconds: Mapped[int] = mapped_column(Integer, default=300)
     kds_timer_amber_seconds: Mapped[int] = mapped_column(Integer, default=600)
     kds_timer_red_seconds: Mapped[int] = mapped_column(Integer, default=900)
@@ -189,6 +189,7 @@ class KitchenSettings(Base):
     kds_away_timer_green_seconds: Mapped[int] = mapped_column(Integer, default=600)   # 10 minutes
     kds_away_timer_amber_seconds: Mapped[int] = mapped_column(Integer, default=900)   # 15 minutes
     kds_away_timer_red_seconds: Mapped[int] = mapped_column(Integer, default=1200)    # 20 minutes
+    kds_bookings_refresh_seconds: Mapped[int] = mapped_column(Integer, default=60)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

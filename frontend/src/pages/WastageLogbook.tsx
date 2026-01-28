@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../App'
 
 interface LineItem {
@@ -100,9 +101,10 @@ const mealTypes = [
 export default function WastageLogbook() {
   const { token } = useAuth()
   const queryClient = useQueryClient()
+  const [searchParams] = useSearchParams()
   const [typeFilter, setTypeFilter] = useState<string>('')
-  const [dateFrom, setDateFrom] = useState<string>('')
-  const [dateTo, setDateTo] = useState<string>('')
+  const [dateFrom, setDateFrom] = useState<string>(searchParams.get('date_from') || '')
+  const [dateTo, setDateTo] = useState<string>(searchParams.get('date_to') || '')
   const [selectedEntry, setSelectedEntry] = useState<LogbookEntry | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [createEntryType, setCreateEntryType] = useState<string>('wastage')

@@ -40,7 +40,7 @@ async def run_migration():
         """,
         """
         ALTER TABLE kitchen_settings
-        ADD COLUMN IF NOT EXISTS kds_poll_interval_seconds INTEGER DEFAULT 5
+        ADD COLUMN IF NOT EXISTS kds_poll_interval_seconds INTEGER DEFAULT 6000
         """,
         """
         ALTER TABLE kitchen_settings

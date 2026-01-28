@@ -50,7 +50,7 @@ class KDSSettingsResponse(BaseModel):
     kds_graphql_username: Optional[str] = None
     kds_graphql_password_set: bool = False
     kds_graphql_client_id: Optional[str] = None
-    kds_poll_interval_seconds: int = 5
+    kds_poll_interval_seconds: int = 6000
     kds_timer_green_seconds: int = 300
     kds_timer_amber_seconds: int = 600
     kds_timer_red_seconds: int = 900
@@ -59,6 +59,7 @@ class KDSSettingsResponse(BaseModel):
     kds_away_timer_red_seconds: int = 1200
     kds_course_order: list = ["Starters", "Mains", "Desserts"]
     kds_show_completed_for_seconds: int = 30
+    kds_bookings_refresh_seconds: int = 60
 
     class Config:
         from_attributes = True
@@ -79,6 +80,7 @@ class KDSSettingsUpdate(BaseModel):
     kds_away_timer_red_seconds: Optional[int] = None
     kds_course_order: Optional[list] = None
     kds_show_completed_for_seconds: Optional[int] = None
+    kds_bookings_refresh_seconds: Optional[int] = None
 
 
 class KDSOrderTagResponse(BaseModel):
@@ -146,6 +148,29 @@ class CourseBumpResponse(BaseModel):
     bumped_at: datetime
 
 
+class KDSBookingItem(BaseModel):
+    booking_time: str
+    people: int
+    status: str
+    table_name: Optional[str] = None
+    seating_area: Optional[str] = None
+    is_hotel_guest: Optional[bool] = None
+    is_dbb: Optional[bool] = None
+    is_package: Optional[bool] = None
+    is_flagged: bool = False
+    flag_reasons: Optional[str] = None
+    allergies: Optional[str] = None
+    kds_stage: Optional[str] = None
+
+
+class KDSBookingsResponse(BaseModel):
+    period_name: Optional[str] = None
+    total_bookings: int = 0
+    total_covers: int = 0
+    flag_icon_mapping: Optional[dict] = None
+    bookings: list[KDSBookingItem] = []
+
+
 # =============================================================================
 # Helper Functions
 # =============================================================================
@@ -194,6 +219,58 @@ def extract_course_names(course_order: list) -> list[str]:
         elif isinstance(entry, dict) and "name" in entry:
             names.append(entry["name"])
     return names
+
+
+def normalize_table_number(table_name: Optional[str]) -> Optional[int]:
+    """Extract numeric table number from a table name string.
+
+    Strips all non-digit characters and converts to int.
+    Handles various formats: "Table 1" -> 1, "T01" -> 1, "12" -> 12.
+    Returns None if no digits found.
+    """
+    if not table_name:
+        return None
+    import re
+    digits = re.sub(r'\D', '', table_name)
+    if not digits:
+        return None
+    return int(digits)
+
+
+def derive_kds_stage(ticket: "KDSTicket", course_order: list) -> Optional[str]:
+    """Derive current KDS stage label from a ticket's course states.
+
+    Returns a stage string like "ORDERED", "STARTERS SENT", "MAINS AWAY",
+    "COMPLETE", or None if no stage can be determined.
+
+    Handles tickets that don't have all courses by skipping missing ones.
+    """
+    if ticket.is_bumped:
+        return "COMPLETE"
+
+    course_states = ticket.course_states or {}
+    if not course_states:
+        return "ORDERED"
+
+    ordered_courses = get_ordered_courses_for_ticket(
+        ticket.orders_data or [], course_order
+    )
+    if not ordered_courses:
+        return "ORDERED"
+
+    # Walk through courses to find the furthest progressed state
+    latest_stage = "ORDERED"
+    for course_name in ordered_courses:
+        state = course_states.get(course_name, {})
+        status = state.get("status", "pending")
+        course_label = course_name.upper()
+
+        if status == "away":
+            latest_stage = f"{course_label} AWAY"
+        elif status in ("sent", "cleared"):
+            latest_stage = f"{course_label} SENT"
+
+    return latest_stage
 
 
 def get_ordered_courses_for_ticket(orders_data: list, course_order: list) -> list[str]:
@@ -444,7 +521,7 @@ async def get_settings(
         kds_graphql_username=settings.kds_graphql_username,
         kds_graphql_password_set=bool(settings.kds_graphql_password),
         kds_graphql_client_id=settings.kds_graphql_client_id,
-        kds_poll_interval_seconds=settings.kds_poll_interval_seconds or 5,
+        kds_poll_interval_seconds=settings.kds_poll_interval_seconds or 6000,
         kds_timer_green_seconds=settings.kds_timer_green_seconds or 300,
         kds_timer_amber_seconds=settings.kds_timer_amber_seconds or 600,
         kds_timer_red_seconds=settings.kds_timer_red_seconds or 900,
@@ -452,7 +529,8 @@ async def get_settings(
         kds_away_timer_amber_seconds=settings.kds_away_timer_amber_seconds or 900,
         kds_away_timer_red_seconds=settings.kds_away_timer_red_seconds or 1200,
         kds_course_order=normalized_courses,
-        kds_show_completed_for_seconds=settings.kds_show_completed_for_seconds or 30
+        kds_show_completed_for_seconds=settings.kds_show_completed_for_seconds or 30,
+        kds_bookings_refresh_seconds=settings.kds_bookings_refresh_seconds or 60,
     )
 
 
@@ -581,6 +659,70 @@ async def get_tickets(
             is_bumped=kds_ticket.is_bumped
         ))
 
+    # Include SignalR-captured tickets not in the SambaPOS open set.
+    # These are instantly-closed tickets (free breakfast, bar tabs, etc.)
+    # persisted by the SignalR listener's _fetch_and_persist_ticket().
+    signalr_filter = (
+        KDSTicket.sambapos_ticket_id.notin_(active_sambapos_ids)
+        if active_sambapos_ids
+        else True
+    )
+    signalr_result = await db.execute(
+        select(KDSTicket).where(
+            and_(
+                KDSTicket.kitchen_id == current_user.kitchen_id,
+                KDSTicket.is_active == True,
+                KDSTicket.is_bumped == False,
+                signalr_filter,
+            )
+        ).order_by(KDSTicket.received_at)
+    )
+    signalr_tickets = signalr_result.scalars().all()
+
+    now_local = datetime.utcnow()
+    for kds_ticket in signalr_tickets:
+        orders = kds_ticket.orders_data or []
+        if not orders:
+            continue
+
+        elapsed = (now_local - kds_ticket.received_at).total_seconds()
+
+        # Group orders by course
+        orders_by_course = {}
+        for order in orders:
+            course = order.get("kitchen_course", "Uncategorized")
+            if course not in orders_by_course:
+                orders_by_course[course] = []
+            orders_by_course[course].append(order)
+
+        # Annotate orders
+        initial_ids = set(kds_ticket.initial_order_ids or [])
+        ticket_course_states = kds_ticket.course_states or {}
+        annotated_orders = []
+        for o in orders:
+            course_name = o.get("kitchen_course", "Uncategorized")
+            sent_ids = set(ticket_course_states.get(course_name, {}).get("sent_order_ids", []))
+            order_is_sent = o.get("id") in sent_ids
+            annotated_orders.append(KDSOrderResponse(
+                **o,
+                is_sent=order_is_sent,
+                is_addition=False if order_is_sent else (o.get("id") not in initial_ids if initial_ids else False),
+            ))
+
+        response_tickets.append(KDSTicketResponse(
+            id=kds_ticket.id,
+            sambapos_ticket_id=kds_ticket.sambapos_ticket_id,
+            ticket_number=kds_ticket.ticket_number,
+            table_name=kds_ticket.table_name,
+            covers=kds_ticket.covers,
+            received_at=kds_ticket.received_at,
+            time_elapsed_seconds=int(elapsed),
+            orders=annotated_orders,
+            orders_by_course=orders_by_course,
+            course_states=kds_ticket.course_states or {},
+            is_bumped=kds_ticket.is_bumped,
+        ))
+
     # Mark tickets no longer in SambaPOS as inactive
     await mark_closed_tickets(db, current_user.kitchen_id, active_sambapos_ids)
 
@@ -652,7 +794,17 @@ async def mark_closed_tickets(
     kitchen_id: int,
     active_sambapos_ids: set
 ):
-    """Mark tickets that are no longer in SambaPOS as inactive."""
+    """Mark tickets that are no longer in SambaPOS as inactive.
+
+    Only deactivates tickets that have been bumped (kitchen is done) or
+    are stale (>4 hours old). Non-bumped tickets are preserved because
+    they may be instantly-closed tickets (free breakfast, bar tabs)
+    captured by the SignalR listener that never appear in
+    getTickets(isClosed: false). The kitchen is the authority on when
+    a ticket is done (via bumping).
+    """
+    from datetime import timedelta
+
     result = await db.execute(
         select(KDSTicket).where(
             and_(
@@ -662,13 +814,200 @@ async def mark_closed_tickets(
         )
     )
     local_tickets = result.scalars().all()
+    now = datetime.utcnow()
+    stale_threshold = timedelta(hours=4)
 
     for ticket in local_tickets:
-        if ticket.sambapos_ticket_id not in active_sambapos_ids:
+        if ticket.sambapos_ticket_id in active_sambapos_ids:
+            continue  # Still open in SambaPOS — keep active
+
+        # Ticket is NOT in SambaPOS open list
+        if ticket.is_bumped:
+            # Kitchen bumped it — safe to deactivate
             ticket.is_active = False
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = now
+        elif (now - ticket.received_at) > stale_threshold:
+            # Stale safety net: >4 hours without being bumped
+            logger.info(
+                f"KDS: Deactivating stale ticket {ticket.ticket_number} "
+                f"(SambaPOS ID {ticket.sambapos_ticket_id}, age={now - ticket.received_at})"
+            )
+            ticket.is_active = False
+            ticket.updated_at = now
+        # else: not bumped and not stale — keep active for kitchen to process
 
     await db.commit()
+
+
+# =============================================================================
+# Bookings Panel (Resos integration for KDS)
+# =============================================================================
+
+@router.get("/bookings", response_model=KDSBookingsResponse)
+async def get_kds_bookings(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get bookings for the current service period from Resos.
+
+    Determines the active service period from cached opening hours,
+    then returns all bookings for today matching that period.
+    """
+    from datetime import date, time as dt_time
+    from models.resos import ResosBooking, ResosOpeningHour
+
+    settings = await get_kds_settings(db, current_user.kitchen_id)
+    if not settings:
+        return KDSBookingsResponse()
+
+    today = date.today()
+    now_time = datetime.now().time()
+    # Python isoweekday: Mon=1..Sun=7
+    day_of_week = today.isoweekday()
+
+    # Build opening hours mapping: resos_id -> {service_type, display_name}
+    oh_mapping = {}
+    for entry in (settings.resos_opening_hours_mapping or []):
+        rid = entry.get("resos_id")
+        if rid:
+            oh_mapping[rid] = entry
+
+    # Find current service period from settings or opening hours
+    display_name = None
+    matched_resos_ids: list[str] = []
+
+    # Check for manual override via arrival widget filter (a service_type like "dinner")
+    service_filter = settings.resos_arrival_widget_service_filter
+    if service_filter:
+        # Translate service_type to matching resos_ids via the mapping
+        for rid, entry in oh_mapping.items():
+            if entry.get("service_type", "").lower() == service_filter.lower():
+                matched_resos_ids.append(rid)
+                if not display_name:
+                    display_name = entry.get("display_name", service_filter.title())
+        if not display_name:
+            display_name = service_filter.title()
+    else:
+        # Auto-detect from opening hours
+        result = await db.execute(
+            select(ResosOpeningHour).where(
+                and_(
+                    ResosOpeningHour.kitchen_id == current_user.kitchen_id,
+                    ResosOpeningHour.is_special == False,
+                )
+            )
+        )
+        opening_hours = result.scalars().all()
+
+        # Filter to today's day of week
+        todays_hours = []
+        for oh in opening_hours:
+            if oh.days_of_week:
+                days = [int(d.strip()) for d in oh.days_of_week.split(',') if d.strip()]
+                if day_of_week in days:
+                    todays_hours.append(oh)
+            else:
+                # No days_of_week set — check via mapping if this period applies today
+                # by matching against today's bookings (fallback)
+                todays_hours.append(oh)
+
+        # Find period where current time falls between start and end
+        for oh in todays_hours:
+            if oh.start_time and oh.end_time:
+                if oh.start_time <= now_time <= oh.end_time:
+                    matched_resos_ids = [oh.resos_opening_hour_id]
+                    entry = oh_mapping.get(oh.resos_opening_hour_id, {})
+                    display_name = entry.get("display_name") or oh.name
+                    break
+
+        # If no current period, find next upcoming one today
+        if not matched_resos_ids:
+            upcoming = [
+                oh for oh in todays_hours
+                if oh.start_time and oh.start_time > now_time
+            ]
+            if upcoming:
+                upcoming.sort(key=lambda oh: oh.start_time)
+                best = upcoming[0]
+                matched_resos_ids = [best.resos_opening_hour_id]
+                entry = oh_mapping.get(best.resos_opening_hour_id, {})
+                display_name = entry.get("display_name") or best.name
+
+        # If still nothing (past all periods), use the last period
+        if not matched_resos_ids and todays_hours:
+            todays_hours.sort(key=lambda oh: oh.start_time or dt_time(0, 0))
+            last = todays_hours[-1]
+            matched_resos_ids = [last.resos_opening_hour_id]
+            entry = oh_mapping.get(last.resos_opening_hour_id, {})
+            display_name = entry.get("display_name") or last.name
+
+    # Query bookings for today, filtered by matched opening hour IDs
+    booking_query = select(ResosBooking).where(
+        and_(
+            ResosBooking.kitchen_id == current_user.kitchen_id,
+            ResosBooking.booking_date == today,
+        )
+    )
+    if matched_resos_ids:
+        booking_query = booking_query.where(
+            ResosBooking.opening_hour_id.in_(matched_resos_ids)
+        )
+    booking_query = booking_query.order_by(ResosBooking.booking_time)
+
+    result = await db.execute(booking_query)
+    bookings = result.scalars().all()
+
+    total_covers = sum(b.people for b in bookings)
+    flag_icon_mapping = settings.resos_flag_icon_mapping
+
+    # Query active KDS tickets to match bookings to kitchen stages
+    course_order = settings.kds_course_order or ["Starters", "Mains", "Desserts"]
+    kds_tickets_result = await db.execute(
+        select(KDSTicket).where(
+            and_(
+                KDSTicket.kitchen_id == current_user.kitchen_id,
+                KDSTicket.is_active == True,
+            )
+        )
+    )
+    kds_tickets = kds_tickets_result.scalars().all()
+
+    # Build normalized table number -> stage lookup
+    table_stage_lookup: dict[int, str] = {}
+    for kt in kds_tickets:
+        table_num = normalize_table_number(kt.table_name)
+        if table_num is not None:
+            stage = derive_kds_stage(kt, course_order)
+            if stage:
+                existing = table_stage_lookup.get(table_num)
+                if existing is None or not kt.is_bumped:
+                    table_stage_lookup[table_num] = stage
+
+    booking_items = [
+        KDSBookingItem(
+            booking_time=b.booking_time.strftime("%H:%M") if b.booking_time else "",
+            people=b.people,
+            status=b.status,
+            table_name=b.table_name,
+            seating_area=b.seating_area,
+            is_hotel_guest=b.is_hotel_guest,
+            is_dbb=b.is_dbb,
+            is_package=b.is_package,
+            is_flagged=b.is_flagged,
+            flag_reasons=b.flag_reasons,
+            allergies=b.allergies,
+            kds_stage=table_stage_lookup.get(normalize_table_number(b.table_name)) if b.table_name else None,
+        )
+        for b in bookings
+    ]
+
+    return KDSBookingsResponse(
+        period_name=display_name,
+        total_bookings=len(booking_items),
+        total_covers=total_covers,
+        flag_icon_mapping=flag_icon_mapping,
+        bookings=booking_items,
+    )
 
 
 # =============================================================================

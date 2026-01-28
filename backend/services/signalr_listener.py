@@ -169,20 +169,63 @@ class SignalRListener:
     async def _process_ticket_refresh(self, sambapos_ticket_id: int):
         """Handle a TICKET_REFRESH broadcast.
 
-        SambaPOS getTicket(id) has a server-side bug (NullReferenceException),
-        so we can't fetch individual tickets by ID. Instead we:
-        1. Always publish an SSE event so the frontend immediately re-polls
-           open tickets (instant refresh instead of waiting for poll interval)
-        2. The existing /api/kds/tickets endpoint handles fetching all open
-           tickets and creating/updating KDS entries
+        Fetches the specific ticket by ID from SambaPOS GraphQL and
+        persists it as a KDS entry. This captures instantly-closed tickets
+        (free breakfast, bar tabs) that never appear in getTickets(isClosed: false).
+
+        Always publishes an SSE event afterwards so the frontend refreshes.
         """
-        # Notify SSE subscribers for instant frontend refresh
+        # Fetch and persist the ticket directly
+        try:
+            await self._fetch_and_persist_ticket(sambapos_ticket_id)
+        except Exception as e:
+            logger.warning(f"SignalR: Failed to fetch/persist ticket {sambapos_ticket_id}: {e}")
+
+        # Always notify SSE subscribers for instant frontend refresh
         await kds_event_bus.publish({
             "type": "ticket_refresh",
             "sambapos_ticket_id": sambapos_ticket_id,
             "timestamp": datetime.utcnow().isoformat(),
         })
         logger.info(f"SignalR: Published SSE event for ticket {sambapos_ticket_id}")
+
+    async def _fetch_and_persist_ticket(self, sambapos_ticket_id: int):
+        """Fetch a specific ticket from SambaPOS and create/update a KDS entry."""
+        from services.kds_graphql import SambaPOSGraphQLClient, transform_ticket_for_kds
+        from api.kds import get_or_create_kds_ticket
+        from database import AsyncSessionLocal
+
+        client = SambaPOSGraphQLClient(
+            server_url=self.base_url,
+            username=self.graphql_username,
+            password=self.graphql_password,
+            client_id=self.graphql_client_id,
+        )
+
+        result = await client.get_ticket_by_id(sambapos_ticket_id)
+
+        if "error" in result:
+            logger.warning(f"SignalR: get_ticket_by_id({sambapos_ticket_id}) error: {result['error']}")
+            return
+
+        ticket_data = result.get("data", {}).get("getTicket")
+        if not ticket_data:
+            logger.debug(f"SignalR: get_ticket_by_id({sambapos_ticket_id}) returned no data")
+            return
+
+        transformed = transform_ticket_for_kds(ticket_data)
+        if not transformed:
+            logger.debug(f"SignalR: Ticket {sambapos_ticket_id} has no kitchen orders, skipping")
+            return
+
+        async with AsyncSessionLocal() as db:
+            kds_ticket = await get_or_create_kds_ticket(
+                db, self.kitchen_id, transformed, self.course_order
+            )
+            logger.info(
+                f"SignalR: Persisted ticket {sambapos_ticket_id} "
+                f"(KDS #{kds_ticket.id}, number={kds_ticket.ticket_number})"
+            )
 
     def start(self):
         """Start the listener as a background asyncio task."""
