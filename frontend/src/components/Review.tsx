@@ -709,6 +709,30 @@ export default function Review() {
     }
   }, [invoice])
 
+  // Auto-reload when a PENDING invoice finishes processing
+  useEffect(() => {
+    if (!invoice || invoice.status !== 'PENDING') return
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const checkRes = await fetch(`/api/invoices/${id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (checkRes.ok) {
+          const inv = await checkRes.json()
+          if (inv.status !== 'PENDING') {
+            clearInterval(pollInterval)
+            window.location.reload()
+          }
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }, 2000)
+
+    return () => clearInterval(pollInterval)
+  }, [invoice?.status, id, token])
+
   // Render all PDF pages to canvases for highlighting support
   useEffect(() => {
     const renderPdf = async () => {
@@ -1078,9 +1102,8 @@ export default function Review() {
         message: `${result.message}\n\nSupplier ID: ${result.supplier_id || 'None'}\nDocument Type: ${result.document_type}\nLine Items: ${result.line_items_count}\nDuplicate Status: ${result.duplicate_status || 'None'}`
       })
 
-      // Refresh all data
-      queryClient.invalidateQueries({ queryKey: ['invoice', id] })
-      queryClient.invalidateQueries({ queryKey: ['line-items', id] })
+      // Full page reload to ensure all data is fresh
+      window.location.reload()
     } catch (error) {
       setAdminOperationResult({
         type: 'error',
@@ -1141,7 +1164,7 @@ export default function Review() {
       const result = await res.json()
       setAdminOperationResult({
         type: 'success',
-        message: `${result.message}\n\nThe page will refresh automatically when processing completes.`
+        message: `${result.message}\n\nThe page will reload automatically when processing completes.`
       })
 
       // Poll for completion
@@ -1152,10 +1175,9 @@ export default function Review() {
           })
           if (checkRes.ok) {
             const inv = await checkRes.json()
-            if (inv.status !== 'pending') {
+            if (inv.status !== 'PENDING') {
               clearInterval(pollInterval)
-              queryClient.invalidateQueries({ queryKey: ['invoice', id] })
-              queryClient.invalidateQueries({ queryKey: ['line-items', id] })
+              // Full page reload to ensure all data is fresh
               window.location.reload()
             }
           }
@@ -1488,8 +1510,8 @@ export default function Review() {
   const filteredAndSortedLineItems = useMemo(() => {
     if (!lineItems) return []
 
-    // Add original index to each item so we can look up bounding boxes correctly
-    let filtered = lineItems.map((item, originalIndex) => ({ ...item, _originalIndex: originalIndex }))
+    // Use line_number (original OCR index) so bounding boxes stay correct after deletions
+    let filtered = lineItems.map((item) => ({ ...item, _originalIndex: item.line_number }))
 
     // Filter by search text (product code or description)
     if (lineItemSearchText) {
@@ -1802,6 +1824,27 @@ export default function Review() {
         </div>
       )}
 
+      {/* Processing banner for PENDING invoices */}
+      {invoice.status === 'PENDING' && (
+        <div style={{
+          display: 'flex',
+          gap: '1rem',
+          padding: '1rem 1.5rem',
+          marginBottom: '1.5rem',
+          background: '#d4edda',
+          border: '2px solid #28a745',
+          borderRadius: '8px',
+          color: '#155724',
+          alignItems: 'center',
+        }}>
+          <div style={{ fontSize: '1.5rem', flexShrink: 0 }}>&#9881;</div>
+          <div>
+            <strong>Processing Invoice</strong>
+            <p style={{ margin: '0.25rem 0 0' }}>Azure OCR extraction is in progress. The page will reload automatically when complete.</p>
+          </div>
+        </div>
+      )}
+
       {/* Top row: Image and Form side by side */}
       <div style={styles.topRow}>
         <div style={styles.imageSection} ref={containerRef}>
@@ -1815,8 +1858,8 @@ export default function Review() {
                     const fieldBbox = highlightedField ? getFieldBoundingBox(highlightedField) : null
                     const lineItemBbox = expandedLineItem !== null && lineItems
                       ? (() => {
-                          const idx = lineItems.findIndex(item => item.id === expandedLineItem)
-                          return idx >= 0 ? getLineItemBoundingBox(idx) : null
+                          const item = lineItems.find(item => item.id === expandedLineItem)
+                          return item ? getLineItemBoundingBox(item.line_number) : null
                         })()
                       : null
 

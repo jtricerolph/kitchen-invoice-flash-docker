@@ -459,10 +459,14 @@ async def process_invoice_with_azure(
                             first_line = line_item["raw_content"].split('\n')[0].strip()
                             # Valid product code patterns:
                             # - All digits, 2-6 chars (e.g., "1646", "955")
-                            # - Alphanumeric with optional hyphens, 2-15 chars (e.g., "01SAL4K06", "ABC-123")
+                            # - Alphanumeric with optional hyphens, 2-15 chars, must contain at least one digit
+                            #   (e.g., "01SAL4K06", "ABC-123") — pure alpha words like "Sausages" are descriptions, not codes
                             # - Must NOT look like a price (no decimal point with 2 digits after)
                             is_numeric_code = re.match(r'^\d{2,6}$', first_line)
-                            is_alphanum_code = re.match(r'^[A-Z0-9][A-Z0-9\-]{1,14}$', first_line, re.IGNORECASE)
+                            is_alphanum_code = (
+                                re.match(r'^[A-Z0-9][A-Z0-9\-]{1,14}$', first_line, re.IGNORECASE)
+                                and re.search(r'\d', first_line)  # Must contain at least one digit
+                            )
                             is_price = re.match(r'^\d+\.\d{2}$', first_line)  # e.g., "14.64"
 
                             if (is_numeric_code or is_alphanum_code) and not is_price:
