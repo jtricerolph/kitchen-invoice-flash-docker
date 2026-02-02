@@ -4,6 +4,7 @@ Logbook API for wastage, transfers, staff food, and manual adjustments.
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
+from sqlalchemy.orm import selectinload
 from datetime import date, datetime
 from typing import Optional, List
 from pydantic import BaseModel
@@ -205,7 +206,11 @@ async def get_logbook_entries(
 ) -> List[LogbookEntryResponse]:
     """Get logbook entries with filters"""
 
-    query = select(LogbookEntry).where(
+    query = select(LogbookEntry).options(
+        selectinload(LogbookEntry.line_items),
+        selectinload(LogbookEntry.attachments),
+        selectinload(LogbookEntry.created_by_user)
+    ).where(
         and_(
             LogbookEntry.kitchen_id == current_user.kitchen_id,
             LogbookEntry.is_deleted == False
