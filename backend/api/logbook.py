@@ -239,10 +239,13 @@ async def get_logbook_entries(
     query = query.order_by(LogbookEntry.entry_date.desc(), LogbookEntry.created_at.desc())
     query = query.limit(limit).offset(offset)
 
-    result = await db.execute(query)
-    entries = result.scalars().unique().all()
-
-    return [build_entry_response(entry) for entry in entries]
+    try:
+        result = await db.execute(query)
+        entries = result.scalars().unique().all()
+        return [build_entry_response(entry) for entry in entries]
+    except Exception as e:
+        logger.exception(f"Error fetching logbook entries: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching entries: {str(e)}")
 
 
 @router.get("/summary")
@@ -341,6 +344,65 @@ async def get_daily_logbook_stats(
         }
 
     return {"daily_stats": daily_stats}
+
+
+@router.get("/products/search")
+async def search_products(
+    query: str,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Search products from invoice line items for logbook entry"""
+    from models.line_item import LineItem
+    from models.invoice import Invoice
+    from models.supplier import Supplier
+
+    # Search line items from invoices for this kitchen
+    # Get distinct products with most recent price
+    result = await db.execute(
+        select(
+            LineItem.description,
+            LineItem.product_code,
+            LineItem.unit,
+            LineItem.unit_price,
+            Supplier.name.label('supplier_name')
+        )
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
+        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
+        .where(
+            and_(
+                Invoice.kitchen_id == current_user.kitchen_id,
+                or_(
+                    LineItem.description.ilike(f"%{query}%"),
+                    LineItem.product_code.ilike(f"%{query}%")
+                )
+            )
+        )
+        .order_by(Invoice.invoice_date.desc())
+        .limit(limit * 3)  # Get more to allow for deduplication
+    )
+    rows = result.all()
+
+    # Deduplicate by description, keeping first (most recent) price
+    seen = set()
+    products = []
+    for row in rows:
+        key = (row.description or '').lower()
+        if key and key not in seen:
+            seen.add(key)
+            products.append({
+                "id": 0,  # No persistent product ID
+                "name": row.description,
+                "product_code": row.product_code,
+                "supplier_name": row.supplier_name,
+                "unit": row.unit,
+                "last_price": float(row.unit_price) if row.unit_price else None
+            })
+            if len(products) >= limit:
+                break
+
+    return products
 
 
 @router.get("/{entry_id}")
@@ -681,62 +743,3 @@ async def delete_attachment(
     await db.commit()
 
     return {"status": "deleted"}
-
-
-@router.get("/products/search")
-async def search_products(
-    query: str,
-    limit: int = 20,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Search products from invoice line items for logbook entry"""
-    from models.line_item import LineItem
-    from models.invoice import Invoice
-    from models.supplier import Supplier
-
-    # Search line items from invoices for this kitchen
-    # Get distinct products with most recent price
-    result = await db.execute(
-        select(
-            LineItem.description,
-            LineItem.product_code,
-            LineItem.unit,
-            LineItem.unit_price,
-            Supplier.name.label('supplier_name')
-        )
-        .join(Invoice, LineItem.invoice_id == Invoice.id)
-        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
-        .where(
-            and_(
-                Invoice.kitchen_id == current_user.kitchen_id,
-                or_(
-                    LineItem.description.ilike(f"%{query}%"),
-                    LineItem.product_code.ilike(f"%{query}%")
-                )
-            )
-        )
-        .order_by(Invoice.invoice_date.desc())
-        .limit(limit * 3)  # Get more to allow for deduplication
-    )
-    rows = result.all()
-
-    # Deduplicate by description, keeping first (most recent) price
-    seen = set()
-    products = []
-    for row in rows:
-        key = (row.description or '').lower()
-        if key and key not in seen:
-            seen.add(key)
-            products.append({
-                "id": 0,  # No persistent product ID
-                "name": row.description,
-                "product_code": row.product_code,
-                "supplier_name": row.supplier_name,
-                "unit": row.unit,
-                "last_price": float(row.unit_price) if row.unit_price else None
-            })
-            if len(products) >= limit:
-                break
-
-    return products
