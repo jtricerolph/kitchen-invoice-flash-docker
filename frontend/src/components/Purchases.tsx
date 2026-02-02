@@ -879,7 +879,24 @@ export default function Purchases() {
                               )
                             })}
                             <td style={{ ...styles.td, ...styles.totalCell }}>
-                              £{Number(supplier.total_net_stock).toFixed(2)}
+                              {(() => {
+                                const stockTotal = Number(supplier.total_net_stock)
+                                // Calculate invoice total from all invoices for this supplier
+                                const invoiceTotal = Object.values(supplier.invoices_by_date)
+                                  .flat()
+                                  .reduce((sum, inv) => sum + Number(inv.net_total ?? inv.total ?? 0), 0)
+                                const hasDifference = invoiceTotal > 0 && Math.abs(stockTotal - invoiceTotal) > 0.01
+                                return (
+                                  <>
+                                    £{stockTotal.toFixed(2)}
+                                    {hasDifference && (
+                                      <div style={{ fontSize: '0.75rem', color: '#888' }}>
+                                        (£{invoiceTotal.toFixed(2)})
+                                      </div>
+                                    )}
+                                  </>
+                                )
+                              })()}
                             </td>
                             <td style={{ ...styles.td, ...styles.percentCell }}>
                               {Number(supplier.percentage).toFixed(1)}%
