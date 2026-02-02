@@ -675,30 +675,56 @@ export default function Purchases() {
             </thead>
             <tbody>
               {allInvoices.map(({ invoice, supplierName }) => {
+                // Get values with fallbacks for null
+                const grossTotal = Number(invoice.total ?? 0)
+                // If net_total is null, fall back to total (for invoices without VAT)
+                const netTotal = Number(invoice.net_total ?? invoice.total ?? 0)
+                const netStock = Number(invoice.net_stock ?? 0)
+                // If gross_stock is null/0 but net_stock exists, estimate from net_stock
+                const grossStock = Number(invoice.gross_stock ?? 0) || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+
                 // Hide stock values if same as totals (no non-stock items)
-                const netStockSame = Number(invoice.net_stock ?? 0).toFixed(2) === Number(invoice.net_total ?? 0).toFixed(2)
-                const grossStockSame = Number(invoice.gross_stock ?? 0).toFixed(2) === Number(invoice.total ?? 0).toFixed(2)
+                const netStockSame = netStock.toFixed(2) === netTotal.toFixed(2)
+                const grossStockSame = grossStock.toFixed(2) === grossTotal.toFixed(2)
                 return (
                   <tr key={invoice.id}>
                     <td style={styles.printTdDate}>{invoice.invoice_date || '-'}</td>
                     <td style={styles.printTd}>{supplierName}</td>
                     <td style={styles.printTd}>{invoice.invoice_number || '-'}</td>
-                    <td style={styles.printTdRight}>{netStockSame ? '-' : `£${Number(invoice.net_stock ?? 0).toFixed(2)}`}</td>
-                    <td style={styles.printTdRight}>{grossStockSame ? '-' : `£${Number(invoice.gross_stock ?? 0).toFixed(2)}`}</td>
-                    <td style={styles.printTdRight}>£{Number(invoice.net_total ?? 0).toFixed(2)}</td>
-                    <td style={styles.printTdRight}>£{Number(invoice.total ?? 0).toFixed(2)}</td>
+                    <td style={styles.printTdRight}>{netStockSame ? '-' : `£${netStock.toFixed(2)}`}</td>
+                    <td style={styles.printTdRight}>{grossStockSame ? '-' : `£${grossStock.toFixed(2)}`}</td>
+                    <td style={styles.printTdRight}>£{netTotal.toFixed(2)}</td>
+                    <td style={styles.printTdRight}>£{grossTotal.toFixed(2)}</td>
                   </tr>
                 )
               })}
             </tbody>
             <tfoot>
-              <tr style={styles.printFooter}>
-                <td colSpan={3} style={styles.printTd}><strong>Period Total</strong></td>
-                <td style={styles.printTdRight}><strong>£{Number(period_total).toFixed(2)}</strong></td>
-                <td style={styles.printTdRight}>-</td>
-                <td style={styles.printTdRight}>-</td>
-                <td style={styles.printTdRight}>-</td>
-              </tr>
+              {(() => {
+                // Calculate all totals
+                const totals = allInvoices.reduce((acc, { invoice }) => {
+                  const grossTotal = Number(invoice.total ?? 0)
+                  const netTotal = Number(invoice.net_total ?? invoice.total ?? 0)
+                  const netStock = Number(invoice.net_stock ?? 0)
+                  const grossStock = Number(invoice.gross_stock ?? 0) || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+                  return {
+                    netStock: acc.netStock + netStock,
+                    grossStock: acc.grossStock + grossStock,
+                    netTotal: acc.netTotal + netTotal,
+                    grossTotal: acc.grossTotal + grossTotal,
+                  }
+                }, { netStock: 0, grossStock: 0, netTotal: 0, grossTotal: 0 })
+
+                return (
+                  <tr style={styles.printFooter}>
+                    <td colSpan={3} style={styles.printTd}><strong>Period Total</strong></td>
+                    <td style={styles.printTdRight}><strong>£{totals.netStock.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRight}><strong>£{totals.grossStock.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRight}><strong>£{totals.netTotal.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRight}><strong>£{totals.grossTotal.toFixed(2)}</strong></td>
+                  </tr>
+                )
+              })()}
             </tfoot>
           </table>
         </div>
