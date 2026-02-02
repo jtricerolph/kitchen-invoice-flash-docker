@@ -661,16 +661,18 @@ export default function Purchases() {
         `}</style>
         <div style={styles.printContainer} ref={printRef}>
           <h1 style={styles.printTitle}>Purchases Report - {getPeriodPrefix()}{period_label}</h1>
-          <table style={styles.printTable}>
+          <table style={styles.printTableSmall}>
             <thead>
               <tr>
-                <th style={styles.printThDate}>Date</th>
-                <th style={styles.printTh}>Supplier</th>
-                <th style={styles.printTh}>Invoice #</th>
-                <th style={styles.printThRight}>Net Stock</th>
-                <th style={styles.printThRight}>Gross Stock</th>
-                <th style={styles.printThRight}>Net Total</th>
-                <th style={styles.printThRight}>Gross Total</th>
+                <th style={styles.printThDateSmall}>Date</th>
+                <th style={styles.printThSmall}>Supplier</th>
+                <th style={styles.printThSmall}>Invoice #</th>
+                <th style={styles.printThRightSmall}>Net Stock</th>
+                <th style={styles.printThRightSmall}>Gross Stock</th>
+                <th style={styles.printThRightSmall}>Net Non-Stock</th>
+                <th style={styles.printThRightSmall}>Gross Non-Stock</th>
+                <th style={styles.printThRightSmall}>Net Total</th>
+                <th style={styles.printThRightSmall}>Gross Total</th>
               </tr>
             </thead>
             <tbody>
@@ -687,15 +689,21 @@ export default function Purchases() {
                 const rawGrossStock = Number(invoice.gross_stock ?? 0)
                 const grossStock = rawGrossStock || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
 
+                // Calculate non-stock values
+                const netNonStock = netTotal - netStock
+                const grossNonStock = grossTotal - grossStock
+
                 return (
                   <tr key={invoice.id}>
-                    <td style={styles.printTdDate}>{invoice.invoice_date || '-'}</td>
-                    <td style={styles.printTd}>{supplierName}</td>
-                    <td style={styles.printTd}>{invoice.invoice_number || '-'}</td>
-                    <td style={styles.printTdRight}>£{netStock.toFixed(2)}</td>
-                    <td style={styles.printTdRight}>£{grossStock.toFixed(2)}</td>
-                    <td style={styles.printTdRight}>£{netTotal.toFixed(2)}</td>
-                    <td style={styles.printTdRight}>£{grossTotal.toFixed(2)}</td>
+                    <td style={styles.printTdDateSmall}>{invoice.invoice_date || '-'}</td>
+                    <td style={styles.printTdSmall}>{supplierName}</td>
+                    <td style={styles.printTdSmall}>{invoice.invoice_number || '-'}</td>
+                    <td style={styles.printTdRightSmall}>£{netStock.toFixed(2)}</td>
+                    <td style={styles.printTdRightSmall}>£{grossStock.toFixed(2)}</td>
+                    <td style={styles.printTdRightSmall}>{netNonStock > 0.01 ? `£${netNonStock.toFixed(2)}` : '-'}</td>
+                    <td style={styles.printTdRightSmall}>{grossNonStock > 0.01 ? `£${grossNonStock.toFixed(2)}` : '-'}</td>
+                    <td style={styles.printTdRightSmall}>£{netTotal.toFixed(2)}</td>
+                    <td style={styles.printTdRightSmall}>£{grossTotal.toFixed(2)}</td>
                   </tr>
                 )
               })}
@@ -719,13 +727,18 @@ export default function Purchases() {
                   }
                 }, { netStock: 0, grossStock: 0, netTotal: 0, grossTotal: 0 })
 
+                const netNonStock = totals.netTotal - totals.netStock
+                const grossNonStock = totals.grossTotal - totals.grossStock
+
                 return (
                   <tr style={styles.printFooter}>
-                    <td colSpan={3} style={styles.printTd}><strong>Period Total</strong></td>
-                    <td style={styles.printTdRight}><strong>£{totals.netStock.toFixed(2)}</strong></td>
-                    <td style={styles.printTdRight}><strong>£{totals.grossStock.toFixed(2)}</strong></td>
-                    <td style={styles.printTdRight}><strong>£{totals.netTotal.toFixed(2)}</strong></td>
-                    <td style={styles.printTdRight}><strong>£{totals.grossTotal.toFixed(2)}</strong></td>
+                    <td colSpan={3} style={styles.printTdSmall}><strong>Period Total</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>£{totals.netStock.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>£{totals.grossStock.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{netNonStock > 0.01 ? `£${netNonStock.toFixed(2)}` : '-'}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{grossNonStock > 0.01 ? `£${grossNonStock.toFixed(2)}` : '-'}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>£{totals.netTotal.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>£{totals.grossTotal.toFixed(2)}</strong></td>
                   </tr>
                 )
               })()}
@@ -1553,8 +1566,20 @@ const styles: Record<string, React.CSSProperties> = {
     borderCollapse: 'collapse',
     fontSize: '0.8rem',
   },
+  printTableSmall: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '0.65rem',
+  },
   printTh: {
     padding: '0.3rem 0.4rem',
+    background: '#f8f9fa',
+    border: '1px solid #dee2e6',
+    textAlign: 'left',
+    fontWeight: 'bold',
+  },
+  printThSmall: {
+    padding: '0.2rem 0.3rem',
     background: '#f8f9fa',
     border: '1px solid #dee2e6',
     textAlign: 'left',
@@ -1569,8 +1594,24 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
     minWidth: '80px',
   },
+  printThDateSmall: {
+    padding: '0.2rem 0.3rem',
+    background: '#f8f9fa',
+    border: '1px solid #dee2e6',
+    textAlign: 'left',
+    fontWeight: 'bold',
+    whiteSpace: 'nowrap',
+    minWidth: '60px',
+  },
   printThRight: {
     padding: '0.3rem 0.4rem',
+    background: '#f8f9fa',
+    border: '1px solid #dee2e6',
+    textAlign: 'right',
+    fontWeight: 'bold',
+  },
+  printThRightSmall: {
+    padding: '0.2rem 0.3rem',
     background: '#f8f9fa',
     border: '1px solid #dee2e6',
     textAlign: 'right',
@@ -1580,13 +1621,27 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0.2rem 0.4rem',
     border: '1px solid #dee2e6',
   },
+  printTdSmall: {
+    padding: '0.15rem 0.2rem',
+    border: '1px solid #dee2e6',
+  },
   printTdDate: {
     padding: '0.2rem 0.4rem',
     border: '1px solid #dee2e6',
     whiteSpace: 'nowrap',
   },
+  printTdDateSmall: {
+    padding: '0.15rem 0.2rem',
+    border: '1px solid #dee2e6',
+    whiteSpace: 'nowrap',
+  },
   printTdRight: {
     padding: '0.2rem 0.4rem',
+    border: '1px solid #dee2e6',
+    textAlign: 'right',
+  },
+  printTdRightSmall: {
+    padding: '0.15rem 0.2rem',
     border: '1px solid #dee2e6',
     textAlign: 'right',
   },
