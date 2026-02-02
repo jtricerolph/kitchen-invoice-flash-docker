@@ -793,11 +793,12 @@ async def get_purchases_by_range(
     else:
         period_label = f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
 
-    # Get all invoices for the range with their line items
+    # Get all confirmed invoices for the range with their line items
     result = await db.execute(
         select(Invoice)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.status == InvoiceStatus.CONFIRMED,
         )
         .options(selectinload(Invoice.line_items))
         .order_by(Invoice.invoice_date.desc().nullslast())

@@ -860,8 +860,8 @@ export default function Purchases() {
                     </thead>
                     <tbody>
                       {week.suppliers.map((supplier) => {
-                        // Only show suppliers with data in this week
-                        const hasWeekData = supplier.total_net_stock > 0
+                        // Only show suppliers with invoices in this week
+                        const hasWeekData = Object.values(supplier.invoices_by_date).some(invs => invs.length > 0)
                         if (!hasWeekData) return null
 
                         return (
