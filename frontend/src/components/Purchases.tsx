@@ -841,7 +841,8 @@ export default function Purchases() {
                                     <div style={styles.invoicesCell}>
                                       {invoices.map((inv) => {
                                         const netStock = Number(inv.net_stock ?? 0)
-                                        const netTotal = Number(inv.net_total ?? 0)
+                                        // Use net_total if available, otherwise fall back to total (for invoices without VAT)
+                                        const netTotal = Number(inv.net_total ?? inv.total ?? 0)
                                         const isNonStockOnly = netStock === 0 && netTotal > 0
                                         const hasMixedItems = netStock > 0 && netStock !== netTotal
                                         return (

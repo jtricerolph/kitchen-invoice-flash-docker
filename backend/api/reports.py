@@ -867,9 +867,10 @@ async def get_purchases_by_range(
     all_suppliers = [name for (_, name, _) in all_supplier_keys]
 
     # Calculate period totals (stock and invoice)
+    # Use net_total if available, otherwise fall back to total (for invoices without VAT)
     period_total = sum(data["net_stock"] for data in invoice_data.values())
     period_invoice_total = sum(
-        (data["inv"].net_total or Decimal("0")) for data in invoice_data.values()
+        (data["inv"].net_total or data["inv"].total or Decimal("0")) for data in invoice_data.values()
     )
 
     # Build weeks - find all weeks that overlap with the date range
@@ -917,7 +918,8 @@ async def get_purchases_by_range(
                     ))
                     supplier_week_total += data["net_stock"]
                     week_daily_totals[date_str] += data["net_stock"]
-                    inv_net = inv.net_total or Decimal("0")
+                    # Use net_total if available, otherwise fall back to total (for invoices without VAT)
+                    inv_net = inv.net_total or inv.total or Decimal("0")
                     week_invoice_total += inv_net
                     week_daily_invoice_totals[date_str] += inv_net
 
@@ -956,9 +958,11 @@ async def get_purchases_by_range(
     period_daily_totals: dict[str, Decimal] = defaultdict(Decimal)
     period_daily_invoice_totals: dict[str, Decimal] = defaultdict(Decimal)
     for data in invoice_data.values():
+        inv = data["inv"]
         date_str = data["date"].isoformat()
         period_daily_totals[date_str] += data["net_stock"]
-        period_daily_invoice_totals[date_str] += data["inv"].net_total or Decimal("0")
+        # Use net_total if available, otherwise fall back to total (for invoices without VAT)
+        period_daily_invoice_totals[date_str] += inv.net_total or inv.total or Decimal("0")
 
     return DateRangePurchasesResponse(
         from_date=from_date,
