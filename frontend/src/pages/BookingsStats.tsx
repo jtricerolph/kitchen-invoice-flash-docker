@@ -498,6 +498,11 @@ export default function BookingsStats() {
     <div style={styles.container}>
       <h1>Bookings Stats Report</h1>
 
+      {/* Under Construction Banner */}
+      <div style={styles.constructionBanner}>
+        This page is still under construction and not completed yet.
+      </div>
+
       {/* Date Range Toolbar */}
       <div style={styles.toolbar}>
         <div style={styles.toolbarRow}>
@@ -776,6 +781,16 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2rem',
     background: '#f5f5f5',
     minHeight: '100vh'
+  },
+  constructionBanner: {
+    background: '#fff3cd',
+    color: '#856404',
+    border: '1px solid #ffc107',
+    borderRadius: '8px',
+    padding: '1rem',
+    marginBottom: '1rem',
+    textAlign: 'center',
+    fontWeight: 500
   },
   toolbar: {
     background: 'white',
