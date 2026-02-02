@@ -675,24 +675,25 @@ export default function Purchases() {
             </thead>
             <tbody>
               {allInvoices.map(({ invoice, supplierName }) => {
-                // Get values with fallbacks for null
-                const grossTotal = Number(invoice.total ?? 0)
-                // If net_total is null, fall back to total (for invoices without VAT)
-                const netTotal = Number(invoice.net_total ?? invoice.total ?? 0)
-                const netStock = Number(invoice.net_stock ?? 0)
-                // If gross_stock is null/0 but net_stock exists, estimate from net_stock
-                const grossStock = Number(invoice.gross_stock ?? 0) || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+                // Get values with fallbacks - net and gross fall back to each other
+                const rawGrossTotal = Number(invoice.total ?? 0)
+                const rawNetTotal = Number(invoice.net_total ?? 0)
+                // Net falls back to gross, gross falls back to net
+                const netTotal = rawNetTotal || rawGrossTotal
+                const grossTotal = rawGrossTotal || rawNetTotal
 
-                // Hide stock values if same as totals (no non-stock items)
-                const netStockSame = netStock.toFixed(2) === netTotal.toFixed(2)
-                const grossStockSame = grossStock.toFixed(2) === grossTotal.toFixed(2)
+                const netStock = Number(invoice.net_stock ?? 0)
+                // If gross_stock is null/0 but net_stock exists, estimate from net_stock using VAT ratio
+                const rawGrossStock = Number(invoice.gross_stock ?? 0)
+                const grossStock = rawGrossStock || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+
                 return (
                   <tr key={invoice.id}>
                     <td style={styles.printTdDate}>{invoice.invoice_date || '-'}</td>
                     <td style={styles.printTd}>{supplierName}</td>
                     <td style={styles.printTd}>{invoice.invoice_number || '-'}</td>
-                    <td style={styles.printTdRight}>{netStockSame ? '-' : `£${netStock.toFixed(2)}`}</td>
-                    <td style={styles.printTdRight}>{grossStockSame ? '-' : `£${grossStock.toFixed(2)}`}</td>
+                    <td style={styles.printTdRight}>£{netStock.toFixed(2)}</td>
+                    <td style={styles.printTdRight}>£{grossStock.toFixed(2)}</td>
                     <td style={styles.printTdRight}>£{netTotal.toFixed(2)}</td>
                     <td style={styles.printTdRight}>£{grossTotal.toFixed(2)}</td>
                   </tr>
@@ -701,12 +702,15 @@ export default function Purchases() {
             </tbody>
             <tfoot>
               {(() => {
-                // Calculate all totals
+                // Calculate all totals using same fallback logic as rows
                 const totals = allInvoices.reduce((acc, { invoice }) => {
-                  const grossTotal = Number(invoice.total ?? 0)
-                  const netTotal = Number(invoice.net_total ?? invoice.total ?? 0)
+                  const rawGrossTotal = Number(invoice.total ?? 0)
+                  const rawNetTotal = Number(invoice.net_total ?? 0)
+                  const netTotal = rawNetTotal || rawGrossTotal
+                  const grossTotal = rawGrossTotal || rawNetTotal
                   const netStock = Number(invoice.net_stock ?? 0)
-                  const grossStock = Number(invoice.gross_stock ?? 0) || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+                  const rawGrossStock = Number(invoice.gross_stock ?? 0)
+                  const grossStock = rawGrossStock || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
                   return {
                     netStock: acc.netStock + netStock,
                     grossStock: acc.grossStock + grossStock,
