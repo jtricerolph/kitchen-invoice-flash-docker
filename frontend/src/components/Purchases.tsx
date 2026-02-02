@@ -51,6 +51,8 @@ interface WeekData {
   suppliers: MonthlySupplierRow[]
   daily_totals: Record<string, number>
   week_total: number
+  daily_invoice_totals?: Record<string, number>
+  week_invoice_total?: number
 }
 
 interface DateRangePurchasesResponse {
@@ -61,6 +63,8 @@ interface DateRangePurchasesResponse {
   all_suppliers: string[]
   daily_totals: Record<string, number>
   period_total: number
+  daily_invoice_totals?: Record<string, number>
+  period_invoice_total?: number
 }
 
 interface DailyDataPoint {
@@ -835,20 +839,37 @@ export default function Purchases() {
                                 <td key={dateStr} style={{ ...styles.td, ...(inRange ? {} : styles.outOfMonthCell) }}>
                                   {invoices.length > 0 ? (
                                     <div style={styles.invoicesCell}>
-                                      {invoices.map((inv) => (
-                                        <button
-                                          key={inv.id}
-                                          onClick={() => navigate(`/invoice/${inv.id}`)}
-                                          style={{
-                                            ...styles.invoiceBtn,
-                                            ...(inv.supplier_match_type === 'fuzzy' ? styles.fuzzyInvoice : {}),
-                                            ...(inv.supplier_match_type === null && supplier.is_unmatched ? styles.unmatchedInvoice : {})
-                                          }}
-                                          title={inv.invoice_number || `Invoice #${inv.id}`}
-                                        >
-                                          £{Number(inv.net_stock ?? 0).toFixed(2)}
-                                        </button>
-                                      ))}
+                                      {invoices.map((inv) => {
+                                        const netStock = Number(inv.net_stock ?? 0)
+                                        const netTotal = Number(inv.net_total ?? 0)
+                                        const isNonStockOnly = netStock === 0 && netTotal > 0
+                                        const hasMixedItems = netStock > 0 && netStock !== netTotal
+                                        return (
+                                          <button
+                                            key={inv.id}
+                                            onClick={() => navigate(`/invoice/${inv.id}`)}
+                                            style={{
+                                              ...styles.invoiceBtn,
+                                              ...(isNonStockOnly ? styles.nonStockInvoice : {}),
+                                              ...(inv.supplier_match_type === 'fuzzy' ? styles.fuzzyInvoice : {}),
+                                              ...(inv.supplier_match_type === null && supplier.is_unmatched ? styles.unmatchedInvoice : {})
+                                            }}
+                                            title={inv.invoice_number || `Invoice #${inv.id}`}
+                                          >
+                                            {isNonStockOnly ? (
+                                              <span>(£{netTotal.toFixed(2)})</span>
+                                            ) : hasMixedItems ? (
+                                              <span>
+                                                £{netStock.toFixed(2)}
+                                                <br />
+                                                <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>(£{netTotal.toFixed(2)})</span>
+                                              </span>
+                                            ) : (
+                                              <span>£{netStock.toFixed(2)}</span>
+                                            )}
+                                          </button>
+                                        )
+                                      })}
                                     </div>
                                   ) : (
                                     <span style={styles.emptyCell}>-</span>
@@ -872,14 +893,27 @@ export default function Purchases() {
                         {week.dates.map((d) => {
                           const dateStr = d
                           const inRange = isInRange(dateStr)
+                          const stockTotal = Number(week.daily_totals[dateStr] ?? 0)
+                          const invoiceTotal = Number(week.daily_invoice_totals?.[dateStr] ?? 0)
+                          const hasDifference = invoiceTotal > 0 && stockTotal !== invoiceTotal
                           return (
                             <td key={dateStr} style={{ ...styles.td, ...styles.footerCell, ...(inRange ? {} : styles.outOfMonthCell) }}>
-                              £{Number(week.daily_totals[dateStr] ?? 0).toFixed(2)}
+                              £{stockTotal.toFixed(2)}
+                              {hasDifference && (
+                                <div style={{ fontSize: '0.75rem', color: '#888' }}>
+                                  (£{invoiceTotal.toFixed(2)})
+                                </div>
+                              )}
                             </td>
                           )
                         })}
                         <td style={{ ...styles.td, ...styles.grandTotal }}>
                           £{Number(week.week_total).toFixed(2)}
+                          {week.week_invoice_total != null && week.week_invoice_total !== week.week_total && (
+                            <div style={{ fontSize: '0.75rem', color: '#888' }}>
+                              (£{Number(week.week_invoice_total).toFixed(2)})
+                            </div>
+                          )}
                         </td>
                         <td style={{ ...styles.td, ...styles.footerCell }}>100%</td>
                       </tr>
@@ -1292,6 +1326,11 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#fff3cd',
     color: '#856404',
     border: '1px solid #ffc107',
+  },
+  nonStockInvoice: {
+    background: '#e9ecef',
+    color: '#6c757d',
+    border: '1px solid #ced4da',
   },
   unmatchedInvoice: {
     background: '#f8d7da',

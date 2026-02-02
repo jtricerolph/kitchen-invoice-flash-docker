@@ -133,6 +133,8 @@ class WeekData(BaseModel):
     suppliers: list[MonthlySupplierRow]  # Same order as month-level suppliers
     daily_totals: dict[str, Decimal]  # date string -> net_stock total
     week_total: Decimal  # Net stock total for week
+    daily_invoice_totals: dict[str, Decimal] | None = None  # date string -> full invoice net_total
+    week_invoice_total: Decimal | None = None  # Full invoice net_total for week
 
 
 class MonthlyPurchasesResponse(BaseModel):
@@ -155,6 +157,8 @@ class DateRangePurchasesResponse(BaseModel):
     all_suppliers: list[str]  # Ordered list of all supplier names for consistent display
     daily_totals: dict[str, Decimal]  # All days in range -> net_stock total
     period_total: Decimal  # Net stock total for entire period
+    daily_invoice_totals: dict[str, Decimal] | None = None  # All days -> full invoice net_total
+    period_invoice_total: Decimal | None = None  # Full invoice net_total for entire period
 
 
 @router.post("/revenue", response_model=RevenueEntryResponse)
@@ -862,8 +866,11 @@ async def get_purchases_by_range(
     )
     all_suppliers = [name for (_, name, _) in all_supplier_keys]
 
-    # Calculate period total
+    # Calculate period totals (stock and invoice)
     period_total = sum(data["net_stock"] for data in invoice_data.values())
+    period_invoice_total = sum(
+        (data["inv"].net_total or Decimal("0")) for data in invoice_data.values()
+    )
 
     # Build weeks - find all weeks that overlap with the date range
     weeks_data = []
@@ -878,7 +885,9 @@ async def get_purchases_by_range(
 
         # Build supplier rows for this week
         week_total = Decimal("0")
+        week_invoice_total = Decimal("0")
         week_daily_totals: dict[str, Decimal] = defaultdict(Decimal)
+        week_daily_invoice_totals: dict[str, Decimal] = defaultdict(Decimal)
         supplier_data_list: list[tuple] = []
 
         for supplier_key in all_supplier_keys:
@@ -908,6 +917,9 @@ async def get_purchases_by_range(
                     ))
                     supplier_week_total += data["net_stock"]
                     week_daily_totals[date_str] += data["net_stock"]
+                    inv_net = inv.net_total or Decimal("0")
+                    week_invoice_total += inv_net
+                    week_daily_invoice_totals[date_str] += inv_net
 
             week_total += supplier_week_total
             supplier_data_list.append((supplier_key, dict(invoices_by_date), supplier_week_total))
@@ -933,16 +945,20 @@ async def get_purchases_by_range(
             dates=week_dates,
             suppliers=week_supplier_rows,
             daily_totals=dict(week_daily_totals),
-            week_total=week_total
+            week_total=week_total,
+            daily_invoice_totals=dict(week_daily_invoice_totals),
+            week_invoice_total=week_invoice_total
         ))
 
         current_week_start += timedelta(days=7)
 
     # Calculate daily totals for entire period
     period_daily_totals: dict[str, Decimal] = defaultdict(Decimal)
+    period_daily_invoice_totals: dict[str, Decimal] = defaultdict(Decimal)
     for data in invoice_data.values():
         date_str = data["date"].isoformat()
         period_daily_totals[date_str] += data["net_stock"]
+        period_daily_invoice_totals[date_str] += data["inv"].net_total or Decimal("0")
 
     return DateRangePurchasesResponse(
         from_date=from_date,
@@ -951,7 +967,9 @@ async def get_purchases_by_range(
         weeks=weeks_data,
         all_suppliers=all_suppliers,
         daily_totals=dict(period_daily_totals),
-        period_total=period_total
+        period_total=period_total,
+        daily_invoice_totals=dict(period_daily_invoice_totals),
+        period_invoice_total=period_invoice_total
     )
 
 
