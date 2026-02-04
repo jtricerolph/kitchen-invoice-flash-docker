@@ -1546,11 +1546,13 @@ async def update_invoice(
                         )
 
                         if success:
-                            full_invoice.dext_sent_at = datetime.utcnow()
+                            # Update both objects to ensure response has updated values
+                            now = datetime.utcnow()
+                            full_invoice.dext_sent_at = now
                             full_invoice.dext_sent_by_user_id = current_user.id
+                            invoice.dext_sent_at = now
+                            invoice.dext_sent_by_user_id = current_user.id
                             await db.commit()
-                            # Refresh original invoice to include dext_sent_at in response
-                            await db.refresh(invoice)
                             logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm")
                         else:
                             logger.warning(f"Dext auto-send failed for invoice {invoice_id}")
