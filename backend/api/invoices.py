@@ -1455,7 +1455,8 @@ async def update_invoice(
             logger.warning(f"Failed to auto-update PDF notes overlay: {e}")
 
     # Auto-send to Dext when invoice is confirmed (if setting enabled)
-    if update_data.get("status") == "CONFIRMED":
+    # Only send if status is changing TO confirmed and not already sent
+    if update_data.get("status") == "CONFIRMED" and not invoice.dext_sent_at:
         try:
             from models.settings import KitchenSettings
             from services.email_service import EmailService, generate_dext_email_html, generate_dext_email_plain
@@ -1548,6 +1549,8 @@ async def update_invoice(
                             full_invoice.dext_sent_at = datetime.utcnow()
                             full_invoice.dext_sent_by_user_id = current_user.id
                             await db.commit()
+                            # Refresh original invoice to include dext_sent_at in response
+                            await db.refresh(invoice)
                             logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm")
                         else:
                             logger.warning(f"Dext auto-send failed for invoice {invoice_id}")
