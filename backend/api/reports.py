@@ -228,6 +228,9 @@ async def calculate_gp(
     db: AsyncSession = Depends(get_db)
 ):
     """Calculate GP for a specific date range"""
+    from models.line_item import LineItem
+    from sqlalchemy import or_, and_
+
     # Get manual revenue entries for period
     manual_revenue_result = await db.execute(
         select(func.sum(RevenueEntry.amount))
@@ -255,23 +258,42 @@ async def calculate_gp(
     # Total revenue combines manual entries and Newbook data
     total_revenue = manual_revenue + newbook_revenue
 
-    # Get total costs from confirmed invoices
-    # Credit notes (document_type='credit_note') are treated as negative purchases
-    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
-    costs_result = await db.execute(
-        select(func.sum(
-            case(
-                (Invoice.document_type == 'credit_note', -func.abs(Invoice.total)),
-                else_=Invoice.total
-            )
-        ))
+    # Get total costs from confirmed invoices - stock items only
+    # Credit notes are treated as negative purchases
+    # Use subquery to sum per invoice first, then conditionally negate if credit note has positive total
+    # This matches the flash report's calc_stock_values logic
+    invoice_stock_subq = (
+        select(
+            Invoice.id.label('inv_id'),
+            Invoice.document_type.label('doc_type'),
+            Invoice.category.label('category'),
+            func.sum(LineItem.amount).label('stock_total')
+        )
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
             Invoice.invoice_date >= request.start_date,
             Invoice.invoice_date <= request.end_date,
             Invoice.status == InvoiceStatus.CONFIRMED,
-            Invoice.total.isnot(None)
+            LineItem.amount.isnot(None),
+            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
+        .group_by(Invoice.id, Invoice.document_type, Invoice.category)
+        .subquery()
+    )
+
+    costs_result = await db.execute(
+        select(func.sum(
+            case(
+                # Credit note with positive total - negate it
+                (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                      invoice_stock_subq.c.stock_total > 0),
+                 -invoice_stock_subq.c.stock_total),
+                # Otherwise use as-is (includes credit notes with already-negative totals)
+                else_=invoice_stock_subq.c.stock_total
+            )
+        ))
+        .select_from(invoice_stock_subq)
     )
     total_costs = costs_result.scalar() or Decimal("0.00")
 
@@ -279,23 +301,21 @@ async def calculate_gp(
     gp_amount = total_revenue - total_costs
     gp_percentage = (gp_amount / total_revenue * 100) if total_revenue > 0 else Decimal("0.00")
 
-    # Category breakdown for costs (credit notes as negative)
-    # Use -func.abs() to handle suppliers who already use negative values
+    # Category breakdown for costs (using same subquery approach)
     category_result = await db.execute(
-        select(Invoice.category, func.sum(
-            case(
-                (Invoice.document_type == 'credit_note', -func.abs(Invoice.total)),
-                else_=Invoice.total
+        select(
+            invoice_stock_subq.c.category,
+            func.sum(
+                case(
+                    (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                          invoice_stock_subq.c.stock_total > 0),
+                     -invoice_stock_subq.c.stock_total),
+                    else_=invoice_stock_subq.c.stock_total
+                )
             )
-        ))
-        .where(
-            Invoice.kitchen_id == current_user.kitchen_id,
-            Invoice.invoice_date >= request.start_date,
-            Invoice.invoice_date <= request.end_date,
-            Invoice.status == InvoiceStatus.CONFIRMED,
-            Invoice.total.isnot(None)
         )
-        .group_by(Invoice.category)
+        .select_from(invoice_stock_subq)
+        .group_by(invoice_stock_subq.c.category)
     )
     category_breakdown = {
         cat or "uncategorized": float(amount)
