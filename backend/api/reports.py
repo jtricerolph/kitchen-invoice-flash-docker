@@ -257,10 +257,11 @@ async def calculate_gp(
 
     # Get total costs from confirmed invoices
     # Credit notes (document_type='credit_note') are treated as negative purchases
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     costs_result = await db.execute(
         select(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -Invoice.total),
+                (Invoice.document_type == 'credit_note', -func.abs(Invoice.total)),
                 else_=Invoice.total
             )
         ))
@@ -279,10 +280,11 @@ async def calculate_gp(
     gp_percentage = (gp_amount / total_revenue * 100) if total_revenue > 0 else Decimal("0.00")
 
     # Category breakdown for costs (credit notes as negative)
+    # Use -func.abs() to handle suppliers who already use negative values
     category_result = await db.execute(
         select(Invoice.category, func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -Invoice.total),
+                (Invoice.document_type == 'credit_note', -func.abs(Invoice.total)),
                 else_=Invoice.total
             )
         ))
@@ -364,10 +366,11 @@ async def get_dashboard(
 
         # Costs - stock items only (exclude non-stock)
         # Credit notes (document_type='credit_note') are treated as negative purchases
+        # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
         cost_result = await db.execute(
             select(func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                     else_=LineItem.amount
                 )
             ))
@@ -1132,10 +1135,11 @@ async def get_gp_by_range(
 
     # Get net purchases from confirmed invoices - stock items only (exclude non-stock)
     # Credit notes (document_type='credit_note') are treated as negative purchases
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     purchases_result = await db.execute(
         select(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                 else_=LineItem.amount
             )
         ))
@@ -1195,6 +1199,7 @@ async def get_gp_by_range(
     gross_profit_percent = (gross_profit / net_food_sales * 100) if net_food_sales > 0 else Decimal("0.00")
 
     # Get supplier breakdown for purchases (credit notes as negative)
+    # Use -func.abs() to handle suppliers who already use negative values
     from models.supplier import Supplier
     supplier_result = await db.execute(
         select(
@@ -1202,7 +1207,7 @@ async def get_gp_by_range(
             Supplier.name,
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                     else_=LineItem.amount
                 )
             )
@@ -1220,7 +1225,7 @@ async def get_gp_by_range(
         .group_by(Invoice.supplier_id, Supplier.name)
         .order_by(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                 else_=LineItem.amount
             )
         ).desc())
@@ -1343,12 +1348,13 @@ async def get_daily_gp_data(
 
     # Get daily purchases from confirmed invoices (grouped by invoice_date)
     # Credit notes (document_type='credit_note') are treated as negative purchases
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     purchases_daily = await db.execute(
         select(
             Invoice.invoice_date,
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                     else_=LineItem.amount
                 )
             )
@@ -1493,13 +1499,14 @@ async def get_monthly_gp(
 
     # Get net purchases from confirmed invoices - stock items only (exclude non-stock)
     # Credit notes (document_type='credit_note') are treated as negative purchases
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     from models.line_item import LineItem
     from sqlalchemy import or_
 
     purchases_result = await db.execute(
         select(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                 else_=LineItem.amount
             )
         ))
@@ -1967,10 +1974,11 @@ async def get_purchases_summary(
 
     # Get total purchases (stock items only from confirmed invoices)
     # Credit notes (document_type='credit_note') are treated as negative purchases
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     total_result = await db.execute(
         select(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                 else_=LineItem.amount
             )
         ))
@@ -1987,13 +1995,14 @@ async def get_purchases_summary(
     total_purchases = total_result.scalar() or Decimal("0.00")
 
     # Get supplier breakdown (credit notes as negative)
+    # Use -func.abs() to handle suppliers who already use negative values
     supplier_result = await db.execute(
         select(
             Invoice.supplier_id,
             Supplier.name,
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                     else_=LineItem.amount
                 )
             )
@@ -2011,7 +2020,7 @@ async def get_purchases_summary(
         .group_by(Invoice.supplier_id, Supplier.name)
         .order_by(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                 else_=LineItem.amount
             )
         ).desc())
@@ -2056,6 +2065,7 @@ async def get_daily_purchases_by_supplier(
         raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
 
     # Get daily purchases by supplier (credit notes as negative)
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     daily_result = await db.execute(
         select(
             Invoice.invoice_date,
@@ -2063,7 +2073,7 @@ async def get_daily_purchases_by_supplier(
             Supplier.name,
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                     else_=LineItem.amount
                 )
             )
@@ -2131,19 +2141,20 @@ async def get_top_purchase_items(
         raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
 
     # Build base query (credit notes as negative values)
+    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
     query = (
         select(
             LineItem.description,
             LineItem.product_code,
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.quantity),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.quantity)),
                     else_=LineItem.quantity
                 )
             ).label('total_qty'),
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
                     else_=LineItem.amount
                 )
             ).label('total_value'),
