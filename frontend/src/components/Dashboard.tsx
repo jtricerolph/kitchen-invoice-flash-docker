@@ -79,9 +79,58 @@ interface DisputeStats {
   }>
 }
 
+// Helper to format date as YYYY-MM-DD
+const formatDate = (d: Date): string => {
+  return d.toISOString().split('T')[0]
+}
+
+// Helper to format date range for display (e.g., "Mon 27 Jan - Sun 2 Feb")
+const formatDateRange = (start: Date, end: Date): string => {
+  const formatDay = (d: Date) => {
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    return `${dayNames[d.getDay()]} ${d.getDate()} ${monthNames[d.getMonth()]}`
+  }
+  return `${formatDay(start)} - ${formatDay(end)}`
+}
+
+// Calculate date ranges matching backend dashboard logic
+const getDateRanges = () => {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Current week (Monday to today)
+  const dayOfWeek = today.getDay()
+  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+  const currentStart = new Date(today)
+  currentStart.setDate(today.getDate() - daysFromMonday)
+  const currentEnd = new Date(today)
+
+  // Previous week (Mon to Sun)
+  const prevStart = new Date(currentStart)
+  prevStart.setDate(currentStart.getDate() - 7)
+  const prevEnd = new Date(currentStart)
+  prevEnd.setDate(currentStart.getDate() - 1)
+
+  // Rolling 30 days (yesterday back 29 days)
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  const rolling30Start = new Date(yesterday)
+  rolling30Start.setDate(yesterday.getDate() - 29)
+
+  return {
+    thisWeek: { start: currentStart, end: currentEnd },
+    lastWeek: { start: prevStart, end: prevEnd },
+    last30Days: { start: rolling30Start, end: yesterday }
+  }
+}
+
 export default function Dashboard() {
   const { token } = useAuth()
   const navigate = useNavigate()
+
+  // Calculate date ranges for GP widgets
+  const dateRanges = getDateRanges()
 
   // Fetch Resos settings for flag icon mapping
   const { data: resosSettings } = useQuery<ResosSettings>({
@@ -279,8 +328,13 @@ export default function Dashboard() {
       {/* ===== GP Section ===== */}
       <h3 style={styles.sectionTitle}>Gross Profit</h3>
       <div style={styles.fourGrid}>
-        <div style={styles.card}>
+        <div
+          style={{ ...styles.card, cursor: 'pointer' }}
+          onClick={() => navigate(`/purchases?from=${formatDate(dateRanges.thisWeek.start)}&to=${formatDate(dateRanges.thisWeek.end)}`)}
+          title="Click to view flash report for this period"
+        >
           <h3 style={styles.cardTitle}>This Week</h3>
+          <div style={styles.dateRange}>{formatDateRange(dateRanges.thisWeek.start, dateRanges.thisWeek.end)}</div>
           {current ? (
             <>
               <div style={styles.gpValue}>{Number(current.gp_percentage).toFixed(1)}%</div>
@@ -299,6 +353,7 @@ export default function Dashboard() {
 
         <div style={styles.card}>
           <h3 style={styles.cardTitle}>This Week Forecast</h3>
+          <div style={styles.dateRange}>{formatDateRange(dateRanges.thisWeek.start, dateRanges.thisWeek.end)}</div>
           {data?.forecast_period ? (
             <>
               <div style={styles.gpValue}>{Number(data.forecast_period.gp_percentage).toFixed(1)}%</div>
@@ -312,8 +367,13 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div style={styles.card}>
+        <div
+          style={{ ...styles.card, cursor: 'pointer' }}
+          onClick={() => navigate(`/purchases?from=${formatDate(dateRanges.lastWeek.start)}&to=${formatDate(dateRanges.lastWeek.end)}`)}
+          title="Click to view flash report for this period"
+        >
           <h3 style={styles.cardTitle}>Last Week</h3>
+          <div style={styles.dateRange}>{formatDateRange(dateRanges.lastWeek.start, dateRanges.lastWeek.end)}</div>
           {previous ? (
             <>
               <div style={styles.gpValue}>{Number(previous.gp_percentage).toFixed(1)}%</div>
@@ -330,8 +390,13 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div style={styles.card}>
+        <div
+          style={{ ...styles.card, cursor: 'pointer' }}
+          onClick={() => navigate(`/purchases?from=${formatDate(dateRanges.last30Days.start)}&to=${formatDate(dateRanges.last30Days.end)}`)}
+          title="Click to view flash report for this period"
+        >
           <h3 style={styles.cardTitle}>Last 30 Days</h3>
+          <div style={styles.dateRange}>{formatDateRange(dateRanges.last30Days.start, dateRanges.last30Days.end)}</div>
           {data?.rolling_30_days ? (
             <>
               <div style={styles.gpValue}>{Number(data.rolling_30_days.gp_percentage).toFixed(1)}%</div>
@@ -552,8 +617,13 @@ const styles: Record<string, React.CSSProperties> = {
   cardTitle: {
     color: '#666',
     fontSize: '0.9rem',
-    marginBottom: '1rem',
+    marginBottom: '0.25rem',
     textTransform: 'uppercase',
+  },
+  dateRange: {
+    color: '#999',
+    fontSize: '0.75rem',
+    marginBottom: '0.75rem',
   },
   serviceFilterInfo: {
     color: '#999',

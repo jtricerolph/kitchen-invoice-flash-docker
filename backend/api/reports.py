@@ -676,15 +676,19 @@ async def get_monthly_purchases(
         return net_stock, gross_stock
 
     # Build invoice data with stock values
+    # Also negate total and net_total for credit notes so frontend sums work correctly
     invoice_data = {}
     for inv in invoices:
         net_stock, gross_stock = calc_stock_values(inv)
         inv_date = inv.invoice_date or inv.created_at.date()
+        is_credit = inv.document_type == 'credit_note'
         invoice_data[inv.id] = {
             "inv": inv,
             "date": inv_date,
             "net_stock": net_stock,
             "gross_stock": gross_stock,
+            "total": -inv.total if is_credit and inv.total else inv.total,
+            "net_total": -inv.net_total if is_credit and inv.net_total else inv.net_total,
         }
 
     # Organize by supplier
@@ -744,8 +748,8 @@ async def get_monthly_purchases(
                         id=inv.id,
                         invoice_number=inv.invoice_number,
                         invoice_date=inv.invoice_date,
-                        total=inv.total,
-                        net_total=inv.net_total,
+                        total=data["total"],
+                        net_total=data["net_total"],
                         net_stock=data["net_stock"],
                         gross_stock=data["gross_stock"],
                         supplier_match_type=inv.supplier_match_type
@@ -876,15 +880,19 @@ async def get_purchases_by_range(
         return net_stock, gross_stock
 
     # Build invoice data with stock values
+    # Also negate total and net_total for credit notes so frontend sums work correctly
     invoice_data = {}
     for inv in invoices:
         net_stock, gross_stock = calc_stock_values(inv)
         inv_date = inv.invoice_date or inv.created_at.date()
+        is_credit = inv.document_type == 'credit_note'
         invoice_data[inv.id] = {
             "inv": inv,
             "date": inv_date,
             "net_stock": net_stock,
             "gross_stock": gross_stock,
+            "total": -inv.total if is_credit and inv.total else inv.total,
+            "net_total": -inv.net_total if is_credit and inv.net_total else inv.net_total,
         }
 
     # Organize by supplier
@@ -906,10 +914,10 @@ async def get_purchases_by_range(
     all_suppliers = [name for (_, name, _) in all_supplier_keys]
 
     # Calculate period totals (stock and invoice)
-    # Use net_total if available, otherwise fall back to total (for invoices without VAT)
+    # Use stored net_total (already negated for credit notes), fall back to stored total
     period_total = sum(data["net_stock"] for data in invoice_data.values())
     period_invoice_total = sum(
-        (data["inv"].net_total or data["inv"].total or Decimal("0")) for data in invoice_data.values()
+        (data["net_total"] or data["total"] or Decimal("0")) for data in invoice_data.values()
     )
 
     # Build weeks - find all weeks that overlap with the date range
@@ -949,16 +957,16 @@ async def get_purchases_by_range(
                         id=inv.id,
                         invoice_number=inv.invoice_number,
                         invoice_date=inv.invoice_date,
-                        total=inv.total,
-                        net_total=inv.net_total,
+                        total=data["total"],
+                        net_total=data["net_total"],
                         net_stock=data["net_stock"],
                         gross_stock=data["gross_stock"],
                         supplier_match_type=inv.supplier_match_type
                     ))
                     supplier_week_total += data["net_stock"]
                     week_daily_totals[date_str] += data["net_stock"]
-                    # Use net_total if available, otherwise fall back to total (for invoices without VAT)
-                    inv_net = inv.net_total or inv.total or Decimal("0")
+                    # Use stored net_total (already negated for credit notes), fall back to stored total
+                    inv_net = data["net_total"] or data["total"] or Decimal("0")
                     week_invoice_total += inv_net
                     week_daily_invoice_totals[date_str] += inv_net
 
@@ -997,11 +1005,10 @@ async def get_purchases_by_range(
     period_daily_totals: dict[str, Decimal] = defaultdict(Decimal)
     period_daily_invoice_totals: dict[str, Decimal] = defaultdict(Decimal)
     for data in invoice_data.values():
-        inv = data["inv"]
         date_str = data["date"].isoformat()
         period_daily_totals[date_str] += data["net_stock"]
-        # Use net_total if available, otherwise fall back to total (for invoices without VAT)
-        period_daily_invoice_totals[date_str] += inv.net_total or inv.total or Decimal("0")
+        # Use stored net_total (already negated for credit notes), fall back to stored total
+        period_daily_invoice_totals[date_str] += data["net_total"] or data["total"] or Decimal("0")
 
     return DateRangePurchasesResponse(
         from_date=from_date,

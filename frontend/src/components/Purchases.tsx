@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../App'
 import { Line } from 'react-chartjs-2'
 import {
@@ -155,16 +155,27 @@ const getMonthOptions = (): { label: string; year: number; month: number }[] => 
 export default function Purchases() {
   const { token } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const printRef = useRef<HTMLDivElement>(null)
 
-  // Get initial dates (from session or defaults)
-  const initialDates = getInitialDates()
+  // Check URL params first, then session storage, then defaults
+  const getInitialDatesWithUrlParams = () => {
+    const urlFrom = searchParams.get('from')
+    const urlTo = searchParams.get('to')
+    if (urlFrom && urlTo) {
+      return { from: urlFrom, to: urlTo, fromUrl: true }
+    }
+    const sessionDates = getInitialDates()
+    return { ...sessionDates, fromUrl: false }
+  }
+
+  const initialDates = getInitialDatesWithUrlParams()
 
   // Input state (for typing without triggering queries)
   const [fromDate, setFromDate] = useState(initialDates.from)
   const [toDate, setToDate] = useState(initialDates.to)
   const [selectedMonth, setSelectedMonth] = useState<string>('') // Empty means custom range
-  const [selectionMode, setSelectionMode] = useState<'last28' | 'month' | 'custom'>('custom')
+  const [selectionMode, setSelectionMode] = useState<'last28' | 'month' | 'custom'>(initialDates.fromUrl ? 'custom' : 'custom')
 
   // Submitted state (actually used for queries - only changes on Generate click or preset buttons)
   const [submittedFromDate, setSubmittedFromDate] = useState(initialDates.from)
@@ -550,7 +561,7 @@ export default function Purchases() {
       y: {
         type: 'linear' as const,
         position: 'left' as const,
-        beginAtZero: true,
+        // Don't force beginAtZero - allow negative values (credit notes) to display
         ticks: {
           callback: function(value: any) {
             return '£' + value.toLocaleString()
@@ -909,7 +920,8 @@ export default function Purchases() {
                                         // Use net_total if available, otherwise fall back to total (for invoices without VAT)
                                         const netTotal = Number(inv.net_total ?? inv.total ?? 0)
                                         const isNonStockOnly = netStock === 0 && netTotal !== 0
-                                        const hasMixedItems = netStock !== 0 && Math.abs(netStock - netTotal) > 0.01
+                                        // Compare absolute values to handle credit notes (net_stock is negative, net_total may be positive)
+                                        const hasMixedItems = netStock !== 0 && Math.abs(Math.abs(netStock) - Math.abs(netTotal)) > 0.01
                                         // Credit notes have negative values
                                         const isCreditNote = netStock < 0 || netTotal < 0
                                         return (
