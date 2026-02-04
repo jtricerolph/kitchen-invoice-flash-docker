@@ -1287,6 +1287,19 @@ async def update_invoice(
                 }
             )
 
+        # Check invoice has a date set before confirming
+        # Use the new date if being updated, otherwise check existing
+        new_date = update_data.get("invoice_date")
+        effective_date = new_date if new_date is not None else invoice.invoice_date
+        if not effective_date:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "cannot_confirm_without_date",
+                    "message": "Cannot confirm invoice without a date. Please set the invoice date before confirming."
+                }
+            )
+
     for field, value in update_data.items():
         if field == "status" and value:
             setattr(invoice, field, InvoiceStatus(value))
