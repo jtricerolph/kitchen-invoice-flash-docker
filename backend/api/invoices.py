@@ -1547,6 +1547,7 @@ async def update_invoice(
 
                         if success:
                             # Update dext status in database
+                            from datetime import datetime
                             now = datetime.utcnow()
                             logger.info(f"Dext auto-send success, updating dext_sent_at for invoice {invoice_id}")
 
