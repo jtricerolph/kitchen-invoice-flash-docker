@@ -1546,14 +1546,19 @@ async def update_invoice(
                         )
 
                         if success:
-                            # Update both objects to ensure response has updated values
+                            # Update dext status in database
                             now = datetime.utcnow()
-                            full_invoice.dext_sent_at = now
-                            full_invoice.dext_sent_by_user_id = current_user.id
-                            invoice.dext_sent_at = now
-                            invoice.dext_sent_by_user_id = current_user.id
+                            # Use raw SQL update to ensure it's committed properly
+                            from sqlalchemy import update as sql_update
+                            await db.execute(
+                                sql_update(Invoice)
+                                .where(Invoice.id == invoice_id)
+                                .values(dext_sent_at=now, dext_sent_by_user_id=current_user.id)
+                            )
                             await db.commit()
-                            logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm")
+                            # Refresh the invoice object to get the updated values
+                            await db.refresh(invoice)
+                            logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm, dext_sent_at={invoice.dext_sent_at}")
                         else:
                             logger.warning(f"Dext auto-send failed for invoice {invoice_id}")
                     else:
