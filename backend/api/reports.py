@@ -366,14 +366,15 @@ async def get_dashboard(
 
         # Costs - stock items only (exclude non-stock)
         # Credit notes (document_type='credit_note') are treated as negative purchases
-        # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
-        cost_result = await db.execute(
-            select(func.sum(
-                case(
-                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                    else_=LineItem.amount
-                )
-            ))
+        # Use subquery to sum per invoice first, then conditionally negate if credit note has positive total
+        # This matches the flash report's calc_stock_values logic
+        from sqlalchemy import and_
+        invoice_stock_subq = (
+            select(
+                Invoice.id.label('inv_id'),
+                Invoice.document_type.label('doc_type'),
+                func.sum(LineItem.amount).label('stock_total')
+            )
             .join(Invoice, LineItem.invoice_id == Invoice.id)
             .where(
                 Invoice.kitchen_id == current_user.kitchen_id,
@@ -383,6 +384,21 @@ async def get_dashboard(
                 LineItem.amount.isnot(None),
                 or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
             )
+            .group_by(Invoice.id, Invoice.document_type)
+            .subquery()
+        )
+        cost_result = await db.execute(
+            select(func.sum(
+                case(
+                    # Credit note with positive total - negate it
+                    (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                          invoice_stock_subq.c.stock_total > 0),
+                     -invoice_stock_subq.c.stock_total),
+                    # Otherwise use as-is (includes credit notes with already-negative totals)
+                    else_=invoice_stock_subq.c.stock_total
+                )
+            ))
+            .select_from(invoice_stock_subq)
         )
         costs = cost_result.scalar() or Decimal("0.00")
 
@@ -1135,14 +1151,14 @@ async def get_gp_by_range(
 
     # Get net purchases from confirmed invoices - stock items only (exclude non-stock)
     # Credit notes (document_type='credit_note') are treated as negative purchases
-    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
-    purchases_result = await db.execute(
-        select(func.sum(
-            case(
-                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                else_=LineItem.amount
-            )
-        ))
+    # Use subquery to sum per invoice first, then conditionally negate if credit note has positive total
+    from sqlalchemy import and_
+    invoice_stock_subq = (
+        select(
+            Invoice.id.label('inv_id'),
+            Invoice.document_type.label('doc_type'),
+            func.sum(LineItem.amount).label('stock_total')
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1152,6 +1168,19 @@ async def get_gp_by_range(
             LineItem.amount.isnot(None),
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
+        .group_by(Invoice.id, Invoice.document_type)
+        .subquery()
+    )
+    purchases_result = await db.execute(
+        select(func.sum(
+            case(
+                (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                      invoice_stock_subq.c.stock_total > 0),
+                 -invoice_stock_subq.c.stock_total),
+                else_=invoice_stock_subq.c.stock_total
+            )
+        ))
+        .select_from(invoice_stock_subq)
     )
     net_food_purchases = purchases_result.scalar() or Decimal("0.00")
 
@@ -1199,21 +1228,16 @@ async def get_gp_by_range(
     gross_profit_percent = (gross_profit / net_food_sales * 100) if net_food_sales > 0 else Decimal("0.00")
 
     # Get supplier breakdown for purchases (credit notes as negative)
-    # Use -func.abs() to handle suppliers who already use negative values
+    # Use subquery to sum per invoice, then aggregate by supplier
     from models.supplier import Supplier
-    supplier_result = await db.execute(
+    invoice_by_supplier_subq = (
         select(
-            Invoice.supplier_id,
-            Supplier.name,
-            func.sum(
-                case(
-                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                    else_=LineItem.amount
-                )
-            )
+            Invoice.id.label('inv_id'),
+            Invoice.supplier_id.label('supplier_id'),
+            Invoice.document_type.label('doc_type'),
+            func.sum(LineItem.amount).label('stock_total')
         )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
-        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
             Invoice.invoice_date >= from_date,
@@ -1222,11 +1246,31 @@ async def get_gp_by_range(
             LineItem.amount.isnot(None),
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
-        .group_by(Invoice.supplier_id, Supplier.name)
+        .group_by(Invoice.id, Invoice.supplier_id, Invoice.document_type)
+        .subquery()
+    )
+    supplier_result = await db.execute(
+        select(
+            invoice_by_supplier_subq.c.supplier_id,
+            Supplier.name,
+            func.sum(
+                case(
+                    (and_(invoice_by_supplier_subq.c.doc_type == 'credit_note',
+                          invoice_by_supplier_subq.c.stock_total > 0),
+                     -invoice_by_supplier_subq.c.stock_total),
+                    else_=invoice_by_supplier_subq.c.stock_total
+                )
+            )
+        )
+        .select_from(invoice_by_supplier_subq)
+        .outerjoin(Supplier, invoice_by_supplier_subq.c.supplier_id == Supplier.id)
+        .group_by(invoice_by_supplier_subq.c.supplier_id, Supplier.name)
         .order_by(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                else_=LineItem.amount
+                (and_(invoice_by_supplier_subq.c.doc_type == 'credit_note',
+                      invoice_by_supplier_subq.c.stock_total > 0),
+                 -invoice_by_supplier_subq.c.stock_total),
+                else_=invoice_by_supplier_subq.c.stock_total
             )
         ).desc())
     )
@@ -1348,16 +1392,13 @@ async def get_daily_gp_data(
 
     # Get daily purchases from confirmed invoices (grouped by invoice_date)
     # Credit notes (document_type='credit_note') are treated as negative purchases
-    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
-    purchases_daily = await db.execute(
+    # Use subquery to sum per invoice, then aggregate by date
+    invoice_daily_subq = (
         select(
-            Invoice.invoice_date,
-            func.sum(
-                case(
-                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                    else_=LineItem.amount
-                )
-            )
+            Invoice.id.label('inv_id'),
+            Invoice.invoice_date.label('inv_date'),
+            Invoice.document_type.label('doc_type'),
+            func.sum(LineItem.amount).label('stock_total')
         )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
@@ -1368,7 +1409,23 @@ async def get_daily_gp_data(
             LineItem.amount.isnot(None),
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
-        .group_by(Invoice.invoice_date)
+        .group_by(Invoice.id, Invoice.invoice_date, Invoice.document_type)
+        .subquery()
+    )
+    purchases_daily = await db.execute(
+        select(
+            invoice_daily_subq.c.inv_date,
+            func.sum(
+                case(
+                    (and_(invoice_daily_subq.c.doc_type == 'credit_note',
+                          invoice_daily_subq.c.stock_total > 0),
+                     -invoice_daily_subq.c.stock_total),
+                    else_=invoice_daily_subq.c.stock_total
+                )
+            )
+        )
+        .select_from(invoice_daily_subq)
+        .group_by(invoice_daily_subq.c.inv_date)
     )
     purchases_by_date = {row[0]: row[1] or Decimal("0") for row in purchases_daily.all()}
 
@@ -1499,17 +1556,16 @@ async def get_monthly_gp(
 
     # Get net purchases from confirmed invoices - stock items only (exclude non-stock)
     # Credit notes (document_type='credit_note') are treated as negative purchases
-    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
+    # Use subquery to sum per invoice, then conditionally negate
     from models.line_item import LineItem
-    from sqlalchemy import or_
+    from sqlalchemy import or_, and_
 
-    purchases_result = await db.execute(
-        select(func.sum(
-            case(
-                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                else_=LineItem.amount
-            )
-        ))
+    invoice_stock_subq = (
+        select(
+            Invoice.id.label('inv_id'),
+            Invoice.document_type.label('doc_type'),
+            func.sum(LineItem.amount).label('stock_total')
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1519,6 +1575,19 @@ async def get_monthly_gp(
             LineItem.amount.isnot(None),
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
+        .group_by(Invoice.id, Invoice.document_type)
+        .subquery()
+    )
+    purchases_result = await db.execute(
+        select(func.sum(
+            case(
+                (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                      invoice_stock_subq.c.stock_total > 0),
+                 -invoice_stock_subq.c.stock_total),
+                else_=invoice_stock_subq.c.stock_total
+            )
+        ))
+        .select_from(invoice_stock_subq)
     )
     net_food_purchases = purchases_result.scalar() or Decimal("0.00")
 
@@ -1974,14 +2043,15 @@ async def get_purchases_summary(
 
     # Get total purchases (stock items only from confirmed invoices)
     # Credit notes (document_type='credit_note') are treated as negative purchases
-    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
-    total_result = await db.execute(
-        select(func.sum(
-            case(
-                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                else_=LineItem.amount
-            )
-        ))
+    # Use subquery to sum per invoice, then conditionally negate
+    from sqlalchemy import and_
+    invoice_stock_subq = (
+        select(
+            Invoice.id.label('inv_id'),
+            Invoice.supplier_id.label('supplier_id'),
+            Invoice.document_type.label('doc_type'),
+            func.sum(LineItem.amount).label('stock_total')
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1991,37 +2061,46 @@ async def get_purchases_summary(
             LineItem.amount.isnot(None),
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
+        .group_by(Invoice.id, Invoice.supplier_id, Invoice.document_type)
+        .subquery()
+    )
+    total_result = await db.execute(
+        select(func.sum(
+            case(
+                (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                      invoice_stock_subq.c.stock_total > 0),
+                 -invoice_stock_subq.c.stock_total),
+                else_=invoice_stock_subq.c.stock_total
+            )
+        ))
+        .select_from(invoice_stock_subq)
     )
     total_purchases = total_result.scalar() or Decimal("0.00")
 
     # Get supplier breakdown (credit notes as negative)
-    # Use -func.abs() to handle suppliers who already use negative values
+    # Reuse the subquery grouped by supplier
     supplier_result = await db.execute(
         select(
-            Invoice.supplier_id,
+            invoice_stock_subq.c.supplier_id,
             Supplier.name,
             func.sum(
                 case(
-                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                    else_=LineItem.amount
+                    (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                          invoice_stock_subq.c.stock_total > 0),
+                     -invoice_stock_subq.c.stock_total),
+                    else_=invoice_stock_subq.c.stock_total
                 )
             )
         )
-        .join(Invoice, LineItem.invoice_id == Invoice.id)
-        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
-        .where(
-            Invoice.kitchen_id == current_user.kitchen_id,
-            Invoice.invoice_date >= from_date,
-            Invoice.invoice_date <= to_date,
-            Invoice.status == InvoiceStatus.CONFIRMED,
-            LineItem.amount.isnot(None),
-            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
-        )
-        .group_by(Invoice.supplier_id, Supplier.name)
+        .select_from(invoice_stock_subq)
+        .outerjoin(Supplier, invoice_stock_subq.c.supplier_id == Supplier.id)
+        .group_by(invoice_stock_subq.c.supplier_id, Supplier.name)
         .order_by(func.sum(
             case(
-                (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                else_=LineItem.amount
+                (and_(invoice_stock_subq.c.doc_type == 'credit_note',
+                      invoice_stock_subq.c.stock_total > 0),
+                 -invoice_stock_subq.c.stock_total),
+                else_=invoice_stock_subq.c.stock_total
             )
         ).desc())
     )
@@ -2065,21 +2144,17 @@ async def get_daily_purchases_by_supplier(
         raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
 
     # Get daily purchases by supplier (credit notes as negative)
-    # Use -func.abs() to handle suppliers who already use negative values (avoid double-negation)
-    daily_result = await db.execute(
+    # Use subquery to sum per invoice first, then aggregate by date/supplier
+    from sqlalchemy import and_
+    invoice_daily_subq = (
         select(
-            Invoice.invoice_date,
-            Invoice.supplier_id,
-            Supplier.name,
-            func.sum(
-                case(
-                    (Invoice.document_type == 'credit_note', -func.abs(LineItem.amount)),
-                    else_=LineItem.amount
-                )
-            )
+            Invoice.id.label('inv_id'),
+            Invoice.invoice_date.label('inv_date'),
+            Invoice.supplier_id.label('supplier_id'),
+            Invoice.document_type.label('doc_type'),
+            func.sum(LineItem.amount).label('stock_total')
         )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
-        .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
             Invoice.invoice_date >= from_date,
@@ -2088,8 +2163,27 @@ async def get_daily_purchases_by_supplier(
             LineItem.amount.isnot(None),
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
-        .group_by(Invoice.invoice_date, Invoice.supplier_id, Supplier.name)
-        .order_by(Invoice.invoice_date)
+        .group_by(Invoice.id, Invoice.invoice_date, Invoice.supplier_id, Invoice.document_type)
+        .subquery()
+    )
+    daily_result = await db.execute(
+        select(
+            invoice_daily_subq.c.inv_date,
+            invoice_daily_subq.c.supplier_id,
+            Supplier.name,
+            func.sum(
+                case(
+                    (and_(invoice_daily_subq.c.doc_type == 'credit_note',
+                          invoice_daily_subq.c.stock_total > 0),
+                     -invoice_daily_subq.c.stock_total),
+                    else_=invoice_daily_subq.c.stock_total
+                )
+            )
+        )
+        .select_from(invoice_daily_subq)
+        .outerjoin(Supplier, invoice_daily_subq.c.supplier_id == Supplier.id)
+        .group_by(invoice_daily_subq.c.inv_date, invoice_daily_subq.c.supplier_id, Supplier.name)
+        .order_by(invoice_daily_subq.c.inv_date)
     )
 
     # Collect all supplier totals to determine top suppliers
