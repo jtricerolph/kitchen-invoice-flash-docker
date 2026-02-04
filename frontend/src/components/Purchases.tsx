@@ -687,23 +687,33 @@ export default function Purchases() {
                 const netStock = Number(invoice.net_stock ?? 0)
                 // If gross_stock is null/0 but net_stock exists, estimate from net_stock using VAT ratio
                 const rawGrossStock = Number(invoice.gross_stock ?? 0)
-                const grossStock = rawGrossStock || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+                const grossStock = rawGrossStock || (Math.abs(netStock) > 0 && Math.abs(grossTotal) > 0 && Math.abs(netTotal) > 0 ? netStock * (grossTotal / netTotal) : netStock)
 
                 // Calculate non-stock values
                 const netNonStock = netTotal - netStock
                 const grossNonStock = grossTotal - grossStock
 
+                // Credit notes have negative values
+                const isCreditNote = netTotal < 0 || netStock < 0
+
+                // Helper to format value with CR suffix for negatives
+                const formatValue = (val: number, showZero = false): string => {
+                  if (Math.abs(val) < 0.01 && !showZero) return '-'
+                  if (val < 0) return `-£${Math.abs(val).toFixed(2)} CR`
+                  return `£${val.toFixed(2)}`
+                }
+
                 return (
-                  <tr key={invoice.id}>
+                  <tr key={invoice.id} style={isCreditNote ? { background: '#d4edda' } : {}}>
                     <td style={styles.printTdDateSmall}>{invoice.invoice_date || '-'}</td>
-                    <td style={styles.printTdSmall}>{supplierName}</td>
+                    <td style={styles.printTdSmall}>{supplierName}{isCreditNote && ' (CR)'}</td>
                     <td style={styles.printTdSmall}>{invoice.invoice_number || '-'}</td>
-                    <td style={styles.printTdRightSmall}>£{netStock.toFixed(2)}</td>
-                    <td style={styles.printTdRightSmall}>£{grossStock.toFixed(2)}</td>
-                    <td style={styles.printTdRightSmall}>{netNonStock > 0.01 ? `£${netNonStock.toFixed(2)}` : '-'}</td>
-                    <td style={styles.printTdRightSmall}>{grossNonStock > 0.01 ? `£${grossNonStock.toFixed(2)}` : '-'}</td>
-                    <td style={styles.printTdRightSmall}>£{netTotal.toFixed(2)}</td>
-                    <td style={styles.printTdRightSmall}>£{grossTotal.toFixed(2)}</td>
+                    <td style={styles.printTdRightSmall}>{formatValue(netStock, true)}</td>
+                    <td style={styles.printTdRightSmall}>{formatValue(grossStock, true)}</td>
+                    <td style={styles.printTdRightSmall}>{formatValue(netNonStock)}</td>
+                    <td style={styles.printTdRightSmall}>{formatValue(grossNonStock)}</td>
+                    <td style={styles.printTdRightSmall}>{formatValue(netTotal, true)}</td>
+                    <td style={styles.printTdRightSmall}>{formatValue(grossTotal, true)}</td>
                   </tr>
                 )
               })}
@@ -718,7 +728,7 @@ export default function Purchases() {
                   const grossTotal = rawGrossTotal || rawNetTotal
                   const netStock = Number(invoice.net_stock ?? 0)
                   const rawGrossStock = Number(invoice.gross_stock ?? 0)
-                  const grossStock = rawGrossStock || (netStock > 0 && grossTotal > 0 && netTotal > 0 ? netStock * (grossTotal / netTotal) : netStock)
+                  const grossStock = rawGrossStock || (Math.abs(netStock) > 0 && Math.abs(grossTotal) > 0 && Math.abs(netTotal) > 0 ? netStock * (grossTotal / netTotal) : netStock)
                   return {
                     netStock: acc.netStock + netStock,
                     grossStock: acc.grossStock + grossStock,
@@ -730,15 +740,22 @@ export default function Purchases() {
                 const netNonStock = totals.netTotal - totals.netStock
                 const grossNonStock = totals.grossTotal - totals.grossStock
 
+                // Helper to format value with CR suffix for negatives
+                const formatTotal = (val: number, showZero = false): string => {
+                  if (Math.abs(val) < 0.01 && !showZero) return '-'
+                  if (val < 0) return `-£${Math.abs(val).toFixed(2)} CR`
+                  return `£${val.toFixed(2)}`
+                }
+
                 return (
                   <tr style={styles.printFooter}>
                     <td colSpan={3} style={styles.printTdSmall}><strong>Period Total</strong></td>
-                    <td style={styles.printTdRightSmall}><strong>£{totals.netStock.toFixed(2)}</strong></td>
-                    <td style={styles.printTdRightSmall}><strong>£{totals.grossStock.toFixed(2)}</strong></td>
-                    <td style={styles.printTdRightSmall}><strong>{netNonStock > 0.01 ? `£${netNonStock.toFixed(2)}` : '-'}</strong></td>
-                    <td style={styles.printTdRightSmall}><strong>{grossNonStock > 0.01 ? `£${grossNonStock.toFixed(2)}` : '-'}</strong></td>
-                    <td style={styles.printTdRightSmall}><strong>£{totals.netTotal.toFixed(2)}</strong></td>
-                    <td style={styles.printTdRightSmall}><strong>£{totals.grossTotal.toFixed(2)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{formatTotal(totals.netStock, true)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{formatTotal(totals.grossStock, true)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{formatTotal(netNonStock)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{formatTotal(grossNonStock)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{formatTotal(totals.netTotal, true)}</strong></td>
+                    <td style={styles.printTdRightSmall}><strong>{formatTotal(totals.grossTotal, true)}</strong></td>
                   </tr>
                 )
               })()}
@@ -838,7 +855,12 @@ export default function Purchases() {
                 <div style={styles.weekHeader}>
                   <span style={styles.weekTitle}>Week {weekIdx + 1}</span>
                   <span style={styles.weekRange}>{formatWeekRange(week.week_start, week.week_end)}</span>
-                  <span style={styles.weekTotal}>Week Total: £{Number(week.week_total).toFixed(2)}</span>
+                  <span style={{
+                    ...styles.weekTotal,
+                    ...(Number(week.week_total) < 0 ? { color: '#28a745' } : {})
+                  }}>
+                    Week Total: {Number(week.week_total) < 0 ? '-' : ''}£{Math.abs(Number(week.week_total)).toFixed(2)}{Number(week.week_total) < 0 && ' CR'}
+                  </span>
                 </div>
                 <div style={styles.tableContainer}>
                   <table style={styles.table}>
@@ -886,30 +908,33 @@ export default function Purchases() {
                                         const netStock = Number(inv.net_stock ?? 0)
                                         // Use net_total if available, otherwise fall back to total (for invoices without VAT)
                                         const netTotal = Number(inv.net_total ?? inv.total ?? 0)
-                                        const isNonStockOnly = netStock === 0 && netTotal > 0
-                                        const hasMixedItems = netStock > 0 && netStock !== netTotal
+                                        const isNonStockOnly = netStock === 0 && netTotal !== 0
+                                        const hasMixedItems = netStock !== 0 && Math.abs(netStock - netTotal) > 0.01
+                                        // Credit notes have negative values
+                                        const isCreditNote = netStock < 0 || netTotal < 0
                                         return (
                                           <button
                                             key={inv.id}
                                             onClick={() => navigate(`/invoice/${inv.id}`)}
                                             style={{
                                               ...styles.invoiceBtn,
-                                              ...(isNonStockOnly ? styles.nonStockInvoice : {}),
-                                              ...(inv.supplier_match_type === 'fuzzy' ? styles.fuzzyInvoice : {}),
-                                              ...(inv.supplier_match_type === null && supplier.is_unmatched ? styles.unmatchedInvoice : {})
+                                              ...(isCreditNote ? styles.creditNoteInvoice : {}),
+                                              ...(isNonStockOnly && !isCreditNote ? styles.nonStockInvoice : {}),
+                                              ...(inv.supplier_match_type === 'fuzzy' && !isCreditNote ? styles.fuzzyInvoice : {}),
+                                              ...(inv.supplier_match_type === null && supplier.is_unmatched && !isCreditNote ? styles.unmatchedInvoice : {})
                                             }}
-                                            title={inv.invoice_number || `Invoice #${inv.id}`}
+                                            title={`${isCreditNote ? 'CREDIT NOTE: ' : ''}${inv.invoice_number || `Invoice #${inv.id}`}`}
                                           >
                                             {isNonStockOnly ? (
-                                              <span>(£{netTotal.toFixed(2)})</span>
+                                              <span>{isCreditNote ? '' : '('}£{Math.abs(netTotal).toFixed(2)}{isCreditNote ? ' CR' : ')'}</span>
                                             ) : hasMixedItems ? (
                                               <span>
-                                                £{netStock.toFixed(2)}
+                                                {isCreditNote && '-'}£{Math.abs(netStock).toFixed(2)}{isCreditNote && ' CR'}
                                                 <br />
-                                                <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>(£{netTotal.toFixed(2)})</span>
+                                                <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>({isCreditNote && '-'}£{Math.abs(netTotal).toFixed(2)})</span>
                                               </span>
                                             ) : (
-                                              <span>£{netStock.toFixed(2)}</span>
+                                              <span>{isCreditNote && '-'}£{Math.abs(netStock).toFixed(2)}{isCreditNote && ' CR'}</span>
                                             )}
                                           </button>
                                         )
@@ -921,20 +946,21 @@ export default function Purchases() {
                                 </td>
                               )
                             })}
-                            <td style={{ ...styles.td, ...styles.totalCell }}>
+                            <td style={{ ...styles.td, ...(Number(supplier.total_net_stock) < 0 ? styles.negativeTotalCell : styles.totalCell) }}>
                               {(() => {
                                 const stockTotal = Number(supplier.total_net_stock)
                                 // Calculate invoice total from all invoices for this supplier
                                 const invoiceTotal = Object.values(supplier.invoices_by_date)
                                   .flat()
                                   .reduce((sum, inv) => sum + Number(inv.net_total ?? inv.total ?? 0), 0)
-                                const hasDifference = invoiceTotal > 0 && Math.abs(stockTotal - invoiceTotal) > 0.01
+                                const hasDifference = Math.abs(invoiceTotal) > 0.01 && Math.abs(stockTotal - invoiceTotal) > 0.01
+                                const isNegative = stockTotal < 0
                                 return (
                                   <>
-                                    £{stockTotal.toFixed(2)}
+                                    {isNegative ? '-' : ''}£{Math.abs(stockTotal).toFixed(2)}{isNegative && ' CR'}
                                     {hasDifference && (
-                                      <div style={{ fontSize: '0.75rem', color: '#888' }}>
-                                        (£{invoiceTotal.toFixed(2)})
+                                      <div style={{ fontSize: '0.75rem', color: isNegative ? '#155724' : '#888' }}>
+                                        ({invoiceTotal < 0 ? '-' : ''}£{Math.abs(invoiceTotal).toFixed(2)})
                                       </div>
                                     )}
                                   </>
@@ -956,23 +982,33 @@ export default function Purchases() {
                           const inRange = isInRange(dateStr)
                           const stockTotal = Number(week.daily_totals[dateStr] ?? 0)
                           const invoiceTotal = Number(week.daily_invoice_totals?.[dateStr] ?? 0)
-                          const hasDifference = invoiceTotal > 0 && stockTotal !== invoiceTotal
+                          const hasDifference = Math.abs(invoiceTotal) > 0.01 && Math.abs(stockTotal - invoiceTotal) > 0.01
+                          const isNegative = stockTotal < 0
                           return (
-                            <td key={dateStr} style={{ ...styles.td, ...styles.footerCell, ...(inRange ? {} : styles.outOfMonthCell) }}>
-                              £{stockTotal.toFixed(2)}
+                            <td key={dateStr} style={{
+                              ...styles.td,
+                              ...styles.footerCell,
+                              ...(inRange ? {} : styles.outOfMonthCell),
+                              ...(isNegative ? { color: '#155724', background: '#d4edda' } : {})
+                            }}>
+                              {isNegative ? '-' : ''}£{Math.abs(stockTotal).toFixed(2)}{isNegative && ' CR'}
                               {hasDifference && (
-                                <div style={{ fontSize: '0.75rem', color: '#888' }}>
-                                  (£{invoiceTotal.toFixed(2)})
+                                <div style={{ fontSize: '0.75rem', color: isNegative ? '#155724' : '#888' }}>
+                                  ({invoiceTotal < 0 ? '-' : ''}£{Math.abs(invoiceTotal).toFixed(2)})
                                 </div>
                               )}
                             </td>
                           )
                         })}
-                        <td style={{ ...styles.td, ...styles.grandTotal }}>
-                          £{Number(week.week_total).toFixed(2)}
-                          {week.week_invoice_total != null && week.week_invoice_total !== week.week_total && (
-                            <div style={{ fontSize: '0.75rem', color: '#888' }}>
-                              (£{Number(week.week_invoice_total).toFixed(2)})
+                        <td style={{
+                          ...styles.td,
+                          ...styles.grandTotal,
+                          ...(Number(week.week_total) < 0 ? { background: '#28a745' } : {})
+                        }}>
+                          {Number(week.week_total) < 0 ? '-' : ''}£{Math.abs(Number(week.week_total)).toFixed(2)}{Number(week.week_total) < 0 && ' CR'}
+                          {week.week_invoice_total != null && Math.abs(week.week_invoice_total - week.week_total) > 0.01 && (
+                            <div style={{ fontSize: '0.75rem', color: '#ccc' }}>
+                              ({Number(week.week_invoice_total) < 0 ? '-' : ''}£{Math.abs(Number(week.week_invoice_total)).toFixed(2)})
                             </div>
                           )}
                         </td>
@@ -1093,8 +1129,11 @@ export default function Purchases() {
           </div>
 
           {/* Period Total */}
-          <div style={styles.periodTotalContainer}>
-            <strong>Period Total: £{Number(period_total).toFixed(2)}</strong>
+          <div style={{
+            ...styles.periodTotalContainer,
+            ...(Number(period_total) < 0 ? { color: '#28a745' } : {})
+          }}>
+            <strong>Period Total: {Number(period_total) < 0 ? '-' : ''}£{Math.abs(Number(period_total)).toFixed(2)}{Number(period_total) < 0 && ' CR'}</strong>
           </div>
         </>
       )}
@@ -1398,12 +1437,23 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#721c24',
     border: '1px solid #f5c6cb',
   },
+  creditNoteInvoice: {
+    background: '#d4edda',
+    color: '#155724',
+    border: '2px solid #28a745',
+    fontWeight: 'bold',
+  },
   emptyCell: {
     color: '#ccc',
   },
   totalCell: {
     fontWeight: 'bold',
     background: '#f8f9fa',
+  },
+  negativeTotalCell: {
+    fontWeight: 'bold',
+    background: '#d4edda',
+    color: '#155724',
   },
   percentCell: {
     fontWeight: '500',

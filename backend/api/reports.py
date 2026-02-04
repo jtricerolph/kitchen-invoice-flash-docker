@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
@@ -256,8 +256,14 @@ async def calculate_gp(
     total_revenue = manual_revenue + newbook_revenue
 
     # Get total costs from confirmed invoices
+    # Credit notes (document_type='credit_note') are treated as negative purchases
     costs_result = await db.execute(
-        select(func.sum(Invoice.total))
+        select(func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -Invoice.total),
+                else_=Invoice.total
+            )
+        ))
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
             Invoice.invoice_date >= request.start_date,
@@ -272,9 +278,14 @@ async def calculate_gp(
     gp_amount = total_revenue - total_costs
     gp_percentage = (gp_amount / total_revenue * 100) if total_revenue > 0 else Decimal("0.00")
 
-    # Category breakdown for costs
+    # Category breakdown for costs (credit notes as negative)
     category_result = await db.execute(
-        select(Invoice.category, func.sum(Invoice.total))
+        select(Invoice.category, func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -Invoice.total),
+                else_=Invoice.total
+            )
+        ))
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
             Invoice.invoice_date >= request.start_date,
@@ -352,8 +363,14 @@ async def get_dashboard(
         revenue = manual_revenue + newbook_revenue
 
         # Costs - stock items only (exclude non-stock)
+        # Credit notes (document_type='credit_note') are treated as negative purchases
         cost_result = await db.execute(
-            select(func.sum(LineItem.amount))
+            select(func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    else_=LineItem.amount
+                )
+            ))
             .join(Invoice, LineItem.invoice_id == Invoice.id)
             .where(
                 Invoice.kitchen_id == current_user.kitchen_id,
@@ -523,8 +540,15 @@ async def get_weekly_purchases(
             key = (None, vendor, True)
         supplier_invoices[key].append(inv)
 
+    # Helper to get effective total (negative for credit notes)
+    def get_effective_total(inv: Invoice) -> Decimal:
+        total = inv.total or Decimal("0")
+        if inv.document_type == 'credit_note':
+            return -total
+        return total
+
     # Calculate week total
-    week_total = sum(inv.total or Decimal("0") for inv in invoices)
+    week_total = sum(get_effective_total(inv) for inv in invoices)
 
     # Build supplier rows
     supplier_rows = []
@@ -541,10 +565,10 @@ async def get_weekly_purchases(
             invoices_by_date[date_str].append(PurchaseInvoice(
                 id=inv.id,
                 invoice_number=inv.invoice_number,
-                total=inv.total,
+                total=get_effective_total(inv),  # Negative for credit notes
                 supplier_match_type=inv.supplier_match_type
             ))
-            row_total += inv.total or Decimal("0")
+            row_total += get_effective_total(inv)
 
         percentage = (row_total / week_total * 100) if week_total > 0 else Decimal("0")
 
@@ -562,7 +586,7 @@ async def get_weekly_purchases(
     for d in dates:
         date_str = d.isoformat()
         daily_totals[date_str] = sum(
-            inv.total or Decimal("0")
+            get_effective_total(inv)
             for inv in invoices
             if (inv.invoice_date or inv.created_at.date()).isoformat() == date_str
         )
@@ -626,7 +650,9 @@ async def get_monthly_purchases(
 
     # Helper to calculate stock values for an invoice
     def calc_stock_values(inv: Invoice) -> tuple[Decimal, Decimal]:
-        """Returns (net_stock, gross_stock) for an invoice"""
+        """Returns (net_stock, gross_stock) for an invoice.
+        Credit notes (document_type='credit_note') return negative values.
+        """
         net_stock = Decimal("0")
         if inv.line_items:
             for item in inv.line_items:
@@ -641,6 +667,11 @@ async def get_monthly_purchases(
             gross_stock = (net_stock * vat_ratio).quantize(Decimal("0.01"))
         else:
             gross_stock = net_stock
+
+        # Credit notes are negative purchases
+        if inv.document_type == 'credit_note':
+            net_stock = -net_stock
+            gross_stock = -gross_stock
 
         return net_stock, gross_stock
 
@@ -820,7 +851,9 @@ async def get_purchases_by_range(
 
     # Helper to calculate stock values for an invoice
     def calc_stock_values(inv: Invoice) -> tuple[Decimal, Decimal]:
-        """Returns (net_stock, gross_stock) for an invoice"""
+        """Returns (net_stock, gross_stock) for an invoice.
+        Credit notes (document_type='credit_note') return negative values.
+        """
         net_stock = Decimal("0")
         if inv.line_items:
             for item in inv.line_items:
@@ -834,6 +867,11 @@ async def get_purchases_by_range(
             gross_stock = (net_stock * vat_ratio).quantize(Decimal("0.01"))
         else:
             gross_stock = net_stock
+
+        # Credit notes are negative purchases
+        if inv.document_type == 'credit_note':
+            net_stock = -net_stock
+            gross_stock = -gross_stock
 
         return net_stock, gross_stock
 
@@ -1078,8 +1116,14 @@ async def get_gp_by_range(
     net_food_sales = newbook_revenue + manual_revenue
 
     # Get net purchases from confirmed invoices - stock items only (exclude non-stock)
+    # Credit notes (document_type='credit_note') are treated as negative purchases
     purchases_result = await db.execute(
-        select(func.sum(LineItem.amount))
+        select(func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                else_=LineItem.amount
+            )
+        ))
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1135,10 +1179,19 @@ async def get_gp_by_range(
     gross_profit = net_food_sales - net_food_purchases
     gross_profit_percent = (gross_profit / net_food_sales * 100) if net_food_sales > 0 else Decimal("0.00")
 
-    # Get supplier breakdown for purchases
+    # Get supplier breakdown for purchases (credit notes as negative)
     from models.supplier import Supplier
     supplier_result = await db.execute(
-        select(Invoice.supplier_id, Supplier.name, func.sum(LineItem.amount))
+        select(
+            Invoice.supplier_id,
+            Supplier.name,
+            func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    else_=LineItem.amount
+                )
+            )
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
         .where(
@@ -1150,12 +1203,17 @@ async def get_gp_by_range(
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
         .group_by(Invoice.supplier_id, Supplier.name)
-        .order_by(func.sum(LineItem.amount).desc())
+        .order_by(func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                else_=LineItem.amount
+            )
+        ).desc())
     )
     supplier_rows = supplier_result.all()
     supplier_breakdown = []
     for supplier_id, supplier_name, total in supplier_rows:
-        if total and total > 0:
+        if total and total != 0:  # Include negative totals (net credit notes)
             pct = (total / net_food_purchases * 100) if net_food_purchases > 0 else Decimal("0")
             supplier_breakdown.append(SupplierBreakdown(
                 supplier_id=supplier_id,
@@ -1269,8 +1327,17 @@ async def get_daily_gp_data(
     manual_by_date = {row[0]: row[1] or Decimal("0") for row in manual_daily.all()}
 
     # Get daily purchases from confirmed invoices (grouped by invoice_date)
+    # Credit notes (document_type='credit_note') are treated as negative purchases
     purchases_daily = await db.execute(
-        select(Invoice.invoice_date, func.sum(LineItem.amount))
+        select(
+            Invoice.invoice_date,
+            func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    else_=LineItem.amount
+                )
+            )
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1410,11 +1477,17 @@ async def get_monthly_gp(
     net_food_sales = newbook_revenue + manual_revenue
 
     # Get net purchases from confirmed invoices - stock items only (exclude non-stock)
+    # Credit notes (document_type='credit_note') are treated as negative purchases
     from models.line_item import LineItem
     from sqlalchemy import or_
 
     purchases_result = await db.execute(
-        select(func.sum(LineItem.amount))
+        select(func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                else_=LineItem.amount
+            )
+        ))
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1878,8 +1951,14 @@ async def get_purchases_summary(
         period_label = f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
 
     # Get total purchases (stock items only from confirmed invoices)
+    # Credit notes (document_type='credit_note') are treated as negative purchases
     total_result = await db.execute(
-        select(func.sum(LineItem.amount))
+        select(func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                else_=LineItem.amount
+            )
+        ))
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .where(
             Invoice.kitchen_id == current_user.kitchen_id,
@@ -1892,9 +1971,18 @@ async def get_purchases_summary(
     )
     total_purchases = total_result.scalar() or Decimal("0.00")
 
-    # Get supplier breakdown
+    # Get supplier breakdown (credit notes as negative)
     supplier_result = await db.execute(
-        select(Invoice.supplier_id, Supplier.name, func.sum(LineItem.amount))
+        select(
+            Invoice.supplier_id,
+            Supplier.name,
+            func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    else_=LineItem.amount
+                )
+            )
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
         .where(
@@ -1906,12 +1994,17 @@ async def get_purchases_summary(
             or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None))
         )
         .group_by(Invoice.supplier_id, Supplier.name)
-        .order_by(func.sum(LineItem.amount).desc())
+        .order_by(func.sum(
+            case(
+                (Invoice.document_type == 'credit_note', -LineItem.amount),
+                else_=LineItem.amount
+            )
+        ).desc())
     )
 
     supplier_breakdown = []
     for supplier_id, supplier_name, total in supplier_result.all():
-        if total and total > 0:
+        if total and total != 0:  # Include negative totals (net credit notes)
             pct = (total / total_purchases * 100) if total_purchases > 0 else Decimal("0")
             supplier_breakdown.append(SupplierBreakdown(
                 supplier_id=supplier_id,
@@ -1947,9 +2040,19 @@ async def get_daily_purchases_by_supplier(
     if from_date > to_date:
         raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
 
-    # Get daily purchases by supplier
+    # Get daily purchases by supplier (credit notes as negative)
     daily_result = await db.execute(
-        select(Invoice.invoice_date, Invoice.supplier_id, Supplier.name, func.sum(LineItem.amount))
+        select(
+            Invoice.invoice_date,
+            Invoice.supplier_id,
+            Supplier.name,
+            func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    else_=LineItem.amount
+                )
+            )
+        )
         .join(Invoice, LineItem.invoice_id == Invoice.id)
         .outerjoin(Supplier, Invoice.supplier_id == Supplier.id)
         .where(
@@ -2012,13 +2115,23 @@ async def get_top_purchase_items(
     if from_date > to_date:
         raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
 
-    # Build base query
+    # Build base query (credit notes as negative values)
     query = (
         select(
             LineItem.description,
             LineItem.product_code,
-            func.sum(LineItem.quantity).label('total_qty'),
-            func.sum(LineItem.amount).label('total_value'),
+            func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.quantity),
+                    else_=LineItem.quantity
+                )
+            ).label('total_qty'),
+            func.sum(
+                case(
+                    (Invoice.document_type == 'credit_note', -LineItem.amount),
+                    else_=LineItem.amount
+                )
+            ).label('total_value'),
             func.avg(LineItem.unit_price).label('avg_price'),
             func.count(LineItem.id).label('occurrence_count')
         )

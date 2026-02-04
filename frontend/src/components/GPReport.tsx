@@ -353,8 +353,12 @@ export default function GPReport() {
     gcTime: 30 * 60 * 1000,
   })
 
-  const formatCurrency = (value: number) => {
-    return `£${Number(value).toFixed(2)}`
+  const formatCurrency = (value: number, showCR = false) => {
+    const num = Number(value)
+    if (num < 0 && showCR) {
+      return `-£${Math.abs(num).toFixed(2)} CR`
+    }
+    return `£${num.toFixed(2)}`
   }
 
   // Simple SVG line chart component
@@ -762,17 +766,28 @@ export default function GPReport() {
             </thead>
             <tbody>
               {data?.supplier_breakdown?.length ? (
-                data.supplier_breakdown.map((supplier, index) => (
-                  <tr key={supplier.supplier_id || `unknown-${index}`}>
-                    <td style={styles.tableCell}>{supplier.supplier_name}</td>
-                    <td style={{ ...styles.tableCell, textAlign: 'right', fontFamily: 'monospace' }}>
-                      {formatCurrency(supplier.net_purchases)}
-                    </td>
-                    <td style={{ ...styles.tableCell, textAlign: 'right', fontFamily: 'monospace' }}>
-                      {Number(supplier.percentage).toFixed(1)}%
-                    </td>
-                  </tr>
-                ))
+                data.supplier_breakdown.map((supplier, index) => {
+                  const isCredit = supplier.net_purchases < 0
+                  return (
+                    <tr key={supplier.supplier_id || `unknown-${index}`} style={isCredit ? { background: '#d4edda' } : {}}>
+                      <td style={styles.tableCell}>
+                        {supplier.supplier_name}
+                        {isCredit && <span style={{ color: '#28a745', fontWeight: 'bold', marginLeft: '0.5rem' }}>(CR)</span>}
+                      </td>
+                      <td style={{
+                        ...styles.tableCell,
+                        textAlign: 'right',
+                        fontFamily: 'monospace',
+                        ...(isCredit ? { color: '#28a745', fontWeight: 'bold' } : {})
+                      }}>
+                        {formatCurrency(supplier.net_purchases, true)}
+                      </td>
+                      <td style={{ ...styles.tableCell, textAlign: 'right', fontFamily: 'monospace' }}>
+                        {Number(supplier.percentage).toFixed(1)}%
+                      </td>
+                    </tr>
+                  )
+                })
               ) : (
                 <tr>
                   <td colSpan={3} style={{ ...styles.tableCell, textAlign: 'center', color: '#999' }}>

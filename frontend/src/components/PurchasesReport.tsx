@@ -312,8 +312,12 @@ export default function PurchasesReport() {
     gcTime: 30 * 60 * 1000,
   })
 
-  const formatCurrency = (value: number) => {
-    return `£${Number(value).toFixed(2)}`
+  const formatCurrency = (value: number, showCR = false) => {
+    const num = Number(value)
+    if (num < 0 && showCR) {
+      return `-£${Math.abs(num).toFixed(2)} CR`
+    }
+    return `£${num.toFixed(2)}`
   }
 
   // Helper to get Monday of a given week
@@ -536,7 +540,12 @@ export default function PurchasesReport() {
           <h3 style={styles.sectionTitle}>Supplier Breakdown</h3>
           <div style={styles.totalRow}>
             <span>Total Purchases:</span>
-            <span style={styles.totalValue}>{formatCurrency(summary?.total_purchases || 0)}</span>
+            <span style={{
+              ...styles.totalValue,
+              ...((summary?.total_purchases || 0) < 0 ? { color: '#28a745' } : {})
+            }}>
+              {formatCurrency(summary?.total_purchases || 0, true)}
+            </span>
           </div>
           <table style={styles.breakdownTable}>
             <thead>
@@ -548,17 +557,28 @@ export default function PurchasesReport() {
             </thead>
             <tbody>
               {summary?.supplier_breakdown?.length ? (
-                summary.supplier_breakdown.map((supplier, index) => (
-                  <tr key={supplier.supplier_id || `unknown-${index}`}>
-                    <td style={styles.tableCell}>{supplier.supplier_name}</td>
-                    <td style={{ ...styles.tableCell, textAlign: 'right', fontFamily: 'monospace' }}>
-                      {formatCurrency(supplier.net_purchases)}
-                    </td>
-                    <td style={{ ...styles.tableCell, textAlign: 'right', fontFamily: 'monospace' }}>
-                      {Number(supplier.percentage).toFixed(1)}%
-                    </td>
-                  </tr>
-                ))
+                summary.supplier_breakdown.map((supplier, index) => {
+                  const isCredit = supplier.net_purchases < 0
+                  return (
+                    <tr key={supplier.supplier_id || `unknown-${index}`} style={isCredit ? { background: '#d4edda' } : {}}>
+                      <td style={styles.tableCell}>
+                        {supplier.supplier_name}
+                        {isCredit && <span style={{ color: '#28a745', fontWeight: 'bold', marginLeft: '0.5rem' }}>(CR)</span>}
+                      </td>
+                      <td style={{
+                        ...styles.tableCell,
+                        textAlign: 'right',
+                        fontFamily: 'monospace',
+                        ...(isCredit ? { color: '#28a745', fontWeight: 'bold' } : {})
+                      }}>
+                        {formatCurrency(supplier.net_purchases, true)}
+                      </td>
+                      <td style={{ ...styles.tableCell, textAlign: 'right', fontFamily: 'monospace' }}>
+                        {Number(supplier.percentage).toFixed(1)}%
+                      </td>
+                    </tr>
+                  )
+                })
               ) : (
                 <tr>
                   <td colSpan={3} style={{ ...styles.tableCell, textAlign: 'center', color: '#999' }}>
