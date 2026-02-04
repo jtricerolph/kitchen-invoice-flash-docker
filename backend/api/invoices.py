@@ -187,6 +187,7 @@ class InvoiceResponse(BaseModel):
     supplier_id: int | None
     supplier_name: str | None
     supplier_match_type: str | None  # "exact", "fuzzy", or null - for highlighting fuzzy matches
+    supplier_skip_dext: bool = False  # Whether supplier has skip_dext enabled
     vendor_name: str | None  # OCR-extracted vendor name (before supplier matching)
     status: str
     category: str | None
@@ -412,8 +413,12 @@ def invoice_to_response(
 
     # Get supplier name from relationship if not provided
     insp = inspect(invoice)
+    supplier_skip_dext = False
     if supplier_name is None and 'supplier' in insp.dict and invoice.supplier:
         supplier_name = invoice.supplier.name
+        supplier_skip_dext = invoice.supplier.skip_dext or False
+    elif 'supplier' in insp.dict and invoice.supplier:
+        supplier_skip_dext = invoice.supplier.skip_dext or False
 
     # Calculate stock_total from line items (sum of items where is_non_stock=False)
     stock_total = None
@@ -441,6 +446,7 @@ def invoice_to_response(
         supplier_id=invoice.supplier_id,
         supplier_name=supplier_name,
         supplier_match_type=invoice.supplier_match_type,
+        supplier_skip_dext=supplier_skip_dext,
         vendor_name=invoice.vendor_name,
         status=invoice.status.value,
         category=invoice.category,
@@ -1480,7 +1486,10 @@ async def update_invoice(
                     )
                     full_invoice = invoice_result.scalar_one_or_none()
 
-                    if full_invoice and full_invoice.image_path and os.path.exists(full_invoice.image_path):
+                    # Skip if supplier has skip_dext enabled
+                    if full_invoice and full_invoice.supplier and full_invoice.supplier.skip_dext:
+                        logger.info(f"Skipping Dext auto-send for invoice {invoice_id}: supplier '{full_invoice.supplier.name}' has skip_dext enabled")
+                    elif full_invoice and full_invoice.image_path and os.path.exists(full_invoice.image_path):
                         # Update PDF highlights if annotations enabled
                         if settings.dext_include_annotations:
                             try:
@@ -2633,6 +2642,13 @@ async def send_invoice_to_dext(
             detail="Invoice must be confirmed before sending to Dext"
         )
 
+    # Check if supplier has skip_dext enabled
+    if invoice.supplier and invoice.supplier.skip_dext:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Supplier '{invoice.supplier.name}' is configured to skip Dext forwarding"
+        )
+
     # Load settings
     settings_result = await db.execute(
         select(KitchenSettings).where(
@@ -2898,6 +2914,13 @@ async def mark_dext_sent(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Check if supplier has skip_dext enabled
+    if invoice.supplier and invoice.supplier.skip_dext:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Supplier '{invoice.supplier.name}' is configured to skip Dext forwarding"
+        )
 
     # Mark as sent
     invoice.dext_sent_at = datetime.utcnow()

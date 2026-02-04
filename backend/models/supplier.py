@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, DateTime, ForeignKey, JSON
+from sqlalchemy import String, DateTime, ForeignKey, JSON, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -23,6 +23,9 @@ class Supplier(Base):
     # Identifier patterns to auto-detect this supplier from invoices
     # Example: {"keywords": ["Sysco", "SYSCO FOODS"], "logo_hash": "abc123"}
     identifier_config: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Skip sending invoices from this supplier to Dext
+    skip_dext: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

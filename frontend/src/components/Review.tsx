@@ -62,6 +62,7 @@ interface Invoice {
   supplier_id: number | null
   supplier_name: string | null
   supplier_match_type: string | null  // "exact", "fuzzy", or null
+  supplier_skip_dext: boolean  // Whether supplier has skip_dext enabled
   vendor_name: string | null  // OCR-extracted vendor name
   status: string
   category: string | null
@@ -2438,7 +2439,7 @@ export default function Review() {
               disabled={hasLineItemErrors || updateMutation.isPending}
               title={hasLineItemErrors ? 'Fix line item validation errors before confirming' : ''}
             >
-              {invoice?.dext_sent_at ? 'CONFIRM' : 'CONFIRM & DEXT'}
+              {invoice?.dext_sent_at || invoice?.supplier_skip_dext ? 'CONFIRM' : 'CONFIRM & DEXT'}
             </button>
           </div>
 
@@ -2566,8 +2567,8 @@ export default function Review() {
                 flex: 1,
                 padding: '8px',
                 borderRadius: '4px',
-                border: `1px solid ${invoice.dext_sent_at ? '#c3e6cb' : '#ffc107'}`,
-                background: invoice.dext_sent_at ? '#d4edda' : '#fff3cd',
+                border: `1px solid ${invoice.supplier_skip_dext ? '#c3e6cb' : (invoice.dext_sent_at ? '#c3e6cb' : '#ffc107')}`,
+                background: invoice.supplier_skip_dext ? '#d4edda' : (invoice.dext_sent_at ? '#d4edda' : '#fff3cd'),
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -2575,13 +2576,13 @@ export default function Review() {
                 fontSize: '0.8rem'
               }}>
                 <div style={{ fontSize: '1.3rem', marginBottom: '2px' }}>
-                  {invoice.dext_sent_at ? '✓' : '⚠'}
+                  {invoice.supplier_skip_dext ? '−' : (invoice.dext_sent_at ? '✓' : '⚠')}
                 </div>
-                <div style={{ fontWeight: '600', color: invoice.dext_sent_at ? '#155724' : '#856404', marginBottom: '2px' }}>
+                <div style={{ fontWeight: '600', color: invoice.supplier_skip_dext ? '#155724' : (invoice.dext_sent_at ? '#155724' : '#856404'), marginBottom: '2px' }}>
                   Dext Status
                 </div>
-                <div style={{ fontSize: '0.7rem', color: invoice.dext_sent_at ? '#155724' : '#856404' }}>
-                  {invoice.dext_sent_at ? new Date(invoice.dext_sent_at).toLocaleDateString() : 'Not sent'}
+                <div style={{ fontSize: '0.7rem', color: invoice.supplier_skip_dext ? '#155724' : (invoice.dext_sent_at ? '#155724' : '#856404') }}>
+                  {invoice.supplier_skip_dext ? 'N/A (Skipped)' : (invoice.dext_sent_at ? new Date(invoice.dext_sent_at).toLocaleDateString() : 'Not sent')}
                 </div>
               </div>
             </div>
@@ -2639,7 +2640,7 @@ export default function Review() {
           <div style={{ marginTop: '15px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
             {/* Row 1: Resend to Dext | Delete | View OCR */}
             <div style={{ display: 'flex', gap: '10px' }}>
-              {(invoice.status === 'CONFIRMED' || invoice.status === 'REVIEWED') && settings?.dext_manual_send_enabled && (
+              {(invoice.status === 'CONFIRMED' || invoice.status === 'REVIEWED') && settings?.dext_manual_send_enabled && !invoice.supplier_skip_dext && (
                 <button
                   onClick={() => setShowDextSendConfirm(true)}
                   style={{
@@ -2713,23 +2714,25 @@ export default function Review() {
             {/* Row 2: Admin Only Manual Control Buttons */}
             {user?.is_admin && (
               <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  onClick={handleMarkDextSent}
-                  disabled={adminOperationInProgress}
-                  style={{
-                    padding: '0.4rem 1.2rem',
-                    fontSize: '0.8rem',
-                    background: adminOperationInProgress ? '#ccc' : '#17a2b8',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: adminOperationInProgress ? 'not-allowed' : 'pointer',
-                    minWidth: '140px',
-                    whiteSpace: 'nowrap'
-                  }}
-                >
-                  {adminOperationInProgress ? 'Processing...' : 'Mark Dext Sent'}
-                </button>
+                {!invoice.supplier_skip_dext && (
+                  <button
+                    onClick={handleMarkDextSent}
+                    disabled={adminOperationInProgress}
+                    style={{
+                      padding: '0.4rem 1.2rem',
+                      fontSize: '0.8rem',
+                      background: adminOperationInProgress ? '#ccc' : '#17a2b8',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: adminOperationInProgress ? 'not-allowed' : 'pointer',
+                      minWidth: '140px',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {adminOperationInProgress ? 'Processing...' : 'Mark Dext Sent'}
+                  </button>
+                )}
                 <button
                   onClick={handleReprocessOCR}
                   disabled={adminOperationInProgress}

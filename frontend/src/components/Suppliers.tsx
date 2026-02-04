@@ -8,6 +8,7 @@ interface Supplier {
   aliases: string[]
   template_config: Record<string, unknown>
   identifier_config: Record<string, unknown>
+  skip_dext: boolean
   created_at: string
 }
 
@@ -20,6 +21,7 @@ export default function Suppliers() {
   const [newName, setNewName] = useState('')
   const [newAliases, setNewAliases] = useState<string[]>([])
   const [aliasInput, setAliasInput] = useState('')
+  const [skipDext, setSkipDext] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
 
   const { data: suppliers, isLoading } = useQuery<Supplier[]>({
@@ -34,14 +36,14 @@ export default function Suppliers() {
   })
 
   const createMutation = useMutation({
-    mutationFn: async ({ name, aliases }: { name: string; aliases: string[] }) => {
+    mutationFn: async ({ name, aliases, skip_dext }: { name: string; aliases: string[]; skip_dext: boolean }) => {
       const res = await fetch('/api/suppliers/', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name, aliases }),
+        body: JSON.stringify({ name, aliases, skip_dext }),
       })
       if (!res.ok) throw new Error('Failed to create supplier')
       return res.json()
@@ -52,18 +54,19 @@ export default function Suppliers() {
       setNewName('')
       setNewAliases([])
       setAliasInput('')
+      setSkipDext(false)
     },
   })
 
   const updateMutation = useMutation({
-    mutationFn: async ({ id, name, aliases }: { id: number; name: string; aliases: string[] }) => {
+    mutationFn: async ({ id, name, aliases, skip_dext }: { id: number; name: string; aliases: string[]; skip_dext: boolean }) => {
       const res = await fetch(`/api/suppliers/${id}`, {
         method: 'PATCH',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name, aliases }),
+        body: JSON.stringify({ name, aliases, skip_dext }),
       })
       if (!res.ok) throw new Error('Failed to update supplier')
       return res.json()
@@ -74,6 +77,7 @@ export default function Suppliers() {
       setNewName('')
       setNewAliases([])
       setAliasInput('')
+      setSkipDext(false)
     },
   })
 
@@ -94,13 +98,13 @@ export default function Suppliers() {
 
   const handleAdd = () => {
     if (newName.trim()) {
-      createMutation.mutate({ name: newName.trim(), aliases: newAliases })
+      createMutation.mutate({ name: newName.trim(), aliases: newAliases, skip_dext: skipDext })
     }
   }
 
   const handleUpdate = () => {
     if (editingSupplier && newName.trim()) {
-      updateMutation.mutate({ id: editingSupplier.id, name: newName.trim(), aliases: newAliases })
+      updateMutation.mutate({ id: editingSupplier.id, name: newName.trim(), aliases: newAliases, skip_dext: skipDext })
     }
   }
 
@@ -109,6 +113,7 @@ export default function Suppliers() {
     setNewName(supplier.name)
     setNewAliases(supplier.aliases || [])
     setAliasInput('')
+    setSkipDext(supplier.skip_dext || false)
   }
 
   const addAlias = () => {
@@ -135,6 +140,7 @@ export default function Suppliers() {
     setNewName('')
     setNewAliases([])
     setAliasInput('')
+    setSkipDext(false)
   }
 
   const closeEditModal = () => {
@@ -142,6 +148,7 @@ export default function Suppliers() {
     setNewName('')
     setNewAliases([])
     setAliasInput('')
+    setSkipDext(false)
   }
 
   if (isLoading) {
@@ -174,7 +181,12 @@ export default function Suppliers() {
           {suppliers?.map((supplier) => (
             <div key={supplier.id} style={styles.card}>
               <div style={styles.cardMain}>
-                <span style={styles.supplierName}>{supplier.name}</span>
+                <span style={styles.supplierName}>
+                  {supplier.name}
+                  {supplier.skip_dext && (
+                    <span style={styles.skipDextBadge}>Skip Dext</span>
+                  )}
+                </span>
                 {supplier.aliases && supplier.aliases.length > 0 && (
                   <div style={styles.aliasesList}>
                     <span style={styles.aliasesLabel}>Also known as: </span>
@@ -255,6 +267,19 @@ export default function Suppliers() {
               )}
             </label>
 
+            <label style={styles.checkboxLabel}>
+              <input
+                type="checkbox"
+                checked={skipDext}
+                onChange={(e) => setSkipDext(e.target.checked)}
+                style={styles.checkbox}
+              />
+              <span>Don't Forward to Dext</span>
+              <span style={styles.checkboxHint}>
+                Invoices from this supplier won't be sent to Dext
+              </span>
+            </label>
+
             <div style={styles.modalActions}>
               <button onClick={closeAddModal} style={styles.cancelBtn}>
                 Cancel
@@ -318,6 +343,19 @@ export default function Suppliers() {
                   ))}
                 </div>
               )}
+            </label>
+
+            <label style={styles.checkboxLabel}>
+              <input
+                type="checkbox"
+                checked={skipDext}
+                onChange={(e) => setSkipDext(e.target.checked)}
+                style={styles.checkbox}
+              />
+              <span>Don't Forward to Dext</span>
+              <span style={styles.checkboxHint}>
+                Invoices from this supplier won't be sent to Dext
+              </span>
             </label>
 
             <div style={styles.modalActions}>
@@ -580,5 +618,37 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     fontSize: '0.9rem',
     marginTop: '0.5rem',
+  },
+  checkboxLabel: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginTop: '1.25rem',
+    padding: '1rem',
+    background: '#f8f9fa',
+    borderRadius: '8px',
+    cursor: 'pointer',
+  },
+  checkbox: {
+    width: '18px',
+    height: '18px',
+    cursor: 'pointer',
+  },
+  checkboxHint: {
+    width: '100%',
+    fontSize: '0.8rem',
+    color: '#666',
+    marginLeft: '26px',
+  },
+  skipDextBadge: {
+    display: 'inline-block',
+    fontSize: '0.7rem',
+    padding: '0.2rem 0.5rem',
+    background: '#28a745',
+    color: 'white',
+    borderRadius: '4px',
+    marginLeft: '0.5rem',
+    fontWeight: 'normal',
   },
 }

@@ -48,6 +48,7 @@ class SupplierCreate(BaseModel):
     aliases: list[str] = []
     template_config: dict = {}
     identifier_config: dict = {}
+    skip_dext: bool = False
 
 
 class SupplierUpdate(BaseModel):
@@ -55,6 +56,7 @@ class SupplierUpdate(BaseModel):
     aliases: Optional[list[str]] = None
     template_config: Optional[dict] = None
     identifier_config: Optional[dict] = None
+    skip_dext: Optional[bool] = None
 
 
 class SupplierResponse(BaseModel):
@@ -63,6 +65,7 @@ class SupplierResponse(BaseModel):
     aliases: list[str]
     template_config: dict
     identifier_config: dict
+    skip_dext: bool
     created_at: str
 
     class Config:
@@ -82,7 +85,8 @@ async def create_supplier(
         name=request.name,
         aliases=request.aliases,
         template_config=request.template_config,
-        identifier_config=request.identifier_config
+        identifier_config=request.identifier_config,
+        skip_dext=request.skip_dext
     )
     db.add(supplier)
     await db.commit()
@@ -97,6 +101,7 @@ async def create_supplier(
         aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
+        skip_dext=supplier.skip_dext,
         created_at=supplier.created_at.isoformat()
     )
 
@@ -121,6 +126,7 @@ async def list_suppliers(
             aliases=s.aliases or [],
             template_config=s.template_config,
             identifier_config=s.identifier_config,
+            skip_dext=s.skip_dext,
             created_at=s.created_at.isoformat()
         )
         for s in suppliers
@@ -151,6 +157,7 @@ async def get_supplier(
         aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
+        skip_dext=supplier.skip_dext,
         created_at=supplier.created_at.isoformat()
     )
 
@@ -191,6 +198,7 @@ async def update_supplier(
         aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
+        skip_dext=supplier.skip_dext,
         created_at=supplier.created_at.isoformat()
     )
 
@@ -279,6 +287,7 @@ async def add_supplier_alias(
         aliases=supplier.aliases or [],
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
+        skip_dext=supplier.skip_dext,
         created_at=supplier.created_at.isoformat()
     )
 
