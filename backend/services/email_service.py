@@ -38,14 +38,16 @@ class EmailService:
         to_email: str,
         subject: str,
         html_body: str,
+        plain_body: str = None,
         attachments: list[tuple[str, bytes]] = None
     ) -> bool:
-        """Send HTML email with optional attachments
+        """Send email with HTML and plain text versions plus optional attachments
 
         Args:
             to_email: Recipient email address
             subject: Email subject line
             html_body: HTML email body
+            plain_body: Plain text email body (optional, for clients that prefer plain text)
             attachments: List of (filename, file_bytes) tuples
 
         Returns:
@@ -57,9 +59,18 @@ class EmailService:
             msg['To'] = to_email
             msg['Subject'] = subject
 
-            # Attach HTML body
-            html_part = MIMEText(html_body, 'html')
-            msg.attach(html_part)
+            # Create alternative part for plain text and HTML
+            if plain_body:
+                alt_part = MIMEMultipart('alternative')
+                plain_part = MIMEText(plain_body, 'plain')
+                html_part = MIMEText(html_body, 'html')
+                alt_part.attach(plain_part)
+                alt_part.attach(html_part)
+                msg.attach(alt_part)
+            else:
+                # Just HTML body
+                html_part = MIMEText(html_body, 'html')
+                msg.attach(html_part)
 
             # Attach files
             if attachments:
@@ -126,6 +137,68 @@ class EmailService:
             return (False, f"SMTP error: {str(e)}")
         except Exception as e:
             return (False, f"Connection error: {str(e)}")
+
+
+def generate_dext_email_plain(
+    invoice,
+    supplier_name: str,
+    line_items: list,
+    notes: str | None,
+    include_notes: bool,
+    include_non_stock: bool
+) -> str:
+    """Generate plain text email body for Dext submission
+
+    Args:
+        invoice: Invoice object with invoice_number, invoice_date, total
+        supplier_name: Supplier name
+        line_items: List of LineItem objects
+        notes: Invoice notes
+        include_notes: Whether to include notes section
+        include_non_stock: Whether to include non-stock items table
+
+    Returns:
+        Plain text string
+    """
+    lines = []
+    lines.append("INVOICE SUBMISSION TO DEXT")
+    lines.append("=" * 40)
+    lines.append("")
+    lines.append("INVOICE DETAILS")
+    lines.append("-" * 20)
+    lines.append(f"Invoice Number: {invoice.invoice_number or 'N/A'}")
+    lines.append(f"Supplier: {supplier_name or 'Unknown'}")
+    lines.append(f"Date: {invoice.invoice_date.strftime('%d/%m/%Y') if invoice.invoice_date else 'N/A'}")
+    lines.append(f"Total Amount: £{(invoice.total if invoice.total else 0.0):.2f}")
+    lines.append("")
+
+    # Notes section (if enabled and notes exist)
+    if include_notes and notes:
+        lines.append("INVOICE NOTES")
+        lines.append("-" * 20)
+        lines.append(notes)
+        lines.append("")
+
+    # Non-stock items table (if enabled and non-stock items exist)
+    if include_non_stock:
+        non_stock_items = [item for item in line_items if item.is_non_stock]
+        if non_stock_items:
+            lines.append("NOTE: The attached PDF has yellow highlights on all non-stock items.")
+            lines.append("")
+            lines.append("NON-STOCK ITEMS")
+            lines.append("-" * 20)
+            lines.append(f"{'Code':<15} {'Description':<30} {'Qty':<8} {'Price':<10} {'Amount':<10}")
+            lines.append("-" * 73)
+            for item in non_stock_items:
+                code = (item.product_code or '')[:15]
+                desc = (item.description or '')[:30]
+                qty = str(item.quantity or '')[:8]
+                price = f"£{(item.unit_price if item.unit_price else 0.0):.2f}"
+                amount = f"£{(item.amount if item.amount else 0.0):.2f}"
+                lines.append(f"{code:<15} {desc:<30} {qty:<8} {price:<10} {amount:<10}")
+            lines.append("")
+
+    return "\n".join(lines)
 
 
 def generate_dext_email_html(

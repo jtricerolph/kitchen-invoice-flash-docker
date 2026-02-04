@@ -1441,6 +1441,110 @@ async def update_invoice(
         except Exception as e:
             logger.warning(f"Failed to auto-update PDF notes overlay: {e}")
 
+    # Auto-send to Dext when invoice is confirmed (if setting enabled)
+    if update_data.get("status") == "CONFIRMED":
+        try:
+            from models.settings import KitchenSettings
+            from services.email_service import EmailService, generate_dext_email_html, generate_dext_email_plain
+            from sqlalchemy.orm import selectinload
+
+            # Check if auto-send is enabled
+            settings_result = await db.execute(
+                select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+            )
+            settings = settings_result.scalar_one_or_none()
+
+            if settings and settings.dext_auto_send_enabled and settings.dext_email:
+                # Validate SMTP is configured
+                if settings.smtp_host and settings.smtp_from_email:
+                    # Load full invoice with line items and supplier
+                    invoice_result = await db.execute(
+                        select(Invoice).options(
+                            selectinload(Invoice.line_items),
+                            selectinload(Invoice.supplier)
+                        ).where(Invoice.id == invoice_id)
+                    )
+                    full_invoice = invoice_result.scalar_one_or_none()
+
+                    if full_invoice and full_invoice.image_path and os.path.exists(full_invoice.image_path):
+                        # Update PDF highlights if annotations enabled
+                        if settings.dext_include_annotations:
+                            try:
+                                from services.pdf_highlighter import PDFHighlighter, parse_azure_ocr_line_items
+                                import json
+
+                                ocr_data = json.loads(full_invoice.ocr_raw_json) if full_invoice.ocr_raw_json else {}
+                                ocr_line_items = parse_azure_ocr_line_items(ocr_data)
+
+                                if ocr_line_items:
+                                    non_stock_items = [item for item in full_invoice.line_items if item.is_non_stock]
+
+                                    import shutil
+                                    backup_path = full_invoice.image_path + '.original'
+                                    if not os.path.exists(backup_path):
+                                        shutil.copy2(full_invoice.image_path, backup_path)
+
+                                    highlighter = PDFHighlighter(full_invoice.image_path)
+                                    highlighter.highlight_items_with_ocr_data(
+                                        ocr_line_items=ocr_line_items,
+                                        non_stock_line_items=non_stock_items,
+                                        output_path=full_invoice.image_path,
+                                        notes=full_invoice.notes,
+                                        ocr_data=ocr_data
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Dext auto-send: PDF highlighting failed: {e}")
+
+                        # Read file
+                        with open(full_invoice.image_path, 'rb') as f:
+                            file_bytes = f.read()
+
+                        ext = full_invoice.image_path.split('.')[-1].lower()
+                        filename = f"{full_invoice.invoice_number or 'invoice'}_{full_invoice.invoice_date.strftime('%Y%m%d') if full_invoice.invoice_date else 'unknown'}.{ext}"
+
+                        supplier_name = full_invoice.supplier.name if full_invoice.supplier else None
+                        html_body = generate_dext_email_html(
+                            invoice=full_invoice,
+                            supplier_name=supplier_name,
+                            line_items=full_invoice.line_items,
+                            notes=full_invoice.notes,
+                            include_notes=settings.dext_include_notes,
+                            include_non_stock=settings.dext_include_non_stock
+                        )
+                        plain_body = generate_dext_email_plain(
+                            invoice=full_invoice,
+                            supplier_name=supplier_name,
+                            line_items=full_invoice.line_items,
+                            notes=full_invoice.notes,
+                            include_notes=settings.dext_include_notes,
+                            include_non_stock=settings.dext_include_non_stock
+                        )
+
+                        email_service = EmailService(settings)
+                        subject = f"Invoice {full_invoice.invoice_number or 'N/A'} - {supplier_name or 'Unknown Supplier'}"
+
+                        success = email_service.send_email(
+                            to_email=settings.dext_email,
+                            subject=subject,
+                            html_body=html_body,
+                            plain_body=plain_body,
+                            attachments=[(filename, file_bytes)]
+                        )
+
+                        if success:
+                            full_invoice.dext_sent_at = datetime.utcnow()
+                            full_invoice.dext_sent_by_user_id = current_user.id
+                            await db.commit()
+                            logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm")
+                        else:
+                            logger.warning(f"Dext auto-send failed for invoice {invoice_id}")
+                    else:
+                        logger.warning(f"Dext auto-send: Invoice file not found for {invoice_id}")
+                else:
+                    logger.debug("Dext auto-send: SMTP not configured")
+        except Exception as e:
+            logger.warning(f"Dext auto-send failed: {e}")
+
     return invoice_to_response(invoice)
 
 
@@ -2579,8 +2683,17 @@ async def send_invoice_to_dext(
     ext = invoice.image_path.split('.')[-1].lower()
     filename = f"{invoice.invoice_number or 'invoice'}_{invoice.invoice_date.strftime('%Y%m%d') if invoice.invoice_date else 'unknown'}.{ext}"
 
-    # Generate email HTML
+    # Generate email HTML and plain text
+    from services.email_service import generate_dext_email_plain
     html_body = generate_dext_email_html(
+        invoice=invoice,
+        supplier_name=invoice.supplier.name if invoice.supplier else None,
+        line_items=invoice.line_items,
+        notes=invoice.notes,
+        include_notes=settings.dext_include_notes,
+        include_non_stock=settings.dext_include_non_stock
+    )
+    plain_body = generate_dext_email_plain(
         invoice=invoice,
         supplier_name=invoice.supplier.name if invoice.supplier else None,
         line_items=invoice.line_items,
@@ -2597,6 +2710,7 @@ async def send_invoice_to_dext(
         to_email=settings.dext_email,
         subject=subject,
         html_body=html_body,
+        plain_body=plain_body,
         attachments=[(filename, file_bytes)]
     )
 
