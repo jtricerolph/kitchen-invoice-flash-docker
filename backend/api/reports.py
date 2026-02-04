@@ -668,15 +668,19 @@ async def get_monthly_purchases(
         else:
             gross_stock = net_stock
 
-        # Credit notes are negative purchases
+        # Credit notes are negative purchases - but only negate if values are positive
+        # Some suppliers already use negative values on credit note line items
         if inv.document_type == 'credit_note':
-            net_stock = -net_stock
-            gross_stock = -gross_stock
+            if net_stock > 0:
+                net_stock = -net_stock
+            if gross_stock > 0:
+                gross_stock = -gross_stock
 
         return net_stock, gross_stock
 
     # Build invoice data with stock values
     # Also negate total and net_total for credit notes so frontend sums work correctly
+    # Only negate if values are positive (some suppliers already use negative values)
     invoice_data = {}
     for inv in invoices:
         net_stock, gross_stock = calc_stock_values(inv)
@@ -687,8 +691,8 @@ async def get_monthly_purchases(
             "date": inv_date,
             "net_stock": net_stock,
             "gross_stock": gross_stock,
-            "total": -inv.total if is_credit and inv.total else inv.total,
-            "net_total": -inv.net_total if is_credit and inv.net_total else inv.net_total,
+            "total": -inv.total if is_credit and inv.total and inv.total > 0 else inv.total,
+            "net_total": -inv.net_total if is_credit and inv.net_total and inv.net_total > 0 else inv.net_total,
         }
 
     # Organize by supplier
@@ -872,15 +876,19 @@ async def get_purchases_by_range(
         else:
             gross_stock = net_stock
 
-        # Credit notes are negative purchases
+        # Credit notes are negative purchases - but only negate if values are positive
+        # Some suppliers already use negative values on credit note line items
         if inv.document_type == 'credit_note':
-            net_stock = -net_stock
-            gross_stock = -gross_stock
+            if net_stock > 0:
+                net_stock = -net_stock
+            if gross_stock > 0:
+                gross_stock = -gross_stock
 
         return net_stock, gross_stock
 
     # Build invoice data with stock values
     # Also negate total and net_total for credit notes so frontend sums work correctly
+    # Only negate if values are positive (some suppliers already use negative values)
     invoice_data = {}
     for inv in invoices:
         net_stock, gross_stock = calc_stock_values(inv)
@@ -891,8 +899,8 @@ async def get_purchases_by_range(
             "date": inv_date,
             "net_stock": net_stock,
             "gross_stock": gross_stock,
-            "total": -inv.total if is_credit and inv.total else inv.total,
-            "net_total": -inv.net_total if is_credit and inv.net_total else inv.net_total,
+            "total": -inv.total if is_credit and inv.total and inv.total > 0 else inv.total,
+            "net_total": -inv.net_total if is_credit and inv.net_total and inv.net_total > 0 else inv.net_total,
         }
 
     # Organize by supplier
