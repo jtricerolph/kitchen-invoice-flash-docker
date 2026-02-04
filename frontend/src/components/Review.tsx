@@ -820,7 +820,13 @@ export default function Review() {
         },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to update')
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        const errorMessage = errorData.detail?.message || errorData.detail || 'Failed to update'
+        const error = new Error(errorMessage) as Error & { code?: string }
+        error.code = errorData.detail?.error
+        throw error
+      }
       return res.json()
     },
     onSuccess: () => {
@@ -1032,8 +1038,24 @@ export default function Review() {
       return
     }
 
-    await handleSave('CONFIRMED')
-    navigate('/invoices')
+    // Check for invoice date before confirming
+    if (!invoiceDate) {
+      alert(
+        `Cannot confirm invoice without a date.\n\n` +
+        `Please set the invoice date before confirming.\n\n` +
+        `Invoices without dates cannot be found in date-filtered views.`
+      )
+      return
+    }
+
+    try {
+      await handleSave('CONFIRMED')
+      navigate('/invoices')
+    } catch (error) {
+      // Handle any validation errors from the backend
+      const message = error instanceof Error ? error.message : 'Failed to confirm invoice'
+      alert(message)
+    }
   }
 
   const handleDelete = () => {
