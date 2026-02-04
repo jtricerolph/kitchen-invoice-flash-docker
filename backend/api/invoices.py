@@ -1418,25 +1418,25 @@ async def update_invoice(
                     ocr_data = json.loads(full_invoice.ocr_raw_json)
                     ocr_line_items = parse_azure_ocr_line_items(ocr_data)
 
-                    if ocr_line_items:
-                        non_stock_items = [item for item in full_invoice.line_items if item.is_non_stock]
+                    non_stock_items = [item for item in full_invoice.line_items if item.is_non_stock]
 
-                        # Create backup if doesn't exist (safety measure)
-                        import shutil
-                        backup_path = full_invoice.image_path + '.original'
-                        if not os.path.exists(backup_path):
-                            shutil.copy2(full_invoice.image_path, backup_path)
+                    # Create backup if doesn't exist (safety measure)
+                    import shutil
+                    backup_path = full_invoice.image_path + '.original'
+                    if not os.path.exists(backup_path):
+                        shutil.copy2(full_invoice.image_path, backup_path)
 
-                        # Regenerate all highlights/notes (clears existing annotations first)
-                        highlighter = PDFHighlighter(full_invoice.image_path)
-                        highlighter.highlight_items_with_ocr_data(
-                            ocr_line_items=ocr_line_items,
-                            non_stock_line_items=non_stock_items,
-                            output_path=full_invoice.image_path,
-                            notes=full_invoice.notes,
-                            ocr_data=ocr_data
-                        )
-                        logger.info(f"Auto-updated PDF notes overlay: notes={'updated' if full_invoice.notes else 'cleared'}")
+                    # Regenerate all highlights/notes (clears existing annotations first)
+                    # This works even with empty ocr_line_items - notes overlay still gets added
+                    highlighter = PDFHighlighter(full_invoice.image_path)
+                    highlighter.highlight_items_with_ocr_data(
+                        ocr_line_items=ocr_line_items,
+                        non_stock_line_items=non_stock_items,
+                        output_path=full_invoice.image_path,
+                        notes=full_invoice.notes,
+                        ocr_data=ocr_data
+                    )
+                    logger.info(f"Auto-updated PDF notes overlay: notes={'updated' if full_invoice.notes else 'cleared'}")
 
         except Exception as e:
             logger.warning(f"Failed to auto-update PDF notes overlay: {e}")
@@ -1843,25 +1843,25 @@ async def update_line_item(
                     ocr_data = json.loads(invoice.ocr_raw_json)
                     ocr_line_items = parse_azure_ocr_line_items(ocr_data)
 
-                    if ocr_line_items:
-                        non_stock_items = [item for item in invoice.line_items if item.is_non_stock]
+                    non_stock_items = [item for item in invoice.line_items if item.is_non_stock]
 
-                        # Create backup if doesn't exist (safety measure)
-                        import shutil
-                        backup_path = invoice.image_path + '.original'
-                        if not os.path.exists(backup_path):
-                            shutil.copy2(invoice.image_path, backup_path)
+                    # Create backup if doesn't exist (safety measure)
+                    import shutil
+                    backup_path = invoice.image_path + '.original'
+                    if not os.path.exists(backup_path):
+                        shutil.copy2(invoice.image_path, backup_path)
 
-                        # Regenerate all highlights (clears existing, adds for current non-stock items)
-                        highlighter = PDFHighlighter(invoice.image_path)
-                        highlighter.highlight_items_with_ocr_data(
-                            ocr_line_items=ocr_line_items,
-                            non_stock_line_items=non_stock_items,
-                            output_path=invoice.image_path,
-                            notes=invoice.notes,
-                            ocr_data=ocr_data
-                        )
-                        logger.info(f"Auto-updated PDF highlights: {len(non_stock_items)} non-stock items")
+                    # Regenerate all highlights (clears existing, adds for current non-stock items)
+                    # Works even with empty ocr_line_items - notes overlay still preserved
+                    highlighter = PDFHighlighter(invoice.image_path)
+                    highlighter.highlight_items_with_ocr_data(
+                        ocr_line_items=ocr_line_items,
+                        non_stock_line_items=non_stock_items,
+                        output_path=invoice.image_path,
+                        notes=invoice.notes,
+                        ocr_data=ocr_data
+                    )
+                    logger.info(f"Auto-updated PDF highlights: {len(non_stock_items)} non-stock items")
 
         except Exception as e:
             logger.warning(f"Failed to auto-update PDF highlights: {e}")
