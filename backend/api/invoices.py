@@ -2913,6 +2913,49 @@ async def mark_dext_sent(
     }
 
 
+@router.post("/bulk/mark-all-dext-sent")
+async def mark_all_dext_sent(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Admin only: Mark all invoices not yet sent to Dext as sent without actually sending.
+
+    Useful for migrating to the system or for invoices sent outside the system.
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    from datetime import datetime
+    from sqlalchemy import update
+
+    now = datetime.utcnow()
+
+    # Update all invoices where dext_sent_at is null
+    result = await db.execute(
+        update(Invoice)
+        .where(
+            Invoice.kitchen_id == current_user.kitchen_id,
+            Invoice.dext_sent_at.is_(None)
+        )
+        .values(
+            dext_sent_at=now,
+            dext_sent_by_user_id=current_user.id
+        )
+    )
+
+    updated_count = result.rowcount
+    await db.commit()
+
+    logger.info(f"Bulk marked {updated_count} invoices as sent to Dext for kitchen {current_user.kitchen_id}")
+
+    return {
+        "message": f"Marked {updated_count} invoice(s) as sent to Dext",
+        "count": updated_count,
+        "marked_at": now.isoformat()
+    }
+
+
 @router.post("/{invoice_id}/reprocess")
 async def reprocess_invoice(
     invoice_id: int,

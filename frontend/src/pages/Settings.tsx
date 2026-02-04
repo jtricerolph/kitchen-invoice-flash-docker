@@ -3118,6 +3118,43 @@ export default function Settings() {
                 {dextSaveMessage}
               </div>
             )}
+
+            {/* Bulk Mark as Sent Block */}
+            <div style={{ ...styles.settingsBlock, marginTop: '2rem', borderTop: '1px solid #ddd', paddingTop: '1.5rem' }}>
+              <h3 style={styles.blockTitle}>Bulk Operations</h3>
+              <p style={styles.hint}>Mark all existing invoices as sent to Dext without actually sending them. Useful for migrating to the system.</p>
+              <button
+                onClick={async () => {
+                  if (!window.confirm(
+                    'Mark ALL invoices not yet sent to Dext as sent?\n\n' +
+                    'This will mark all existing unsent invoices as already sent to Dext.\n\n' +
+                    'Use this when migrating to the system or if invoices were sent outside the system.\n\n' +
+                    'This action cannot be undone.'
+                  )) {
+                    return
+                  }
+                  try {
+                    const res = await fetch('/api/invoices/bulk/mark-all-dext-sent', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` }
+                    })
+                    if (res.ok) {
+                      const result = await res.json()
+                      setDextSaveMessage(`✓ ${result.message}`)
+                      setTimeout(() => setDextSaveMessage(null), 5000)
+                    } else {
+                      const error = await res.json()
+                      setDextSaveMessage(`Error: ${error.detail || 'Failed to mark invoices'}`)
+                    }
+                  } catch (err) {
+                    setDextSaveMessage(`Error: ${err}`)
+                  }
+                }}
+                style={{ ...styles.saveBtn, background: '#6c757d' }}
+              >
+                Mark All Invoices as Sent to Dext
+              </button>
+            </div>
           </div>
         )}
 
