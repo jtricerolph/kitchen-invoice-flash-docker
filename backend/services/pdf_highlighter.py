@@ -103,6 +103,59 @@ def parse_azure_ocr_line_items(ocr_raw_json: Dict[str, Any]) -> List[Dict[str, A
     return result
 
 
+def parse_azure_ocr_key_fields(ocr_raw_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Parse Azure Document Intelligence OCR JSON to extract key invoice fields with bounding regions.
+
+    These are the important fields that should NOT be covered by the notes overlay:
+    - VendorName (supplier)
+    - InvoiceDate
+    - SubTotal (net total)
+    - TotalTax
+    - InvoiceTotal (gross total)
+    - AmountDue
+
+    Args:
+        ocr_raw_json: Raw OCR JSON from Azure Document Intelligence
+
+    Returns:
+        List of field info with name and bounding_regions
+    """
+    result = []
+
+    # Key fields that should not be covered
+    key_field_names = [
+        'VendorName', 'VendorAddress', 'CustomerName', 'CustomerAddress',
+        'InvoiceDate', 'DueDate', 'PurchaseOrder',
+        'SubTotal', 'TotalTax', 'InvoiceTotal', 'AmountDue',
+        'InvoiceId', 'BillingAddress', 'ShippingAddress'
+    ]
+
+    try:
+        documents = ocr_raw_json.get('documents', [])
+        if not documents:
+            return result
+
+        fields = documents[0].get('fields', {})
+
+        for field_name in key_field_names:
+            field = fields.get(field_name, {})
+            bounding_regions = field.get('bounding_regions', [])
+
+            if bounding_regions:
+                result.append({
+                    'field_name': field_name,
+                    'bounding_regions': bounding_regions
+                })
+                logger.debug(f"Found key OCR field: {field_name} with {len(bounding_regions)} regions")
+
+    except Exception as e:
+        logger.warning(f"Failed to parse Azure OCR key fields: {e}")
+
+    logger.debug(f"Parsed {len(result)} key fields from Azure OCR data")
+    return result
+
+
 class PDFHighlighter:
     """Service for adding highlight annotations to PDFs using OCR coordinate data."""
 
@@ -546,15 +599,16 @@ class PDFHighlighter:
         """
         Find a clear rectangular area on the page that doesn't overlap with content.
 
-        Uses PyMuPDF's native text extraction which is more accurate than OCR JSON
-        for finding actual text positions in the PDF.
+        Uses both PyMuPDF's native text extraction AND Azure OCR key field bounding
+        regions to ensure we don't cover important invoice data like supplier name,
+        date, net total, gross total, etc.
 
         Box dimensions scale proportionally with page size for consistent appearance
         on both standard PDFs and photo-based PDFs.
 
         Args:
             page: The PDF page
-            ocr_data: Full OCR JSON data (kept for compatibility, but not used)
+            ocr_data: Full OCR JSON data with key field bounding regions
             page_number: 0-indexed page number
 
         Returns:
@@ -572,8 +626,29 @@ class PDFHighlighter:
         margin = max(15, int(15 * scale_factor))
 
         # Use PyMuPDF's native text extraction to find occupied areas
-        # This is more accurate than OCR JSON data
+        # This is more accurate than OCR JSON data for native PDFs
         occupied_rects = self._get_text_regions_from_pdf(page)
+
+        # Also add key invoice field regions from Azure OCR data
+        # This ensures we don't cover important fields like supplier, date, totals
+        if ocr_data:
+            key_fields = parse_azure_ocr_key_fields(ocr_data)
+            for field in key_fields:
+                for region in field.get('bounding_regions', []):
+                    # Only add regions on the current page
+                    if region.get('page_number', 1) - 1 == page_number:
+                        polygon = region.get('polygon', [])
+                        if polygon and len(polygon) >= 4:
+                            rect = self._polygon_to_rect(polygon)
+                            if rect and not rect.is_empty:
+                                # Add padding around key fields to ensure they're not covered
+                                padding = 10 * scale_factor
+                                padded_rect = fitz.Rect(
+                                    rect.x0 - padding, rect.y0 - padding,
+                                    rect.x1 + padding, rect.y1 + padding
+                                )
+                                occupied_rects.append(padded_rect)
+                                logger.debug(f"Added OCR key field '{field['field_name']}' to occupied regions")
 
         # For very wide pages (scans, landscape), constrain to visible area
         # Scale the max visible width proportionally
