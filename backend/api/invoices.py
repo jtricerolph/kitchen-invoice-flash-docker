@@ -1548,17 +1548,29 @@ async def update_invoice(
                         if success:
                             # Update dext status in database
                             now = datetime.utcnow()
+                            logger.info(f"Dext auto-send success, updating dext_sent_at for invoice {invoice_id}")
+
                             # Use raw SQL update to ensure it's committed properly
                             from sqlalchemy import update as sql_update
-                            await db.execute(
+                            update_result = await db.execute(
                                 sql_update(Invoice)
                                 .where(Invoice.id == invoice_id)
                                 .values(dext_sent_at=now, dext_sent_by_user_id=current_user.id)
                             )
+                            logger.info(f"SQL update affected {update_result.rowcount} rows")
                             await db.commit()
-                            # Refresh the invoice object to get the updated values
-                            await db.refresh(invoice)
-                            logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm, dext_sent_at={invoice.dext_sent_at}")
+
+                            # Verify the update by querying fresh
+                            verify_result = await db.execute(
+                                select(Invoice.dext_sent_at).where(Invoice.id == invoice_id)
+                            )
+                            verified_value = verify_result.scalar_one_or_none()
+                            logger.info(f"Verified dext_sent_at in DB: {verified_value}")
+
+                            # Update the invoice object for the response
+                            invoice.dext_sent_at = now
+                            invoice.dext_sent_by_user_id = current_user.id
+                            logger.info(f"Auto-sent invoice {invoice_id} to Dext on confirm, invoice.dext_sent_at={invoice.dext_sent_at}")
                         else:
                             logger.warning(f"Dext auto-send failed for invoice {invoice_id}")
                     else:
