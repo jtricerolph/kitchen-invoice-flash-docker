@@ -312,7 +312,7 @@ class ResosStatsService:
                     ResosBooking.kitchen_id == self.kitchen_id,
                     ResosBooking.booking_date >= from_date,
                     ResosBooking.booking_date <= to_date,
-                    ResosBooking.status.in_(['seated', 'left', 'arrived']),  # Only completed bookings
+                    func.lower(ResosBooking.status).in_(['seated', 'left', 'arrived']),  # Only completed bookings
                     ResosBooking.table_name.isnot(None)  # Must have table assignment
                 )
             )

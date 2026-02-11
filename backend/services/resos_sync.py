@@ -511,7 +511,7 @@ class ResosSyncService:
                     booking_date=booking_date,
                     booking_time=booking_time,
                     people=booking_data.get('people', 0),
-                    status=booking_data.get('status', 'unknown'),
+                    status=booking_data.get('status', 'unknown').lower(),
                     seating_area=booking_data.get('area'),
                     table_name=table_name,
                     hotel_booking_number=custom_fields.get('hotel_booking_number'),
@@ -607,7 +607,7 @@ class ResosSyncService:
                     ResosBooking.kitchen_id == self.kitchen_id,
                     ResosBooking.booking_date >= date_from,
                     ResosBooking.booking_date <= date_to,
-                    ~ResosBooking.status.in_(['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected'])
+                    ~func.lower(ResosBooking.status).in_(['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected'])
                 )
             ).group_by(
                 ResosBooking.booking_date,
@@ -690,7 +690,7 @@ class ResosSyncService:
                     and_(
                         ResosBooking.kitchen_id == self.kitchen_id,
                         ResosBooking.booking_date == booking_date,
-                        ~ResosBooking.status.in_(['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected'])
+                        ~func.lower(ResosBooking.status).in_(['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected'])
                     )
                 ).order_by(ResosBooking.booking_time)
             )
@@ -756,6 +756,31 @@ class ResosSyncService:
             )
 
             await self.db.execute(stmt)
+
+        # Clean up stale daily stats for dates in range that no longer have valid bookings
+        # (e.g. all bookings for a date were cancelled - daily_data won't have an entry,
+        # so the old stats row with inflated counts would persist)
+        dates_with_bookings = set(daily_data.keys())
+        existing_stats = await self.db.execute(
+            select(ResosDailyStats.date).where(
+                and_(
+                    ResosDailyStats.kitchen_id == self.kitchen_id,
+                    ResosDailyStats.date >= date_from,
+                    ResosDailyStats.date <= date_to
+                )
+            )
+        )
+        for row in existing_stats:
+            if row.date not in dates_with_bookings:
+                await self.db.execute(
+                    delete(ResosDailyStats).where(
+                        and_(
+                            ResosDailyStats.kitchen_id == self.kitchen_id,
+                            ResosDailyStats.date == row.date
+                        )
+                    )
+                )
+                logger.info(f"Removed stale daily stats for {row.date} (no valid bookings remaining)")
 
         await self.db.commit()
 

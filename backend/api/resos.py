@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, Date, case
+from sqlalchemy import select, and_, func, Date, case, or_
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -543,7 +543,7 @@ async def get_bookings_for_date(
             and_(
                 ResosBooking.kitchen_id == current_user.kitchen_id,
                 ResosBooking.booking_date == booking_date,
-                ~ResosBooking.status.in_(excluded_statuses)
+                ~func.lower(ResosBooking.status).in_(excluded_statuses)
             )
         ).order_by(ResosBooking.booking_time)
     )
@@ -667,7 +667,7 @@ async def get_bookings_stats(
                 ResosBooking.kitchen_id == current_user.kitchen_id,
                 ResosBooking.booking_date >= from_date,
                 ResosBooking.booking_date <= to_date,
-                ResosBooking.status.in_(['seated', 'left', 'arrived', 'confirmed', 'approved'])
+                func.lower(ResosBooking.status).in_(['seated', 'left', 'arrived', 'confirmed', 'approved'])
             )
         )
     )
@@ -687,7 +687,7 @@ async def get_bookings_stats(
                 ResosBooking.kitchen_id == current_user.kitchen_id,
                 ResosBooking.booking_date >= from_date,
                 ResosBooking.booking_date <= to_date,
-                ResosBooking.status.in_(['seated', 'left', 'arrived', 'confirmed', 'approved'])
+                func.lower(ResosBooking.status).in_(['seated', 'left', 'arrived', 'confirmed', 'approved'])
             )
         )
     )
