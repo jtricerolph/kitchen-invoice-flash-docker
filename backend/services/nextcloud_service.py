@@ -33,7 +33,7 @@ class NextcloudService:
         self.host = host.rstrip('/') if host else ""
         self.username = username or ""
         self.password = password or ""
-        self.base_path = (base_path or "/Kitchen Invoices").strip('/')
+        self.base_path = (base_path if base_path is not None else "/Kitchen Invoices").strip('/')
 
         # WebDAV endpoint
         self.webdav_url = f"{self.host}/remote.php/dav/files/{self.username}" if self.host and self.username else ""
