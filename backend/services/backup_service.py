@@ -19,6 +19,7 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 from typing import Tuple, Optional, List
+from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -33,12 +34,21 @@ from services.nextcloud_service import NextcloudService
 
 logger = logging.getLogger(__name__)
 
-# Database connection settings (from environment)
-DB_HOST = os.getenv("DATABASE_HOST", "db")
-DB_PORT = os.getenv("DATABASE_PORT", "5432")
-DB_NAME = os.getenv("DATABASE_NAME", "kitchen_gp")
-DB_USER = os.getenv("DATABASE_USER", "kitchen")
-DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "kitchen_secret")
+# Database connection settings - parse from DATABASE_URL if available
+_db_url = os.getenv("DATABASE_URL", "")
+if _db_url:
+    _parsed = urlparse(_db_url)
+    DB_HOST = _parsed.hostname or "db"
+    DB_PORT = str(_parsed.port or 5432)
+    DB_NAME = (_parsed.path or "/kitchen_gp").lstrip('/')
+    DB_USER = _parsed.username or "kitchen"
+    DB_PASSWORD = _parsed.password or "kitchen_secret"
+else:
+    DB_HOST = os.getenv("DATABASE_HOST", "db")
+    DB_PORT = os.getenv("DATABASE_PORT", "5432")
+    DB_NAME = os.getenv("DATABASE_NAME", "kitchen_gp")
+    DB_USER = os.getenv("DATABASE_USER", "kitchen")
+    DB_PASSWORD = os.getenv("DATABASE_PASSWORD", "kitchen_secret")
 
 # Local backup directory (inside persisted data volume)
 LOCAL_BACKUP_DIR = "/app/data/backups"
@@ -397,10 +407,16 @@ class BackupService:
                     )
 
                     with open(backup_zip_path, 'rb') as f:
+                        file_content = f.read()
+                        size_mb = len(file_content) / (1024 * 1024)
+                        # 10 min timeout for backups (large ZIP files)
+                        upload_timeout = max(600, size_mb * 10)  # At least 10 min, or 10s per MB
+                        logger.info(f"Uploading backup to Nextcloud: {backup.filename} ({size_mb:.1f} MB, timeout={upload_timeout:.0f}s)")
                         success, result = await nc.upload_file(
-                            f.read(),
+                            file_content,
                             backup_path,
-                            backup.filename
+                            backup.filename,
+                            timeout=upload_timeout
                         )
                     await nc.close()
 

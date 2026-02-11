@@ -41,8 +41,20 @@ class NextcloudService:
         # Create async HTTP client - will be initialized when needed
         self._client: Optional[httpx.AsyncClient] = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the async HTTP client"""
+    async def _get_client(self, upload_timeout: Optional[float] = None) -> httpx.AsyncClient:
+        """Get or create the async HTTP client.
+
+        Args:
+            upload_timeout: If provided, creates a new client with this write timeout
+                          (for large file uploads like backups). Otherwise uses default.
+        """
+        if upload_timeout is not None:
+            # Return a separate client with extended timeout for large uploads
+            return httpx.AsyncClient(
+                auth=(self.username, self.password),
+                timeout=httpx.Timeout(60.0, write=upload_timeout, read=upload_timeout),
+                follow_redirects=True
+            )
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 auth=(self.username, self.password),
@@ -198,7 +210,8 @@ class NextcloudService:
         self,
         file_content: bytes,
         directory_path: str,
-        filename: str
+        filename: str,
+        timeout: Optional[float] = None
     ) -> Tuple[bool, str]:
         """
         Upload file to Nextcloud.
@@ -207,6 +220,7 @@ class NextcloudService:
             file_content: File bytes
             directory_path: Directory path (relative to base_path)
             filename: Target filename
+            timeout: Optional extended timeout in seconds for large files
 
         Returns:
             (success, full_webdav_path or error_message)
@@ -214,6 +228,7 @@ class NextcloudService:
         if not self.host or not self.username:
             return (False, "Nextcloud not configured")
 
+        upload_client = None
         try:
             # Ensure directory exists
             if not await self.ensure_directory(directory_path):
@@ -223,19 +238,34 @@ class NextcloudService:
             full_path = f"{self.base_path}/{directory_path}/{filename}".strip('/')
             url = f"{self.webdav_url}/{full_path}"
 
-            # Upload file
-            client = await self._get_client()
+            size_mb = len(file_content) / (1024 * 1024)
+            logger.info(f"Uploading {size_mb:.1f} MB to Nextcloud: {full_path}")
+
+            # Use extended timeout for large files
+            if timeout:
+                upload_client = await self._get_client(upload_timeout=timeout)
+                client = upload_client
+            else:
+                client = await self._get_client()
+
             response = await client.put(url, content=file_content)
 
             if response.status_code in (201, 204):  # Created or No Content (overwritten)
-                logger.info(f"Uploaded file to Nextcloud: {full_path}")
+                logger.info(f"Uploaded file to Nextcloud: {full_path} ({size_mb:.1f} MB)")
                 return (True, full_path)
             else:
                 return (False, f"Upload failed: HTTP {response.status_code}")
 
+        except httpx.TimeoutException as e:
+            size_mb = len(file_content) / (1024 * 1024)
+            logger.error(f"Nextcloud upload timed out for {filename} ({size_mb:.1f} MB): {type(e).__name__}")
+            return (False, f"Upload timed out ({size_mb:.1f} MB file) - try increasing timeout or check connection speed")
         except Exception as e:
-            logger.error(f"Nextcloud upload error: {e}")
-            return (False, str(e))
+            logger.error(f"Nextcloud upload error for {filename}: {type(e).__name__}: {e}")
+            return (False, f"{type(e).__name__}: {e}" if str(e) else type(e).__name__)
+        finally:
+            if upload_client and not upload_client.is_closed:
+                await upload_client.aclose()
 
     async def download_file(self, path: str) -> Tuple[bool, bytes | str]:
         """
