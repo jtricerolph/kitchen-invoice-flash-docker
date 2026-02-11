@@ -386,22 +386,15 @@ export default function Budget() {
               <tr style={styles.footerRow}>
                 <td style={styles.footerLabel}>% of Budget</td>
                 {budgetData.daily_data.map((d) => {
-                  // If no budget for the day (closed), show "-"
-                  // If budget exists, calculate percentage
-                  if (d.revenue_budget === 0 || d.revenue_budget === null) {
+                  if (d.actual_spent === null || budgetData.total_budget === 0) {
                     return <td key={d.date} style={styles.footerTd}>-</td>
                   }
 
-                  const pct = d.actual_spent !== null
-                    ? (d.actual_spent / d.revenue_budget * 100)
-                    : 0
+                  const pct = (d.actual_spent / budgetData.total_budget * 100)
 
                   return (
-                    <td key={d.date} style={{
-                      ...styles.footerTd,
-                      ...(pct > 100 ? styles.overBudget : {})
-                    }}>
-                      {d.actual_spent !== null ? `${pct.toFixed(0)}%` : '-'}
+                    <td key={d.date} style={styles.footerTd}>
+                      {d.actual_spent === 0 ? '0%' : `${pct.toFixed(0)}%`}
                     </td>
                   )
                 })}

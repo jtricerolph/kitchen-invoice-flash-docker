@@ -366,6 +366,10 @@ async def get_weekly_invoices_by_supplier(
         if inv.document_type == 'credit_note' and net_stock > 0:
             net_stock = -net_stock
 
+        # Skip invoices with no stock value (non-stock only invoices)
+        if net_stock == 0:
+            continue
+
         # Get supplier key
         if inv.supplier_id:
             supplier_name = suppliers_map.get(inv.supplier_id, "Unknown")
