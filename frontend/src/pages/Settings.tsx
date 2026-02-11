@@ -102,7 +102,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -372,6 +372,14 @@ export default function Settings() {
   const [kdsTestStatus, setKdsTestStatus] = useState<string | null>(null)
   const [kdsSaveMessage, setKdsSaveMessage] = useState<string | null>(null)
 
+  // Budget/Forecast API state
+  const [forecastApiUrl, setForecastApiUrl] = useState('')
+  const [forecastApiKey, setForecastApiKey] = useState('')
+  const [budgetGpTarget, setBudgetGpTarget] = useState('65.00')
+  const [budgetLookbackWeeks, setBudgetLookbackWeeks] = useState(4)
+  const [budgetTestStatus, setBudgetTestStatus] = useState<string | null>(null)
+  const [budgetSaveMessage, setBudgetSaveMessage] = useState<string | null>(null)
+
   // Nextcloud state
   const [nextcloudHost, setNextcloudHost] = useState('')
   const [nextcloudUsername, setNextcloudUsername] = useState('')
@@ -591,6 +599,26 @@ export default function Settings() {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch KDS settings')
+      return res.json()
+    },
+    enabled: !!token,
+  })
+
+  // Fetch Budget settings
+  interface BudgetSettingsData {
+    forecast_api_url: string | null
+    forecast_api_configured: boolean
+    budget_gp_target: number
+    budget_lookback_weeks: number
+  }
+
+  const { data: budgetSettings } = useQuery<BudgetSettingsData>({
+    queryKey: ['budget-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/budget/settings', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch Budget settings')
       return res.json()
     },
     enabled: !!token,
@@ -860,6 +888,15 @@ export default function Settings() {
       setKdsBookingsRefresh(kdsSettings.kds_bookings_refresh_seconds || 60)
     }
   }, [kdsSettings])
+
+  // Populate Budget form from settings
+  useEffect(() => {
+    if (budgetSettings) {
+      setForecastApiUrl(budgetSettings.forecast_api_url || '')
+      setBudgetGpTarget(String(budgetSettings.budget_gp_target || 65))
+      setBudgetLookbackWeeks(budgetSettings.budget_lookback_weeks || 4)
+    }
+  }, [budgetSettings])
 
   useEffect(() => {
     if (resosSettings) {
@@ -1491,6 +1528,55 @@ export default function Settings() {
     },
   })
 
+  // Budget/Forecast API mutations
+  const saveBudgetMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await fetch('/api/budget/settings', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to save Budget settings')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['budget-settings'] })
+      setBudgetSaveMessage('Budget settings saved successfully')
+      setForecastApiKey('')
+      setTimeout(() => setBudgetSaveMessage(null), 3000)
+    },
+    onError: (error) => {
+      setBudgetSaveMessage(`Error: ${error.message}`)
+    },
+  })
+
+  const budgetTestMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/budget/test-forecast-connection', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (!data.success) {
+        throw new Error(data.message || 'Connection test failed')
+      }
+      return data
+    },
+    onSuccess: (data) => {
+      setBudgetTestStatus(data.message)
+      setTimeout(() => setBudgetTestStatus(null), 5000)
+    },
+    onError: (error) => {
+      setBudgetTestStatus(`Error: ${error.message}`)
+    },
+  })
+
   // Nextcloud mutations
   const saveNextcloudMutation = useMutation({
     mutationFn: async (data: Record<string, unknown>) => {
@@ -1889,6 +1975,19 @@ export default function Settings() {
     })
   }
 
+  // Budget handlers
+  const handleSaveBudgetSettings = () => {
+    const data: Record<string, unknown> = {
+      forecast_api_url: forecastApiUrl || null,
+      budget_gp_target: parseFloat(budgetGpTarget) || 65,
+      budget_lookback_weeks: budgetLookbackWeeks,
+    }
+    if (forecastApiKey) {
+      data.forecast_api_key = forecastApiKey
+    }
+    saveBudgetMutation.mutate(data)
+  }
+
   // Course config helpers
   const updateCourseField = (index: number, field: string, value: string | number) => {
     setKdsCourses(prev => prev.map((c, i) => i === index ? { ...c, [field]: value } : c))
@@ -1937,6 +2036,7 @@ export default function Settings() {
     { id: 'resos', label: 'Resos Bookings', restrictPath: '/settings-resos' },
     { id: 'sambapos', label: 'SambaPOS EPOS', restrictPath: '/settings-sambapos' },
     { id: 'kds', label: 'Kitchen Display', restrictPath: '/settings-kds' },
+    { id: 'budget', label: 'Spend Budget', restrictPath: '/settings-budget' },
     { id: 'suppliers', label: 'Suppliers', restrictPath: '/settings-suppliers' },
     { id: 'search', label: 'Search & Pricing', restrictPath: '/settings-search' },
     { id: 'nextcloud', label: 'Nextcloud Storage', restrictPath: '/settings-nextcloud' },
@@ -4739,6 +4839,115 @@ export default function Settings() {
           </div>
         )}
 
+        {/* Budget/Forecast API Section */}
+        {activeSection === 'budget' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Spend Budget Settings</h2>
+            <p style={styles.hint}>
+              Configure integration with the forecasting app to calculate spending budgets based on forecast revenue and GP targets.
+            </p>
+
+            {/* Forecast API Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Forecast API Connection</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Forecast API URL
+                  <input
+                    type="text"
+                    value={forecastApiUrl}
+                    onChange={(e) => setForecastApiUrl(e.target.value)}
+                    style={styles.input}
+                    placeholder="http://forecast-app:8000"
+                  />
+                </label>
+                <label style={styles.label}>
+                  API Key
+                  <input
+                    type="password"
+                    value={forecastApiKey}
+                    onChange={(e) => setForecastApiKey(e.target.value)}
+                    style={styles.input}
+                    placeholder={budgetSettings?.forecast_api_configured ? '••••••••' : 'Enter API key'}
+                  />
+                </label>
+                <div style={styles.buttonRow}>
+                  <button
+                    onClick={() => budgetTestMutation.mutate()}
+                    style={styles.testBtn}
+                    disabled={budgetTestMutation.isPending || !budgetSettings?.forecast_api_configured}
+                  >
+                    {budgetTestMutation.isPending ? 'Testing...' : 'Test Connection'}
+                  </button>
+                  <button
+                    onClick={handleSaveBudgetSettings}
+                    style={styles.saveBtn}
+                    disabled={saveBudgetMutation.isPending}
+                  >
+                    {saveBudgetMutation.isPending ? 'Saving...' : 'Save Settings'}
+                  </button>
+                </div>
+                {budgetTestStatus && (
+                  <div style={{
+                    ...styles.statusMessage,
+                    background: budgetTestStatus.startsWith('Error') ? '#fee' : '#efe'
+                  }}>
+                    {budgetTestStatus}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Budget Configuration Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Budget Configuration</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  GP Target (%)
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={budgetGpTarget}
+                    onChange={(e) => setBudgetGpTarget(e.target.value)}
+                    style={{ ...styles.input, width: '120px' }}
+                  />
+                  <span style={styles.fieldHint}>
+                    Budget = Forecast Revenue × (100 - GP%)
+                  </span>
+                </label>
+                <label style={styles.label}>
+                  Lookback Period (weeks)
+                  <select
+                    value={budgetLookbackWeeks}
+                    onChange={(e) => setBudgetLookbackWeeks(parseInt(e.target.value))}
+                    style={{ ...styles.input, width: '120px' }}
+                  >
+                    <option value={2}>2 weeks</option>
+                    <option value={4}>4 weeks</option>
+                    <option value={6}>6 weeks</option>
+                    <option value={8}>8 weeks</option>
+                  </select>
+                  <span style={styles.fieldHint}>
+                    Used to calculate historical supplier spend percentages
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {budgetSaveMessage && (
+              <div style={{
+                ...styles.statusMessage,
+                background: budgetSaveMessage.startsWith('Error') ? '#fee' : '#efe',
+                marginTop: '1rem'
+              }}>
+                {budgetSaveMessage}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Suppliers Section */}
         {activeSection === 'suppliers' && (
           <div style={styles.section}>
@@ -5662,6 +5871,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#666',
     marginBottom: '1rem',
     fontSize: '0.9rem',
+  },
+  fieldHint: {
+    color: '#888',
+    fontSize: '0.8rem',
+    fontWeight: 'normal',
   },
   form: {
     display: 'flex',

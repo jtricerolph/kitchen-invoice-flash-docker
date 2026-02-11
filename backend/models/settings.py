@@ -172,6 +172,14 @@ class KitchenSettings(Base):
     # Admin-only page restrictions (comma-separated list of page paths, e.g., "/settings,/suppliers")
     admin_restricted_pages: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Forecast API integration (Spend Budget feature)
+    forecast_api_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    forecast_api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Budget settings
+    budget_gp_target: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True, default=Decimal("65.00"))
+    budget_lookback_weeks: Mapped[int] = mapped_column(Integer, default=4)
+
     # KDS (Kitchen Display System) settings
     kds_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     kds_graphql_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

@@ -10,6 +10,7 @@ import InvoiceList from './components/InvoiceList'
 import Review from './components/Review'
 import Disputes from './components/Disputes'
 import Purchases from './components/Purchases'
+import Budget from './components/Budget'
 import GPReport from './components/GPReport'
 import PurchasesReport from './components/PurchasesReport'
 import AllowancesReport from './components/AllowancesReport'
@@ -163,6 +164,12 @@ function App() {
               }
             />
             <Route
+              path="/budget"
+              element={
+                token ? (isPageAccessible('/budget') ? <Budget /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/gp"
               element={
                 token ? (isPageAccessible('/gp-report') ? <GPReport /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -256,7 +263,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
   }
 
   // Check if invoices dropdown should be shown
-  const showInvoices = showNavItem('/invoices') || showNavItem('/purchases') || showNavItem('/logbook')
+  const showInvoices = showNavItem('/invoices') || showNavItem('/purchases') || showNavItem('/budget') || showNavItem('/logbook')
 
   // Check if bookings dropdown should be shown
   const showBookings = showNavItem('/resos')
@@ -296,6 +303,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                   <div style={styles.dropdownContent}>
                     {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Uploaded Invoices</a>}
                     {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
+                    {showNavItem('/budget') && <a href="/budget" style={styles.dropdownLink}>Spend Budget</a>}
                     {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
                     {showNavItem('/invoices') && <a href="/disputes" style={styles.dropdownLink}>Disputes</a>}
                     {showNavItem('/logbook') && <a href="/logbook" style={styles.dropdownLink}>Allowance Logbook</a>}
