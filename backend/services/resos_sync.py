@@ -432,10 +432,20 @@ class ResosSyncService:
 
             # Process each booking
             for booking_data in bookings:
-                # Skip bookings with excluded statuses
+                # Handle bookings with excluded statuses - remove from DB if they exist
                 status = booking_data.get('status', '').lower()
                 if status in excluded_statuses:
-                    logger.debug(f"Skipping booking {booking_data.get('_id')} with excluded status: {status}")
+                    resos_id = booking_data.get('_id')
+                    if resos_id:
+                        await self.db.execute(
+                            delete(ResosBooking).where(
+                                and_(
+                                    ResosBooking.kitchen_id == self.kitchen_id,
+                                    ResosBooking.resos_booking_id == resos_id
+                                )
+                            )
+                        )
+                    logger.debug(f"Removed/skipped booking {resos_id} with excluded status: {status}")
                     total_skipped += 1
                     continue
 
@@ -596,7 +606,8 @@ class ResosSyncService:
                 and_(
                     ResosBooking.kitchen_id == self.kitchen_id,
                     ResosBooking.booking_date >= date_from,
-                    ResosBooking.booking_date <= date_to
+                    ResosBooking.booking_date <= date_to,
+                    ~ResosBooking.status.in_(['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected'])
                 )
             ).group_by(
                 ResosBooking.booking_date,
@@ -678,7 +689,8 @@ class ResosSyncService:
                 select(ResosBooking).where(
                     and_(
                         ResosBooking.kitchen_id == self.kitchen_id,
-                        ResosBooking.booking_date == booking_date
+                        ResosBooking.booking_date == booking_date,
+                        ~ResosBooking.status.in_(['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected'])
                     )
                 ).order_by(ResosBooking.booking_time)
             )

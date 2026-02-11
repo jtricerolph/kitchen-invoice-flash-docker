@@ -536,12 +536,14 @@ async def get_bookings_for_date(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> list[BookingResponse]:
-    """Get all bookings for a specific date"""
+    """Get all bookings for a specific date, excluding cancelled/deleted"""
+    excluded_statuses = ['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected']
     result = await db.execute(
         select(ResosBooking).where(
             and_(
                 ResosBooking.kitchen_id == current_user.kitchen_id,
-                ResosBooking.booking_date == booking_date
+                ResosBooking.booking_date == booking_date,
+                ~ResosBooking.status.in_(excluded_statuses)
             )
         ).order_by(ResosBooking.booking_time)
     )
