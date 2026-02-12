@@ -756,6 +756,7 @@ async def get_resident_covers(
             ResosBooking.opening_hour_id,
             ResosBooking.opening_hour_name,
             func.sum(ResosBooking.people).label('resident_covers'),
+            func.count(ResosBooking.id).label('resident_bookings'),
         ).where(
             and_(
                 ResosBooking.kitchen_id == current_user.kitchen_id,
@@ -787,8 +788,8 @@ async def get_resident_covers(
                 if resos_id and service_type:
                     service_type_map[resos_id] = service_type
 
-    # Build per-date, per-period response
-    dates: dict[str, dict[str, int]] = {}
+    # Build per-date, per-period response with covers and booking counts
+    dates: dict[str, dict[str, dict[str, int]]] = {}
     for row in result:
         date_str = row.booking_date.isoformat()
         if date_str not in dates:
@@ -800,6 +801,9 @@ async def get_resident_covers(
         period = service_type.lower() if service_type else 'unknown'
 
         # Accumulate in case multiple opening hours map to same period
-        dates[date_str][period] = dates[date_str].get(period, 0) + (row.resident_covers or 0)
+        if period not in dates[date_str]:
+            dates[date_str][period] = {"covers": 0, "bookings": 0}
+        dates[date_str][period]["covers"] += row.resident_covers or 0
+        dates[date_str][period]["bookings"] += row.resident_bookings or 0
 
     return {"dates": dates}
