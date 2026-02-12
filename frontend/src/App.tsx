@@ -21,6 +21,7 @@ import ResidentsTableChart from './pages/ResidentsTableChart'
 import BookingsStats from './pages/BookingsStats'
 import WastageLogbook from './pages/WastageLogbook'
 import KDS from './pages/KDS'
+import PurchaseOrderList from './components/PurchaseOrderList'
 import SupportButton from './components/SupportButton'
 
 interface User {
@@ -230,6 +231,12 @@ function App() {
               }
             />
             <Route
+              path="/purchase-orders"
+              element={
+                token ? (isPageAccessible('/invoices') ? <PurchaseOrderList /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/logbook"
               element={
                 token ? (isPageAccessible('/logbook') ? <WastageLogbook /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -306,6 +313,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                     {showNavItem('/budget') && <a href="/budget" style={styles.dropdownLink}>Spend Budget</a>}
                     {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
                     {showNavItem('/invoices') && <a href="/disputes" style={styles.dropdownLink}>Disputes</a>}
+                    {showNavItem('/invoices') && <a href="/purchase-orders" style={styles.dropdownLink}>Purchase Orders</a>}
                     {showNavItem('/logbook') && <a href="/logbook" style={styles.dropdownLink}>Allowance Logbook</a>}
                   </div>
                 </div>

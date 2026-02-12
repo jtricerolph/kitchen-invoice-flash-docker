@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
+import PurchaseOrderModal from './PurchaseOrderModal'
 import { Line } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -32,13 +33,23 @@ interface BudgetInvoice {
   document_type: string | null
 }
 
+interface BudgetPO {
+  id: number
+  order_type: string
+  status: string
+  total_amount: number | null
+  order_reference: string | null
+}
+
 interface SupplierBudgetRow {
   supplier_id: number | null
   supplier_name: string
   historical_pct: number
   allocated_budget: number
   invoices_by_date: Record<string, BudgetInvoice[]>
+  purchase_orders_by_date: Record<string, BudgetPO[]>
   actual_spent: number
+  po_ordered: number
   remaining: number
   status: 'under' | 'on_track' | 'over'
 }
@@ -101,6 +112,7 @@ interface WeeklyBudgetResponse {
   min_budget: number
   total_budget: number
   total_spent: number
+  total_po_ordered: number
   total_remaining: number
   suppliers: SupplierBudgetRow[]
   all_supplier_names: string[]
@@ -195,6 +207,10 @@ export default function Budget() {
   const [weekOffset, setWeekOffset] = useState(0)
   const [showForecastBreakdown, setShowForecastBreakdown] = useState(false)
   const [showSpendRates, setShowSpendRates] = useState(false)
+  const [poModalOpen, setPoModalOpen] = useState(false)
+  const [editPoId, setEditPoId] = useState<number | null>(null)
+  const [poDefaultSupplierId, setPoDefaultSupplierId] = useState<number | null>(null)
+  const [poDefaultDate, setPoDefaultDate] = useState<string | null>(null)
 
   // Fetch weekly budget data
   const { data: budgetData, isLoading, error, refetch } = useQuery<WeeklyBudgetResponse>({
@@ -230,7 +246,7 @@ export default function Budget() {
   })
 
   // Fetch resident (hotel guest) covers for the forecast table
-  const { data: residentCovers } = useQuery<Record<string, Record<string, number>>>({
+  const { data: residentCovers } = useQuery<Record<string, Record<string, { covers: number; bookings: number }>>>({
     queryKey: ['resos', 'resident-covers', budgetData?.week_start, budgetData?.week_end],
     queryFn: async () => {
       const res = await fetch(
@@ -570,10 +586,13 @@ export default function Budget() {
                         </td>
                         {hasDailyData ? dailyCovers.map((day) => {
                           const dayResidents = residentCovers[day.date] || {}
-                          const total = (dayResidents['lunch'] || 0) + (dayResidents['dinner'] || 0)
+                          const lunch = dayResidents['lunch'] || { covers: 0, bookings: 0 }
+                          const dinner = dayResidents['dinner'] || { covers: 0, bookings: 0 }
+                          const totalBookings = lunch.bookings + dinner.bookings
+                          const totalCoversRes = lunch.covers + dinner.covers
                           return (
                             <td key={day.date} style={{ ...styles.forecastTd, fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
-                              {total > 0 ? total : '-'}
+                              {totalCoversRes > 0 ? `${totalBookings}/${totalCoversRes}` : '-'}
                             </td>
                           )
                         }) : budgetData.dates.map((d) => (
@@ -581,10 +600,14 @@ export default function Budget() {
                         ))}
                         <td style={{ ...styles.forecastTd, ...styles.forecastTotalCol, fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
                           {(() => {
-                            const weekTotal = Object.values(residentCovers).reduce((sum, day) => {
-                              return sum + (day['lunch'] || 0) + (day['dinner'] || 0)
-                            }, 0)
-                            return weekTotal > 0 ? weekTotal : '-'
+                            let weekBookings = 0, weekCovers = 0
+                            Object.values(residentCovers).forEach(day => {
+                              const l = day['lunch'] || { covers: 0, bookings: 0 }
+                              const d = day['dinner'] || { covers: 0, bookings: 0 }
+                              weekBookings += l.bookings + d.bookings
+                              weekCovers += l.covers + d.covers
+                            })
+                            return weekCovers > 0 ? `${weekBookings}/${weekCovers}` : '-'
                           })()}
                         </td>
                       </tr>
@@ -923,6 +946,7 @@ export default function Budget() {
                 ))}
                 <th style={{ ...styles.th, ...styles.budgetHeader }}>Budget</th>
                 <th style={{ ...styles.th, ...styles.spentHeader }}>Spent</th>
+                <th style={{ ...styles.th, ...styles.orderedHeader }}>Ordered</th>
                 <th style={{ ...styles.th, ...styles.remainingHeader }}>Remaining</th>
                 <th style={{ ...styles.th, ...styles.statusHeader }}>Status</th>
               </tr>
@@ -930,6 +954,7 @@ export default function Budget() {
             <tbody>
               {budgetData.suppliers.map((supplier) => {
                 const hasData = Object.values(supplier.invoices_by_date).some(invs => invs.length > 0) ||
+                  Object.values(supplier.purchase_orders_by_date || {}).some(pos => pos.length > 0) ||
                   supplier.allocated_budget > 0
 
                 if (!hasData) return null
@@ -944,10 +969,27 @@ export default function Budget() {
                     </td>
                     {budgetData.dates.map((d) => {
                       const invoices = supplier.invoices_by_date[d] || []
+                      const pos = (supplier.purchase_orders_by_date || {})[d] || []
                       const isPast = isPastOrToday(d)
+                      const hasContent = invoices.length > 0 || pos.length > 0
                       return (
-                        <td key={d} style={{ ...styles.td, ...(isPast ? {} : styles.futureCell) }}>
-                          {invoices.length > 0 ? (
+                        <td
+                          key={d}
+                          style={{
+                            ...styles.td,
+                            ...(isPast ? {} : styles.futureCell),
+                            ...(!hasContent && supplier.supplier_id ? styles.clickableCell : {}),
+                          }}
+                          onClick={() => {
+                            if (!hasContent && supplier.supplier_id) {
+                              setPoDefaultSupplierId(supplier.supplier_id)
+                              setPoDefaultDate(d)
+                              setEditPoId(null)
+                              setPoModalOpen(true)
+                            }
+                          }}
+                        >
+                          {hasContent ? (
                             <div style={styles.invoicesCell}>
                               {invoices.map((inv) => {
                                 const isCreditNote = inv.document_type === 'credit_note' || inv.net_stock < 0
@@ -965,9 +1007,25 @@ export default function Budget() {
                                   </button>
                                 )
                               })}
+                              {pos.map((po) => (
+                                <button
+                                  key={`po-${po.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setEditPoId(po.id)
+                                    setPoDefaultSupplierId(null)
+                                    setPoDefaultDate(null)
+                                    setPoModalOpen(true)
+                                  }}
+                                  style={styles.poBtn}
+                                  title={po.order_reference ? `PO: ${po.order_reference}` : `PO #${po.id}`}
+                                >
+                                  £{(po.total_amount || 0).toFixed(2)} PO
+                                </button>
+                              ))}
                             </div>
                           ) : (
-                            <span style={styles.emptyCell}>-</span>
+                            <span style={styles.emptyCell}>{supplier.supplier_id ? '+' : '-'}</span>
                           )}
                         </td>
                       )
@@ -978,12 +1036,14 @@ export default function Budget() {
                     <td style={styles.spentCell}>
                       £{supplier.actual_spent.toFixed(2)}
                     </td>
+                    <td style={styles.orderedCell}>
+                      {supplier.po_ordered > 0 ? `£${supplier.po_ordered.toFixed(2)}` : '-'}
+                    </td>
                     <td style={{
                       ...styles.remainingCell,
                       ...(supplier.remaining < 0 ? styles.overBudget : {})
                     }}>
                       {supplier.remaining < 0 ? '-' : ''}£{Math.abs(supplier.remaining).toFixed(2)}
-                      {supplier.remaining < 0 && <span style={styles.overLabel}> OVER</span>}
                     </td>
                     <td style={styles.statusCell}>
                       <span style={{
@@ -1013,6 +1073,9 @@ export default function Budget() {
                 })}
                 <td style={styles.footerTd}>£{budgetData.total_budget.toFixed(2)}</td>
                 <td style={styles.footerTd}>£{budgetData.total_spent.toFixed(2)}</td>
+                <td style={styles.footerTd}>
+                  {budgetData.total_po_ordered > 0 ? `£${budgetData.total_po_ordered.toFixed(2)}` : '-'}
+                </td>
                 <td style={{
                   ...styles.footerTd,
                   ...(budgetData.total_remaining < 0 ? styles.overBudget : {})
@@ -1036,7 +1099,7 @@ export default function Budget() {
                     </td>
                   )
                 })}
-                <td colSpan={4}></td>
+                <td colSpan={5}></td>
               </tr>
             </tfoot>
           </table>
@@ -1050,6 +1113,23 @@ export default function Budget() {
           {chartData && <Line data={chartData} options={chartOptions} />}
         </div>
       </div>
+
+      {/* PO Modal */}
+      <PurchaseOrderModal
+        isOpen={poModalOpen}
+        onClose={() => {
+          setPoModalOpen(false)
+          setEditPoId(null)
+          setPoDefaultSupplierId(null)
+          setPoDefaultDate(null)
+        }}
+        onSaved={() => {
+          refetch()
+        }}
+        poId={editPoId}
+        defaultSupplierId={poDefaultSupplierId}
+        defaultDate={poDefaultDate}
+      />
     </div>
   )
 }
@@ -1302,20 +1382,35 @@ const styles: Record<string, React.CSSProperties> = {
   },
   invoiceBtn: {
     padding: '0.25rem 0.5rem',
-    background: '#e3f2fd',
-    border: '1px solid #90caf9',
+    background: '#d4edda',
+    border: '1px solid #28a745',
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '0.8rem',
     whiteSpace: 'nowrap',
+    color: '#155724',
   },
   creditNoteBtn: {
-    background: '#d4edda',
-    borderColor: '#28a745',
-    color: '#155724',
+    background: '#ffebee',
+    borderColor: '#c62828',
+    color: '#c62828',
+  },
+  poBtn: {
+    padding: '0.25rem 0.5rem',
+    background: '#e3f2fd',
+    border: '1px dashed #42a5f5',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    fontStyle: 'italic',
+    color: '#1565c0',
+    whiteSpace: 'nowrap',
   },
   emptyCell: {
     color: '#ccc',
+  },
+  clickableCell: {
+    cursor: 'pointer',
   },
   budgetCell: {
     padding: '0.5rem',
@@ -1325,6 +1420,17 @@ const styles: Record<string, React.CSSProperties> = {
   spentCell: {
     padding: '0.5rem',
     background: '#fff3e0',
+  },
+  orderedHeader: {
+    textAlign: 'center',
+  },
+  orderedCell: {
+    padding: '0.5rem',
+    background: '#e3f2fd',
+    textAlign: 'center',
+    color: '#1565c0',
+    fontStyle: 'italic',
+    fontSize: '0.85rem',
   },
   remainingCell: {
     padding: '0.5rem',
@@ -1338,6 +1444,7 @@ const styles: Record<string, React.CSSProperties> = {
   overLabel: {
     fontSize: '0.7rem',
     fontWeight: 'bold',
+    display: 'none',
   },
   statusCell: {
     padding: '0.5rem',

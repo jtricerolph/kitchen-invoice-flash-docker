@@ -22,6 +22,7 @@ from models.invoice import Invoice, InvoiceStatus
 from models.supplier import Supplier
 from models.line_item import LineItem
 from models.settings import KitchenSettings
+from models.purchase_order import PurchaseOrder
 from auth.jwt import get_current_user
 from services.forecast_api import ForecastAPIClient, ForecastAPIError
 
@@ -45,6 +46,19 @@ class BudgetInvoice(BaseModel):
         return float(v)
 
 
+class BudgetPOItem(BaseModel):
+    """Individual PO in budget table"""
+    id: int
+    order_type: str
+    status: str
+    total_amount: Optional[Decimal]
+    order_reference: Optional[str]
+
+    @field_serializer('total_amount')
+    def serialize_total(self, v: Optional[Decimal]) -> Optional[float]:
+        return float(v) if v is not None else None
+
+
 class SupplierBudgetRow(BaseModel):
     """Supplier row in weekly budget table"""
     supplier_id: Optional[int]
@@ -52,11 +66,13 @@ class SupplierBudgetRow(BaseModel):
     historical_pct: Decimal  # 4-week average percentage
     allocated_budget: Decimal  # total_budget * historical_pct
     invoices_by_date: dict[str, list[BudgetInvoice]]  # date -> invoices
+    purchase_orders_by_date: dict[str, list[BudgetPOItem]]  # date -> POs
     actual_spent: Decimal  # Sum of invoices this week
-    remaining: Decimal  # allocated - spent (negative = overspend)
+    po_ordered: Decimal  # Sum of pending PO totals this week
+    remaining: Decimal  # allocated - spent - po_ordered
     status: str  # "under", "on_track", "over"
 
-    @field_serializer('historical_pct', 'allocated_budget', 'actual_spent', 'remaining')
+    @field_serializer('historical_pct', 'allocated_budget', 'actual_spent', 'po_ordered', 'remaining')
     def serialize_decimals(self, v: Decimal) -> float:
         return float(v)
 
@@ -142,7 +158,8 @@ class WeeklyBudgetResponse(BaseModel):
 
     # Actuals
     total_spent: Decimal  # Actual spend from confirmed invoices
-    total_remaining: Decimal  # budget - spent (negative = overspend)
+    total_po_ordered: Decimal  # Sum of pending PO totals
+    total_remaining: Decimal  # budget - spent - po_ordered (negative = overspend)
 
     # Supplier breakdown
     suppliers: list[SupplierBudgetRow]
@@ -152,7 +169,7 @@ class WeeklyBudgetResponse(BaseModel):
     daily_data: list[DailyBudgetData]
     daily_totals: dict[str, Decimal]  # date -> actual spend
 
-    @field_serializer('otb_revenue', 'forecast_revenue', 'gp_target_pct', 'min_budget', 'total_budget', 'total_spent', 'total_remaining')
+    @field_serializer('otb_revenue', 'forecast_revenue', 'gp_target_pct', 'min_budget', 'total_budget', 'total_spent', 'total_po_ordered', 'total_remaining')
     def serialize_decimals(self, v: Decimal) -> float:
         return float(v)
 
@@ -684,16 +701,59 @@ async def get_weekly_budget(
         db, current_user.kitchen_id, week_start, week_end
     )
 
+    # Get this week's purchase orders (DRAFT + PENDING) grouped by supplier
+    po_result = await db.execute(
+        select(PurchaseOrder)
+        .where(
+            PurchaseOrder.kitchen_id == current_user.kitchen_id,
+            PurchaseOrder.status.in_(["DRAFT", "PENDING"]),
+            PurchaseOrder.order_date >= week_start,
+            PurchaseOrder.order_date <= week_end,
+        )
+    )
+    weekly_pos = po_result.scalars().all()
+
+    # Group POs by supplier_id -> {date_str -> [BudgetPOItem]}
+    po_by_supplier: dict[int, dict[str, list[BudgetPOItem]]] = defaultdict(lambda: defaultdict(list))
+    po_totals_by_supplier: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    po_supplier_names: dict[int, str] = {}
+
+    for po in weekly_pos:
+        sid = po.supplier_id
+        ds = po.order_date.isoformat()
+        amt = po.total_amount or Decimal("0")
+        po_by_supplier[sid][ds].append(BudgetPOItem(
+            id=po.id,
+            order_type=po.order_type,
+            status=po.status,
+            total_amount=amt,
+            order_reference=po.order_reference,
+        ))
+        po_totals_by_supplier[sid] += amt
+
+    # Get supplier names for PO-only suppliers
+    if po_by_supplier:
+        sup_ids = list(po_by_supplier.keys())
+        sup_result = await db.execute(
+            select(Supplier.id, Supplier.name).where(Supplier.id.in_(sup_ids))
+        )
+        for sid, sname in sup_result.all():
+            po_supplier_names[sid] = sname
+
     # Build supplier rows
     supplier_rows = []
     all_supplier_names = []
     total_spent = Decimal("0")
+    total_po_ordered = Decimal("0")
 
     # Process historical suppliers first
     processed_suppliers = set()
+    processed_po_suppliers = set()
     for supplier_id, supplier_name, hist_pct in supplier_pcts:
         key = (supplier_id, supplier_name)
         processed_suppliers.add(key)
+        if supplier_id:
+            processed_po_suppliers.add(supplier_id)
         all_supplier_names.append(supplier_name)
 
         # Calculate allocated budget
@@ -718,8 +778,13 @@ async def get_weekly_budget(
                 ))
             actual_spent += inv["net_stock"]
 
+        # Get POs for this supplier
+        supplier_po_dates = dict(po_by_supplier.get(supplier_id, {})) if supplier_id else {}
+        supplier_po_total = po_totals_by_supplier.get(supplier_id, Decimal("0")) if supplier_id else Decimal("0")
+
         total_spent += actual_spent
-        remaining = allocated - actual_spent
+        total_po_ordered += supplier_po_total
+        remaining = allocated - actual_spent - supplier_po_total
 
         # Determine status
         if remaining < 0:
@@ -735,7 +800,9 @@ async def get_weekly_budget(
             historical_pct=hist_pct,
             allocated_budget=allocated,
             invoices_by_date=dict(invoices_by_date),
+            purchase_orders_by_date=supplier_po_dates,
             actual_spent=actual_spent,
+            po_ordered=supplier_po_total,
             remaining=remaining,
             status=status,
         ))
@@ -744,6 +811,8 @@ async def get_weekly_budget(
     for key, invoices in weekly_invoices.items():
         if key not in processed_suppliers:
             supplier_id, supplier_name = key
+            if supplier_id:
+                processed_po_suppliers.add(supplier_id)
             all_supplier_names.append(supplier_name)
 
             invoices_by_date: dict[str, list[BudgetInvoice]] = defaultdict(list)
@@ -761,7 +830,12 @@ async def get_weekly_budget(
                     ))
                 actual_spent += inv["net_stock"]
 
+            supplier_po_dates = dict(po_by_supplier.get(supplier_id, {})) if supplier_id else {}
+            supplier_po_total = po_totals_by_supplier.get(supplier_id, Decimal("0")) if supplier_id else Decimal("0")
+
             total_spent += actual_spent
+            total_po_ordered += supplier_po_total
+            combined = actual_spent + supplier_po_total
 
             supplier_rows.append(SupplierBudgetRow(
                 supplier_id=supplier_id,
@@ -769,9 +843,32 @@ async def get_weekly_budget(
                 historical_pct=Decimal("0"),  # No historical data
                 allocated_budget=Decimal("0"),
                 invoices_by_date=dict(invoices_by_date),
+                purchase_orders_by_date=supplier_po_dates,
                 actual_spent=actual_spent,
-                remaining=-actual_spent,  # Over by definition
-                status="over" if actual_spent > 0 else "under",
+                po_ordered=supplier_po_total,
+                remaining=-combined,  # Over by definition
+                status="over" if combined > 0 else "under",
+            ))
+
+    # Add suppliers with POs but no invoices and no historical data
+    for sid, po_dates in po_by_supplier.items():
+        if sid not in processed_po_suppliers:
+            sname = po_supplier_names.get(sid, f"Supplier #{sid}")
+            all_supplier_names.append(sname)
+            supplier_po_total = po_totals_by_supplier.get(sid, Decimal("0"))
+            total_po_ordered += supplier_po_total
+
+            supplier_rows.append(SupplierBudgetRow(
+                supplier_id=sid,
+                supplier_name=sname,
+                historical_pct=Decimal("0"),
+                allocated_budget=Decimal("0"),
+                invoices_by_date={},
+                purchase_orders_by_date=dict(po_dates),
+                actual_spent=Decimal("0"),
+                po_ordered=supplier_po_total,
+                remaining=-supplier_po_total,
+                status="over" if supplier_po_total > 0 else "under",
             ))
 
     # Build daily breakdown with both historical and revenue-based budgets
@@ -861,7 +958,7 @@ async def get_weekly_budget(
                 cumulative_spent=None,
             ))
 
-    total_remaining = total_budget - total_spent
+    total_remaining = total_budget - total_spent - total_po_ordered
 
     return WeeklyBudgetResponse(
         week_start=week_start,
@@ -878,6 +975,7 @@ async def get_weekly_budget(
         min_budget=min_budget,
         total_budget=total_budget,
         total_spent=total_spent,
+        total_po_ordered=total_po_ordered,
         total_remaining=total_remaining,
         suppliers=supplier_rows,
         all_supplier_names=all_supplier_names,

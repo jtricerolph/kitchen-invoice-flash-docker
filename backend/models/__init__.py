@@ -14,6 +14,7 @@ from .dispute import (
     InvoiceDispute, DisputeLineItem, DisputeAttachment, DisputeActivity, CreditNote,
     DisputeType, DisputeStatus, DisputePriority
 )
+from .purchase_order import PurchaseOrder, PurchaseOrderLineItem
 
 __all__ = [
     "User", "Kitchen", "Invoice", "Supplier", "RevenueEntry", "GPPeriod",
@@ -22,5 +23,6 @@ __all__ = [
     "ResosBooking", "ResosDailyStats", "ResosOpeningHour", "ResosSyncLog",
     "BackupHistory", "AcknowledgedPrice",
     "InvoiceDispute", "DisputeLineItem", "DisputeAttachment", "DisputeActivity", "CreditNote",
-    "DisputeType", "DisputeStatus", "DisputePriority"
+    "DisputeType", "DisputeStatus", "DisputePriority",
+    "PurchaseOrder", "PurchaseOrderLineItem",
 ]

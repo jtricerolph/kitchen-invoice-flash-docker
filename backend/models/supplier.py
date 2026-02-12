@@ -33,8 +33,10 @@ class Supplier(Base):
     # Relationships
     kitchen: Mapped["Kitchen"] = relationship("Kitchen", back_populates="suppliers")
     invoices: Mapped[list["Invoice"]] = relationship("Invoice", back_populates="supplier")
+    purchase_orders: Mapped[list["PurchaseOrder"]] = relationship("PurchaseOrder", back_populates="supplier")
 
 
 # Forward reference
 from .user import Kitchen
 from .invoice import Invoice
+from .purchase_order import PurchaseOrder

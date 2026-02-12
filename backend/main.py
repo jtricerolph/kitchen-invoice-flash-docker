@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -43,6 +43,7 @@ from migrations.add_kds_order_tracking import run_migration as run_kds_order_tra
 from migrations.add_kds_bookings_refresh import run_migration as run_kds_bookings_refresh_migration
 from migrations.add_budget_settings import migrate as run_budget_settings_migration
 from migrations.add_cover_overrides import migrate as run_cover_overrides_migration
+from migrations.add_purchase_orders import migrate as run_purchase_orders_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -272,6 +273,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Cover overrides migration warning (may be expected): {e}")
 
+    # Run purchase orders migration
+    try:
+        await run_purchase_orders_migration()
+        logger.info("Purchase orders migration completed")
+    except Exception as e:
+        logger.warning(f"Purchase orders migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -328,6 +336,7 @@ app.include_router(support.router, prefix="/api", tags=["Support"])
 app.include_router(kds.router, prefix="/api/kds", tags=["KDS"])
 app.include_router(budget.router, prefix="/api/budget", tags=["Budget"])
 app.include_router(cover_overrides.router, prefix="/api/cover-overrides", tags=["Cover Overrides"])
+app.include_router(purchase_orders.router, prefix="/api/purchase-orders", tags=["Purchase Orders"])
 
 
 @app.get("/")
