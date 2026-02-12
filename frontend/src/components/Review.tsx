@@ -4204,7 +4204,7 @@ export default function Review() {
                               <td style={styles.searchTd}>{item.last_invoice_date || '—'}</td>
                               <td style={styles.searchTd}>
                                 <a
-                                  href={`/review/${item.invoice_id}`}
+                                  href={`/invoice/${item.invoice_id}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   style={styles.invoiceLink}
