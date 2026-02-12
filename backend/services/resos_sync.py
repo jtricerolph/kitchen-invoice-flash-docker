@@ -422,7 +422,11 @@ class ResosSyncService:
             total_processed = 0
             total_skipped = 0
             total_flagged = 0
+            total_orphaned = 0
             logger.info(f"Fetched {total_fetched} bookings from Resos API")
+
+            # Track all resos IDs from API response for orphan detection
+            api_booking_ids = set()
 
             # Get custom field mapping from settings
             field_mapping = settings.resos_custom_field_mapping or {}
@@ -432,10 +436,13 @@ class ResosSyncService:
 
             # Process each booking
             for booking_data in bookings:
+                resos_id = booking_data.get('_id')
+                if resos_id:
+                    api_booking_ids.add(resos_id)
+
                 # Handle bookings with excluded statuses - remove from DB if they exist
                 status = booking_data.get('status', '').lower()
                 if status in excluded_statuses:
-                    resos_id = booking_data.get('_id')
                     if resos_id:
                         await self.db.execute(
                             delete(ResosBooking).where(
@@ -561,18 +568,36 @@ class ResosSyncService:
             await self.db.commit()
             logger.info(f"Committed {total_processed} bookings to database ({total_skipped} skipped with excluded statuses)")
 
+            # Remove orphaned bookings (in DB for this date range but not in API response)
+            if api_booking_ids:
+                orphan_result = await self.db.execute(
+                    delete(ResosBooking).where(
+                        and_(
+                            ResosBooking.kitchen_id == self.kitchen_id,
+                            ResosBooking.booking_date >= date_from,
+                            ResosBooking.booking_date <= date_to,
+                            ~ResosBooking.resos_booking_id.in_(api_booking_ids)
+                        )
+                    )
+                )
+                total_orphaned = orphan_result.rowcount
+                if total_orphaned > 0:
+                    await self.db.commit()
+                    logger.info(f"Removed {total_orphaned} orphaned bookings no longer in Resos API")
+
             # Aggregate into daily stats
             logger.info(f"Aggregating daily stats for {date_from} to {date_to}...")
             await self._aggregate_daily_stats(date_from, date_to, is_forecast)
             logger.info(f"Daily stats aggregation complete")
 
             await self._complete_sync(log, total_processed, total_flagged)
-            logger.info(f"Resos sync completed successfully: {total_processed} processed, {total_skipped} skipped, {total_flagged} flagged")
+            logger.info(f"Resos sync completed: {total_processed} processed, {total_skipped} excluded, {total_orphaned} orphaned removed, {total_flagged} flagged")
 
             return {
                 'bookings_fetched': total_fetched,
                 'bookings_processed': total_processed,
                 'bookings_skipped': total_skipped,
+                'bookings_orphaned': total_orphaned,
                 'bookings_flagged': total_flagged,
                 'date_from': date_from,
                 'date_to': date_to
