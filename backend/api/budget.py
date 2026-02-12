@@ -82,6 +82,26 @@ class DailyBudgetData(BaseModel):
         return float(v) if v is not None else None
 
 
+class CoversSummary(BaseModel):
+    """Covers summary for a meal period"""
+    otb: int
+    pickup: int
+    forecast: int
+
+
+class ForecastSummary(BaseModel):
+    """Weekly forecast summary for rooms and covers"""
+    otb_rooms: int = 0
+    pickup_rooms: int = 0
+    forecast_rooms: int = 0
+    otb_guests: int = 0
+    pickup_guests: int = 0
+    forecast_guests: int = 0
+    breakfast: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+    lunch: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+    dinner: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+
+
 class WeeklyBudgetResponse(BaseModel):
     """Response for weekly budget endpoint"""
     week_start: date
@@ -92,6 +112,9 @@ class WeeklyBudgetResponse(BaseModel):
     otb_revenue: Decimal  # On The Books revenue (current bookings only)
     forecast_revenue: Decimal  # Full forecast revenue (OTB + expected pickup)
     forecast_source: str  # "forecast_api" or "fallback"
+
+    # Forecast summary (rooms + covers)
+    forecast_summary: Optional[ForecastSummary] = None
 
     # Budget calculation
     gp_target_pct: Decimal  # e.g., 65.00
@@ -412,11 +435,12 @@ async def get_weekly_budget(
     # Get settings
     settings = await get_settings(db, current_user.kitchen_id)
 
-    # Get forecast revenue
+    # Get forecast revenue + rooms + covers
     otb_revenue = Decimal("0")
     forecast_revenue = Decimal("0")
     forecast_source = "fallback"
     forecast_data = None  # Keep the daily forecast data
+    forecast_summary = None
 
     if settings.forecast_api_url and settings.forecast_api_key:
         try:
@@ -428,6 +452,26 @@ async def get_weekly_budget(
                 otb_revenue, forecast_revenue = client.calculate_food_revenue(forecast_data)
                 forecast_source = "forecast_api"
                 logger.info(f"Fetched revenue - OTB: {otb_revenue}, Forecast: {forecast_revenue}")
+
+                # Fetch rooms and covers for summary banner
+                try:
+                    rooms_data = await client.get_rooms_forecast(week_start, days=7)
+                    covers_data = await client.get_covers_forecast(week_start, days=7)
+                    rooms_agg = client.aggregate_rooms(rooms_data)
+                    covers_agg = client.aggregate_covers(covers_data)
+                    forecast_summary = ForecastSummary(
+                        otb_rooms=rooms_agg["otb_rooms"],
+                        pickup_rooms=rooms_agg["pickup_rooms"],
+                        forecast_rooms=rooms_agg["forecast_rooms"],
+                        otb_guests=rooms_agg["otb_guests"],
+                        pickup_guests=rooms_agg["pickup_guests"],
+                        forecast_guests=rooms_agg["forecast_guests"],
+                        breakfast=CoversSummary(**covers_agg["breakfast"]),
+                        lunch=CoversSummary(**covers_agg["lunch"]),
+                        dinner=CoversSummary(**covers_agg["dinner"]),
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch rooms/covers forecast: {e}")
         except ForecastAPIError as e:
             logger.warning(f"Failed to fetch forecast: {e.message}")
             forecast_data = None
@@ -637,6 +681,7 @@ async def get_weekly_budget(
         otb_revenue=otb_revenue,
         forecast_revenue=forecast_revenue,
         forecast_source=forecast_source,
+        forecast_summary=forecast_summary,
         gp_target_pct=gp_target,
         min_budget=min_budget,
         total_budget=total_budget,

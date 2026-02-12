@@ -55,6 +55,24 @@ interface DailyBudgetData {
   cumulative_spent: number | null
 }
 
+interface CoversSummary {
+  otb: number
+  pickup: number
+  forecast: number
+}
+
+interface ForecastSummary {
+  otb_rooms: number
+  pickup_rooms: number
+  forecast_rooms: number
+  otb_guests: number
+  pickup_guests: number
+  forecast_guests: number
+  breakfast: CoversSummary
+  lunch: CoversSummary
+  dinner: CoversSummary
+}
+
 interface WeeklyBudgetResponse {
   week_start: string
   week_end: string
@@ -62,6 +80,7 @@ interface WeeklyBudgetResponse {
   otb_revenue: number
   forecast_revenue: number
   forecast_source: string
+  forecast_summary: ForecastSummary | null
   gp_target_pct: number
   min_budget: number
   total_budget: number
@@ -232,6 +251,39 @@ export default function Budget() {
           <span style={styles.warningBadge}>No forecast data</span>
         )}
       </div>
+
+      {/* Forecast Summary Banner */}
+      {budgetData.forecast_summary && (
+        <div style={styles.forecastBanner}>
+          <div style={styles.forecastRow}>
+            <span style={styles.forecastLabel}>Hotel</span>
+            <span style={styles.forecastValues}>
+              <span style={styles.forecastOtb}>{budgetData.forecast_summary.otb_rooms}</span>
+              <span style={styles.forecastGuests}>({budgetData.forecast_summary.otb_guests})</span>
+              <span style={styles.forecastSep}>otb</span>
+              <span style={styles.forecastPlus}>+</span>
+              <span style={styles.forecastPickup}>{budgetData.forecast_summary.pickup_rooms}</span>
+              <span style={styles.forecastGuests}>({budgetData.forecast_summary.pickup_guests})</span>
+              <span style={styles.forecastSep}>pickup</span>
+            </span>
+          </div>
+          {(['breakfast', 'lunch', 'dinner'] as const).map((period) => {
+            const data = budgetData.forecast_summary![period]
+            return (
+              <div key={period} style={styles.forecastRow}>
+                <span style={styles.forecastLabel}>{period.charAt(0).toUpperCase() + period.slice(1)}</span>
+                <span style={styles.forecastValues}>
+                  <span style={styles.forecastOtb}>{data.otb}</span>
+                  <span style={styles.forecastSep}>otb</span>
+                  <span style={styles.forecastPlus}>+</span>
+                  <span style={styles.forecastPickup}>{data.pickup}</span>
+                  <span style={styles.forecastSep}>pickup</span>
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div style={styles.summaryCards}>
@@ -485,6 +537,54 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0.2rem 0.5rem',
     borderRadius: '4px',
     fontSize: '0.8rem',
+  },
+  forecastBanner: {
+    background: 'white',
+    borderRadius: '8px',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+    padding: '0.75rem 1rem',
+    marginBottom: '1rem',
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.25rem 2rem',
+  },
+  forecastRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontSize: '0.9rem',
+  },
+  forecastLabel: {
+    fontWeight: 'bold',
+    color: '#333',
+    minWidth: '70px',
+  },
+  forecastValues: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.3rem',
+  },
+  forecastOtb: {
+    fontWeight: '600',
+    color: '#2c3e50',
+    fontSize: '1rem',
+  },
+  forecastGuests: {
+    color: '#7f8c8d',
+    fontSize: '0.85rem',
+  },
+  forecastSep: {
+    color: '#95a5a6',
+    fontSize: '0.8rem',
+  },
+  forecastPlus: {
+    color: '#27ae60',
+    fontWeight: 'bold',
+  },
+  forecastPickup: {
+    fontWeight: '600',
+    color: '#27ae60',
+    fontSize: '1rem',
   },
   summaryCards: {
     display: 'grid',

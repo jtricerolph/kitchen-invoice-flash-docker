@@ -2,9 +2,9 @@
 Forecast API Client Service
 
 Handles communication with the external forecasting Docker app to fetch
-forecasted revenue data for the Spend Budget feature.
+forecasted revenue, rooms, and covers data for the Spend Budget feature.
 
-API Endpoint: /public/forecast/revenue
+API Endpoints: /public/forecast/revenue, /public/forecast/rooms, /public/forecast/covers
 Auth: X-API-Key header
 """
 import logging
@@ -166,6 +166,79 @@ class ForecastAPIClient:
             total_forecast += dry_forecast
 
         return total_otb, total_forecast
+
+    async def get_rooms_forecast(
+        self,
+        start_date: date,
+        days: int = 7,
+    ) -> list[dict]:
+        """
+        Fetch rooms forecast from /public/forecast/rooms
+
+        Returns list of daily data with:
+            - otb_rooms, pickup_rooms, forecast_rooms
+            - otb_guests, pickup_guests, forecast_guests
+        """
+        params = {
+            "start_date": start_date.isoformat(),
+            "days": days,
+        }
+        response = await self._request("/public/forecast/rooms", params)
+        data = response.get("data", [])
+        logger.info(f"Fetched {len(data)} days of rooms forecast from {start_date}")
+        return data
+
+    async def get_covers_forecast(
+        self,
+        start_date: date,
+        days: int = 7,
+    ) -> list[dict]:
+        """
+        Fetch covers forecast from /public/forecast/covers
+
+        Returns list of daily data with breakfast, lunch, dinner:
+            - otb, forecast per period
+        """
+        params = {
+            "start_date": start_date.isoformat(),
+            "days": days,
+        }
+        response = await self._request("/public/forecast/covers", params)
+        data = response.get("data", [])
+        logger.info(f"Fetched {len(data)} days of covers forecast from {start_date}")
+        return data
+
+    def aggregate_rooms(self, rooms_data: list[dict]) -> dict:
+        """Aggregate weekly room/guest totals from daily rooms forecast."""
+        totals = {
+            "otb_rooms": 0, "pickup_rooms": 0, "forecast_rooms": 0,
+            "otb_guests": 0, "pickup_guests": 0, "forecast_guests": 0,
+        }
+        for day in rooms_data:
+            totals["otb_rooms"] += day.get("otb_rooms", 0) or 0
+            totals["pickup_rooms"] += day.get("pickup_rooms", 0) or 0
+            totals["forecast_rooms"] += day.get("forecast_rooms", 0) or 0
+            totals["otb_guests"] += day.get("otb_guests", 0) or 0
+            totals["pickup_guests"] += day.get("pickup_guests", 0) or 0
+            totals["forecast_guests"] += day.get("forecast_guests", 0) or 0
+        return totals
+
+    def aggregate_covers(self, covers_data: list[dict]) -> dict:
+        """Aggregate weekly covers totals from daily covers forecast."""
+        totals = {
+            "breakfast": {"otb": 0, "pickup": 0, "forecast": 0},
+            "lunch": {"otb": 0, "pickup": 0, "forecast": 0},
+            "dinner": {"otb": 0, "pickup": 0, "forecast": 0},
+        }
+        for day in covers_data:
+            for period in ("breakfast", "lunch", "dinner"):
+                p = day.get(period, {})
+                otb = p.get("otb", 0) or 0
+                forecast = p.get("forecast", 0) or 0
+                totals[period]["otb"] += otb
+                totals[period]["pickup"] += forecast - otb
+                totals[period]["forecast"] += forecast
+        return totals
 
     def get_daily_breakdown(self, forecast_data: list[dict]) -> list[dict]:
         """
