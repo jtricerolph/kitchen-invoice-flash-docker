@@ -415,18 +415,24 @@ const styles: Record<string, React.CSSProperties> = {
   },
   nav: {
     display: 'flex',
-    gap: '1.5rem',
+    gap: '0.25rem',
     marginLeft: 'auto',
     flexWrap: 'wrap',
+    alignItems: 'stretch',
   },
   navLink: {
     color: 'white',
     textDecoration: 'none',
     cursor: 'pointer',
     whiteSpace: 'nowrap',
+    padding: '0.75rem 1rem',
+    display: 'block',
+    borderRadius: '4px',
   },
   dropdownContainer: {
     position: 'relative',
+    display: 'flex',
+    alignItems: 'stretch',
   },
   dropdown: {
     position: 'absolute',
@@ -445,7 +451,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   dropdownLink: {
     display: 'block',
-    padding: '0.5rem 1rem',
+    padding: '0.75rem 1.25rem',
     color: 'white',
     textDecoration: 'none',
     whiteSpace: 'nowrap',
@@ -466,6 +472,15 @@ const styles: Record<string, React.CSSProperties> = {
 // Add global styles for responsive behavior
 const styleTag = document.createElement('style')
 styleTag.innerHTML = `
+  nav a:hover, nav > div > span:hover {
+    background: rgba(255,255,255,0.1);
+    border-radius: 4px;
+  }
+
+  nav > div > div a:hover {
+    background: rgba(255,255,255,0.1);
+  }
+
   @media (max-width: 768px) {
     button[aria-label="Toggle menu"] {
       display: block !important;

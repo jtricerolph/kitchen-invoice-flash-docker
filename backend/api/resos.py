@@ -732,3 +732,74 @@ async def get_bookings_stats(
         'service_period_breakdown': spend_stats['service_period_breakdown'],
         'daily_service_breakdown': spend_stats['daily_service_breakdown']
     }
+
+
+# ============ Resident Covers for Budget ============
+
+@router.get("/resident-covers")
+async def get_resident_covers(
+    start_date: date,
+    end_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> dict:
+    """
+    Get per-date, per-service-period hotel guest (resident) cover counts.
+    Used by the Budget page to show 'inc Residents' row in the forecast table.
+    """
+    excluded_statuses = ['canceled', 'cancelled', 'waitlist', 'deleted', 'declined', 'rejected']
+
+    # Query bookings grouped by date and opening_hour
+    result = await db.execute(
+        select(
+            ResosBooking.booking_date,
+            ResosBooking.opening_hour_id,
+            ResosBooking.opening_hour_name,
+            func.sum(ResosBooking.people).label('resident_covers'),
+        ).where(
+            and_(
+                ResosBooking.kitchen_id == current_user.kitchen_id,
+                ResosBooking.booking_date >= start_date,
+                ResosBooking.booking_date <= end_date,
+                ResosBooking.is_hotel_guest == True,
+                ~func.lower(ResosBooking.status).in_(excluded_statuses)
+            )
+        ).group_by(
+            ResosBooking.booking_date,
+            ResosBooking.opening_hour_id,
+            ResosBooking.opening_hour_name
+        )
+    )
+
+    # Get kitchen settings for service type mapping
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+    opening_hours_mapping = settings.resos_opening_hours_mapping if settings else None
+
+    service_type_map = {}
+    if opening_hours_mapping:
+        for mapping in opening_hours_mapping:
+            if isinstance(mapping, dict):
+                resos_id = mapping.get('resos_id', '')
+                service_type = mapping.get('service_type', '')
+                if resos_id and service_type:
+                    service_type_map[resos_id] = service_type
+
+    # Build per-date, per-period response
+    dates: dict[str, dict[str, int]] = {}
+    for row in result:
+        date_str = row.booking_date.isoformat()
+        if date_str not in dates:
+            dates[date_str] = {}
+
+        opening_hour_id = row.opening_hour_id
+        opening_hour_name = row.opening_hour_name or 'Unknown'
+        service_type = service_type_map.get(opening_hour_id, opening_hour_name) if opening_hour_id else opening_hour_name
+        period = service_type.lower() if service_type else 'unknown'
+
+        # Accumulate in case multiple opening hours map to same period
+        dates[date_str][period] = dates[date_str].get(period, 0) + (row.resident_covers or 0)
+
+    return {"dates": dates}

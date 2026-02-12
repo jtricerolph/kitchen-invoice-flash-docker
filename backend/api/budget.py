@@ -12,7 +12,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, case, and_, or_
+from sqlalchemy import select, func, case, and_, or_, text
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, field_serializer
 
@@ -89,6 +89,19 @@ class CoversSummary(BaseModel):
     forecast: int
 
 
+class DailyCoverData(BaseModel):
+    """Daily covers breakdown for a single day"""
+    date: date
+    day_name: str
+    otb_rooms: int = 0
+    pickup_rooms: int = 0
+    otb_guests: int = 0
+    pickup_guests: int = 0
+    breakfast: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+    lunch: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+    dinner: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+
+
 class ForecastSummary(BaseModel):
     """Weekly forecast summary for rooms and covers"""
     otb_rooms: int = 0
@@ -100,6 +113,7 @@ class ForecastSummary(BaseModel):
     breakfast: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
     lunch: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
     dinner: CoversSummary = CoversSummary(otb=0, pickup=0, forecast=0)
+    daily_covers: list[DailyCoverData] = []
 
 
 class WeeklyBudgetResponse(BaseModel):
@@ -115,6 +129,11 @@ class WeeklyBudgetResponse(BaseModel):
 
     # Forecast summary (rooms + covers)
     forecast_summary: Optional[ForecastSummary] = None
+
+    # Override info
+    has_overrides: bool = False
+    snapshot_revenue: Optional[Decimal] = None  # Original snapshotted revenue
+    adjusted_revenue: Optional[Decimal] = None  # Revenue after applying overrides
 
     # Budget calculation
     gp_target_pct: Decimal  # e.g., 65.00
@@ -136,6 +155,10 @@ class WeeklyBudgetResponse(BaseModel):
     @field_serializer('otb_revenue', 'forecast_revenue', 'gp_target_pct', 'min_budget', 'total_budget', 'total_spent', 'total_remaining')
     def serialize_decimals(self, v: Decimal) -> float:
         return float(v)
+
+    @field_serializer('snapshot_revenue', 'adjusted_revenue')
+    def serialize_optional_revenue(self, v: Optional[Decimal]) -> Optional[float]:
+        return float(v) if v is not None else None
 
     @field_serializer('daily_totals')
     def serialize_daily_totals(self, v: dict[str, Decimal]) -> dict[str, float]:
@@ -442,6 +465,9 @@ async def get_weekly_budget(
     forecast_data = None  # Keep the daily forecast data
     forecast_summary = None
 
+    api_spend_rates = {}  # spend rates from API for override recalculation
+    covers_data_raw = []  # raw covers data from API for override recalculation
+
     if settings.forecast_api_url and settings.forecast_api_key:
         try:
             async with ForecastAPIClient(
@@ -457,8 +483,43 @@ async def get_weekly_budget(
                 try:
                     rooms_data = await client.get_rooms_forecast(week_start, days=7)
                     covers_data = await client.get_covers_forecast(week_start, days=7)
+                    covers_data_raw = covers_data  # Save for override recalculation
                     rooms_agg = client.aggregate_rooms(rooms_data)
                     covers_agg = client.aggregate_covers(covers_data)
+
+                    # Index rooms data by date for matching
+                    rooms_by_date = {d.get("date", ""): d for d in rooms_data}
+
+                    # Build daily covers breakdown
+                    daily_covers_list = []
+                    for day in covers_data:
+                        day_date_str = day.get("date", "")
+                        day_name = day.get("day", "")
+                        room_day = rooms_by_date.get(day_date_str, {})
+                        daily_covers_list.append(DailyCoverData(
+                            date=day_date_str,
+                            day_name=day_name,
+                            otb_rooms=room_day.get("otb_rooms", 0) or 0,
+                            pickup_rooms=(room_day.get("forecast_rooms", 0) or 0) - (room_day.get("otb_rooms", 0) or 0),
+                            otb_guests=room_day.get("otb_guests", 0) or 0,
+                            pickup_guests=(room_day.get("forecast_guests", 0) or 0) - (room_day.get("otb_guests", 0) or 0),
+                            breakfast=CoversSummary(
+                                otb=day.get("breakfast", {}).get("otb", 0) or 0,
+                                pickup=(day.get("breakfast", {}).get("forecast", 0) or 0) - (day.get("breakfast", {}).get("otb", 0) or 0),
+                                forecast=day.get("breakfast", {}).get("forecast", 0) or 0,
+                            ),
+                            lunch=CoversSummary(
+                                otb=day.get("lunch", {}).get("otb", 0) or 0,
+                                pickup=(day.get("lunch", {}).get("forecast", 0) or 0) - (day.get("lunch", {}).get("otb", 0) or 0),
+                                forecast=day.get("lunch", {}).get("forecast", 0) or 0,
+                            ),
+                            dinner=CoversSummary(
+                                otb=day.get("dinner", {}).get("otb", 0) or 0,
+                                pickup=(day.get("dinner", {}).get("forecast", 0) or 0) - (day.get("dinner", {}).get("otb", 0) or 0),
+                                forecast=day.get("dinner", {}).get("forecast", 0) or 0,
+                            ),
+                        ))
+
                     forecast_summary = ForecastSummary(
                         otb_rooms=rooms_agg["otb_rooms"],
                         pickup_rooms=rooms_agg["pickup_rooms"],
@@ -469,9 +530,17 @@ async def get_weekly_budget(
                         breakfast=CoversSummary(**covers_agg["breakfast"]),
                         lunch=CoversSummary(**covers_agg["lunch"]),
                         dinner=CoversSummary(**covers_agg["dinner"]),
+                        daily_covers=daily_covers_list,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to fetch rooms/covers forecast: {e}")
+
+                # Fetch spend rates for override recalculation
+                try:
+                    sr_response = await client.get_spend_rates()
+                    api_spend_rates = sr_response.get("periods", {})
+                except Exception as e:
+                    logger.warning(f"Failed to fetch spend rates: {e}")
         except ForecastAPIError as e:
             logger.warning(f"Failed to fetch forecast: {e.message}")
             forecast_data = None
@@ -481,6 +550,120 @@ async def get_weekly_budget(
     cost_target_pct = (100 - gp_target) / 100
     min_budget = (otb_revenue * cost_target_pct).quantize(Decimal("0.01"))
     total_budget = (forecast_revenue * cost_target_pct).quantize(Decimal("0.01"))
+
+    # --- Apply cover/spend rate overrides to adjust forecast revenue ---
+    has_overrides_flag = False
+    snapshot_revenue_val = None
+    adjusted_revenue_val = None
+    adjusted_daily = {}  # date_str -> adjusted revenue for daily breakdown
+
+    if forecast_source == "forecast_api":
+        # Check if a forecast snapshot exists for this week
+        week_snap_result = await db.execute(text("""
+            SELECT total_forecast_revenue FROM forecast_week_snapshots
+            WHERE kitchen_id = :kid AND week_start = :ws
+        """), {"kid": current_user.kitchen_id, "ws": week_start})
+        week_snap = week_snap_result.fetchone()
+
+        if week_snap:
+            snapshot_revenue_val = Decimal(str(week_snap.total_forecast_revenue)) if week_snap.total_forecast_revenue else None
+            has_overrides_flag = True
+
+            # Only recalculate if we have live covers data
+            if covers_data_raw:
+                # Load cover overrides for this week
+                ovr_result = await db.execute(text("""
+                    SELECT override_date, period, override_covers
+                    FROM cover_overrides
+                    WHERE kitchen_id = :kid AND override_date >= :ws AND override_date <= :we
+                """), {"kid": current_user.kitchen_id, "ws": week_start, "we": week_end})
+                override_lookup = {}
+                for row in ovr_result.fetchall():
+                    override_lookup[(row.override_date.isoformat(), row.period)] = row.override_covers
+
+                # Load snapshot spend rates
+                snap_spend_result = await db.execute(text("""
+                    SELECT snapshot_date, period, food_spend, drinks_spend
+                    FROM forecast_snapshots
+                    WHERE kitchen_id = :kid AND week_start = :ws
+                """), {"kid": current_user.kitchen_id, "ws": week_start})
+                snap_spend_lookup = {}
+                for row in snap_spend_result.fetchall():
+                    snap_spend_lookup[(row.snapshot_date.isoformat(), row.period)] = row
+
+                # Load spend rate overrides
+                spend_ovr_result = await db.execute(text("""
+                    SELECT period, food_spend, drinks_spend
+                    FROM spend_rate_overrides
+                    WHERE kitchen_id = :kid AND week_start = :ws
+                """), {"kid": current_user.kitchen_id, "ws": week_start})
+                spend_ovr_lookup = {row.period: row for row in spend_ovr_result.fetchall()}
+
+                # Resolve effective spend rates per period (override > snapshot > API)
+                spend_effective = {}
+                for period in ("breakfast", "lunch", "dinner"):
+                    api_food = api_spend_rates.get(period, {}).get("food_spend_net", 0)
+                    api_drinks = api_spend_rates.get(period, {}).get("drinks_spend_net", 0)
+
+                    snap_food = snap_drinks = None
+                    for d_check in week_dates:
+                        key = (d_check.isoformat(), period)
+                        if key in snap_spend_lookup:
+                            snap_food = float(snap_spend_lookup[key].food_spend) if snap_spend_lookup[key].food_spend else None
+                            snap_drinks = float(snap_spend_lookup[key].drinks_spend) if snap_spend_lookup[key].drinks_spend else None
+                            break
+
+                    ovr_sp = spend_ovr_lookup.get(period)
+                    ovr_food = float(ovr_sp.food_spend) if ovr_sp and ovr_sp.food_spend else None
+                    ovr_drinks = float(ovr_sp.drinks_spend) if ovr_sp and ovr_sp.drinks_spend else None
+
+                    eff_food = ovr_food if ovr_food is not None else (snap_food if snap_food is not None else api_food)
+                    eff_drinks = ovr_drinks if ovr_drinks is not None else (snap_drinks if snap_drinks is not None else api_drinks)
+                    spend_effective[period] = {"food": eff_food, "drinks": eff_drinks}
+
+                # Recalculate revenue per day
+                covers_by_date_ovr = {d.get("date", ""): d for d in covers_data_raw}
+                adjusted_total = Decimal("0")
+
+                for d in week_dates:
+                    date_str = d.isoformat()
+                    is_past = d < today
+
+                    if is_past and forecast_data:
+                        # Past: use actual dry revenue from forecast API
+                        day_rev = Decimal("0")
+                        for fd in forecast_data:
+                            if fd.get("date") == date_str:
+                                dry = fd.get("dry", {})
+                                day_rev = Decimal(str(dry.get("forecast", 0) or 0))
+                                break
+                    else:
+                        # Today/future: recalculate from effective covers × effective spend
+                        day_covers = covers_by_date_ovr.get(date_str, {})
+                        day_rev = Decimal("0")
+
+                        for period in ("breakfast", "lunch", "dinner"):
+                            p_covers = day_covers.get(period, {})
+                            otb_cvr = p_covers.get("otb", 0) or 0
+                            forecast_cvr = p_covers.get("forecast", 0) or 0
+
+                            ovr_val = override_lookup.get((date_str, period))
+                            if ovr_val is not None:
+                                effective = max(otb_cvr, ovr_val)  # OTB always supersedes upward
+                            else:
+                                effective = forecast_cvr
+
+                            eff_food = Decimal(str(spend_effective.get(period, {}).get("food", 0)))
+                            day_rev += Decimal(str(effective)) * eff_food
+
+                    adjusted_daily[date_str] = day_rev.quantize(Decimal("0.01"))
+                    adjusted_total += day_rev
+
+                adjusted_revenue_val = adjusted_total.quantize(Decimal("0.01"))
+
+                # Replace forecast_revenue and recalculate budget with adjusted values
+                forecast_revenue = adjusted_revenue_val
+                total_budget = (forecast_revenue * cost_target_pct).quantize(Decimal("0.01"))
 
     # Get historical supplier percentages
     lookback_weeks = settings.budget_lookback_weeks or 4
@@ -619,6 +802,12 @@ async def get_weekly_budget(
             daily_forecast_revenue[d.isoformat()] = day_forecast_rev
             total_forecast_rev += day_forecast_rev
 
+    # Apply adjusted daily revenue from overrides
+    if adjusted_daily:
+        for adj_date_str, adj_rev in adjusted_daily.items():
+            daily_forecast_revenue[adj_date_str] = adj_rev
+        total_forecast_rev = sum(daily_forecast_revenue.values())
+
     for d in week_dates:
         date_str = d.isoformat()
         day_name = d.strftime("%a")
@@ -682,6 +871,9 @@ async def get_weekly_budget(
         forecast_revenue=forecast_revenue,
         forecast_source=forecast_source,
         forecast_summary=forecast_summary,
+        has_overrides=has_overrides_flag,
+        snapshot_revenue=snapshot_revenue_val,
+        adjusted_revenue=adjusted_revenue_val,
         gp_target_pct=gp_target,
         min_budget=min_budget,
         total_budget=total_budget,

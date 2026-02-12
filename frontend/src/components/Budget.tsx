@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 import { Line } from 'react-chartjs-2'
@@ -61,6 +61,18 @@ interface CoversSummary {
   forecast: number
 }
 
+interface DailyCoverData {
+  date: string
+  day_name: string
+  otb_rooms: number
+  pickup_rooms: number
+  otb_guests: number
+  pickup_guests: number
+  breakfast: CoversSummary
+  lunch: CoversSummary
+  dinner: CoversSummary
+}
+
 interface ForecastSummary {
   otb_rooms: number
   pickup_rooms: number
@@ -71,6 +83,7 @@ interface ForecastSummary {
   breakfast: CoversSummary
   lunch: CoversSummary
   dinner: CoversSummary
+  daily_covers: DailyCoverData[]
 }
 
 interface WeeklyBudgetResponse {
@@ -81,6 +94,9 @@ interface WeeklyBudgetResponse {
   forecast_revenue: number
   forecast_source: string
   forecast_summary: ForecastSummary | null
+  has_overrides: boolean
+  snapshot_revenue: number | null
+  adjusted_revenue: number | null
   gp_target_pct: number
   min_budget: number
   total_budget: number
@@ -90,6 +106,67 @@ interface WeeklyBudgetResponse {
   all_supplier_names: string[]
   daily_data: DailyBudgetData[]
   daily_totals: Record<string, number>
+}
+
+interface RecalcPeriod {
+  actual: number | null
+  otb: number
+  pickup: number
+  effective: number
+  override: number | null
+  snapshot: number | null
+  variance: number | null
+  is_overridden: boolean
+}
+
+interface RecalcDay {
+  date: string
+  day_name: string
+  is_past: boolean
+  periods: Record<string, RecalcPeriod>
+  day_revenue: number
+}
+
+interface SpendRateData {
+  period: string
+  food_spend_api: number | null
+  drinks_spend_api: number | null
+  food_spend_snapshot: number | null
+  drinks_spend_snapshot: number | null
+  food_spend_override: number | null
+  drinks_spend_override: number | null
+  food_spend_effective: number
+  drinks_spend_effective: number
+}
+
+interface OverrideInfo {
+  id: number
+  override_date: string
+  period: string
+  override_covers: number
+  original_forecast: number | null
+  original_otb: number | null
+}
+
+interface WeeklyOverrideResponse {
+  week_start: string
+  week_end: string
+  has_snapshot: boolean
+  vat_rate: number
+  snapshot_revenue: number | null
+  adjusted_revenue: number | null
+  snapshots: Array<{
+    date: string
+    period: string
+    forecast_covers: number
+    otb_covers: number
+    food_spend: number | null
+    drinks_spend: number | null
+    forecast_dry_revenue: number | null
+  }>
+  overrides: OverrideInfo[]
+  spend_rates: SpendRateData[]
+  recalc_days: RecalcDay[]
 }
 
 // Helper to format date as "Mon 20"
@@ -116,6 +193,8 @@ export default function Budget() {
   const { token } = useAuth()
   const navigate = useNavigate()
   const [weekOffset, setWeekOffset] = useState(0)
+  const [showForecastBreakdown, setShowForecastBreakdown] = useState(false)
+  const [showSpendRates, setShowSpendRates] = useState(false)
 
   // Fetch weekly budget data
   const { data: budgetData, isLoading, error, refetch } = useQuery<WeeklyBudgetResponse>({
@@ -134,13 +213,124 @@ export default function Budget() {
   const goToNextWeek = () => setWeekOffset((prev) => prev + 1)
   const goToCurrentWeek = () => setWeekOffset(0)
 
-  // Check if date is today or in the past
+  // --- Cover Override State & Queries ---
+  const [pendingOverrides, setPendingOverrides] = useState<Record<string, number>>({})
+  const [isSavingOverrides, setIsSavingOverrides] = useState(false)
+
+  const { data: overrideData, refetch: refetchOverrides, isLoading: isOverrideLoading } = useQuery<WeeklyOverrideResponse>({
+    queryKey: ['cover-overrides', 'weekly', weekOffset],
+    queryFn: async () => {
+      const res = await fetch(`/api/cover-overrides/weekly?week_offset=${weekOffset}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch override data')
+      return res.json()
+    },
+    enabled: !!token && showForecastBreakdown,
+  })
+
+  // Fetch resident (hotel guest) covers for the forecast table
+  const { data: residentCovers } = useQuery<Record<string, Record<string, number>>>({
+    queryKey: ['resos', 'resident-covers', budgetData?.week_start, budgetData?.week_end],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/resos/resident-covers?start_date=${budgetData!.week_start}&end_date=${budgetData!.week_end}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (!res.ok) return {}
+      const data = await res.json()
+      return data.dates ?? {}
+    },
+    enabled: !!token && !!budgetData && showForecastBreakdown,
+  })
+
+  const snapshotMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/cover-overrides/snapshot', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ week_offset: weekOffset }),
+      })
+      if (!res.ok) throw new Error('Failed to create snapshot')
+      return res.json()
+    },
+    onSuccess: () => { refetchOverrides(); refetch() },
+  })
+
+  const hasPendingChanges = Object.keys(pendingOverrides).length > 0
+
+  const getOverrideDisplayValue = (dateStr: string, period: string, effective: number): number => {
+    const key = `${dateStr}|${period}`
+    if (key in pendingOverrides) return pendingOverrides[key]
+    return effective
+  }
+
+  const isCellOverridden = (dateStr: string, period: string): boolean => {
+    const key = `${dateStr}|${period}`
+    if (key in pendingOverrides) return true
+    return !!overrideData?.overrides.find(o => o.override_date === dateStr && o.period === period)
+  }
+
+  const adjustCover = (dateStr: string, period: string, effective: number, delta: number) => {
+    const key = `${dateStr}|${period}`
+    const current = key in pendingOverrides ? pendingOverrides[key] : effective
+    setPendingOverrides(prev => ({ ...prev, [key]: Math.max(0, current + delta) }))
+  }
+
+  const saveAllOverrides = async () => {
+    setIsSavingOverrides(true)
+    try {
+      await Promise.all(Object.entries(pendingOverrides).map(([key, value]) => {
+        const [overrideDate, period] = key.split('|')
+        return fetch('/api/cover-overrides', {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ override_date: overrideDate, period, override_covers: value }),
+        })
+      }))
+      setPendingOverrides({})
+      refetchOverrides()
+      refetch()
+    } finally {
+      setIsSavingOverrides(false)
+    }
+  }
+
+  const deleteOverride = async (id: number) => {
+    await fetch(`/api/cover-overrides/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    refetchOverrides()
+    refetch()
+  }
+
+  const saveSpendRate = async (period: string, food: number | null, drinks: number | null) => {
+    await fetch('/api/cover-overrides/spend-rates', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week_offset: weekOffset, period, food_spend: food, drinks_spend: drinks }),
+    })
+    refetchOverrides()
+    refetch()
+  }
+
+  // Check if date is today or in the past (for spend table)
   const isPastOrToday = (dateStr: string): boolean => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const d = new Date(dateStr)
     d.setHours(0, 0, 0, 0)
     return d <= today
+  }
+
+  // Check if date is strictly in the past (before today) - for forecast coloring
+  const isPast = (dateStr: string): boolean => {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const d = new Date(dateStr)
+    d.setHours(0, 0, 0, 0)
+    return d < today
   }
 
   // Prepare chart data
@@ -252,46 +442,442 @@ export default function Budget() {
         )}
       </div>
 
-      {/* Forecast Summary Banner */}
-      {budgetData.forecast_summary && (
-        <div style={styles.forecastBanner}>
-          <div style={styles.forecastRow}>
-            <span style={styles.forecastLabel}>Hotel</span>
-            <span style={styles.forecastValues}>
-              <span style={styles.forecastOtb}>{budgetData.forecast_summary.otb_rooms}</span>
-              <span style={styles.forecastGuests}>({budgetData.forecast_summary.otb_guests})</span>
-              <span style={styles.forecastSep}>otb</span>
-              <span style={styles.forecastPlus}>+</span>
-              <span style={styles.forecastPickup}>{budgetData.forecast_summary.pickup_rooms}</span>
-              <span style={styles.forecastGuests}>({budgetData.forecast_summary.pickup_guests})</span>
-              <span style={styles.forecastSep}>pickup</span>
-            </span>
-          </div>
-          {(['breakfast', 'lunch', 'dinner'] as const).map((period) => {
-            const data = budgetData.forecast_summary![period]
-            return (
-              <div key={period} style={styles.forecastRow}>
-                <span style={styles.forecastLabel}>{period.charAt(0).toUpperCase() + period.slice(1)}</span>
-                <span style={styles.forecastValues}>
-                  <span style={styles.forecastOtb}>{data.otb}</span>
-                  <span style={styles.forecastSep}>otb</span>
-                  <span style={styles.forecastPlus}>+</span>
-                  <span style={styles.forecastPickup}>{data.pickup}</span>
-                  <span style={styles.forecastSep}>pickup</span>
-                </span>
+      {/* Forecast Breakdown Toggle */}
+      {budgetData.forecast_summary && (() => {
+        const summary = budgetData.forecast_summary!
+        const dailyCovers = summary.daily_covers
+        const hasDailyData = dailyCovers.length > 0
+        // Period is fully past if all dates are before today
+        const allPast = hasDailyData
+          ? dailyCovers.every((d) => isPast(d.date))
+          : budgetData.dates.every((d) => isPast(d))
+
+        return (
+          <div style={{ marginBottom: '1rem' }}>
+            <button
+              onClick={() => setShowForecastBreakdown(!showForecastBreakdown)}
+              style={styles.forecastToggle}
+            >
+              {showForecastBreakdown ? '▾ Hide' : '▸ Show'} Forecast Breakdown
+            </button>
+            {showForecastBreakdown && (
+              <div style={styles.forecastTableContainer}>
+                <table style={styles.forecastTable}>
+                  <thead>
+                    <tr>
+                      <th style={styles.forecastTh}>Service</th>
+                      {(hasDailyData
+                        ? dailyCovers
+                        : budgetData.dates.map((d) => ({ date: d, day_name: formatDate(d) }))
+                      ).map((day) => (
+                        <th key={day.date} style={styles.forecastTh}>
+                          {'day_name' in day && day.day_name ? day.day_name : formatDate(day.date)}
+                        </th>
+                      ))}
+                      <th style={{ ...styles.forecastTh, ...styles.forecastTotalCol }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* Hotel (Rooms) Row */}
+                    <tr style={styles.forecastTr}>
+                      <td style={styles.forecastServiceCell}>Hotel</td>
+                      {hasDailyData ? dailyCovers.map((day) => {
+                        const past = isPast(day.date)
+                        const otbStyle = past ? styles.fcActual : styles.fcOtb
+                        const pickupStyle = past ? styles.fcActual : styles.fcPickup
+                        return (
+                          <td key={day.date} style={styles.forecastTd}>
+                            <span style={otbStyle}>{day.otb_rooms}</span>
+                            <span style={{ ...otbStyle, fontSize: '0.75rem' }}> ({day.otb_guests})</span>
+                            {day.pickup_rooms > 0 && (
+                              <>
+                                <span style={pickupStyle}> +{day.pickup_rooms}</span>
+                                <span style={{ ...pickupStyle, fontSize: '0.75rem' }}> ({day.pickup_guests})</span>
+                              </>
+                            )}
+                          </td>
+                        )
+                      }) : budgetData.dates.map((d) => (
+                        <td key={d} style={styles.forecastTd}>-</td>
+                      ))}
+                      <td style={{ ...styles.forecastTd, ...styles.forecastTotalCol }}>
+                        {allPast ? (
+                          <span style={styles.fcActual}>
+                            {summary.forecast_rooms} ({summary.forecast_guests})
+                          </span>
+                        ) : (
+                          <>
+                            <span style={styles.fcOtb}>{summary.otb_rooms} ({summary.otb_guests})</span>
+                            {summary.pickup_rooms > 0 && (
+                              <span style={styles.fcPickup}> +{summary.pickup_rooms} ({summary.pickup_guests})</span>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                    {/* Covers Rows */}
+                    {(['breakfast', 'lunch', 'dinner'] as const).map((period) => {
+                      const totalCovers = summary[period]
+
+                      return (
+                        <tr key={period} style={styles.forecastTr}>
+                          <td style={styles.forecastServiceCell}>
+                            {period.charAt(0).toUpperCase() + period.slice(1)}
+                          </td>
+                          {hasDailyData ? dailyCovers.map((day) => {
+                            const covers = day[period]
+                            const past = isPast(day.date)
+                            const otbStyle = past ? styles.fcActual : styles.fcOtb
+                            const pickupStyle = past ? styles.fcActual : styles.fcPickup
+                            return (
+                              <td key={day.date} style={styles.forecastTd}>
+                                {past ? (
+                                  <span style={otbStyle}>{covers.forecast}</span>
+                                ) : (
+                                  <>
+                                    <span style={otbStyle}>{covers.otb}</span>
+                                    {covers.pickup > 0 && (
+                                      <span style={pickupStyle}> +{covers.pickup}</span>
+                                    )}
+                                  </>
+                                )}
+                              </td>
+                            )
+                          }) : budgetData.dates.map((d) => (
+                            <td key={d} style={styles.forecastTd}>-</td>
+                          ))}
+                          <td style={{ ...styles.forecastTd, ...styles.forecastTotalCol }}>
+                            {allPast ? (
+                              <span style={styles.fcActual}>{totalCovers.forecast}</span>
+                            ) : (
+                              <>
+                                <span style={styles.fcOtb}>{totalCovers.otb}</span>
+                                {totalCovers.pickup > 0 && (
+                                  <span style={styles.fcPickup}> +{totalCovers.pickup}</span>
+                                )}
+                                <span style={styles.fcTotal}> = {totalCovers.forecast}</span>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {/* inc Residents Row - hotel guest bookings from Resos */}
+                    {residentCovers && (
+                      <tr style={styles.forecastTr}>
+                        <td style={{ ...styles.forecastServiceCell, fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
+                          inc Residents
+                        </td>
+                        {hasDailyData ? dailyCovers.map((day) => {
+                          const dayResidents = residentCovers[day.date] || {}
+                          const total = (dayResidents['lunch'] || 0) + (dayResidents['dinner'] || 0)
+                          return (
+                            <td key={day.date} style={{ ...styles.forecastTd, fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
+                              {total > 0 ? total : '-'}
+                            </td>
+                          )
+                        }) : budgetData.dates.map((d) => (
+                          <td key={d} style={{ ...styles.forecastTd, fontSize: '0.8rem', color: '#888' }}>-</td>
+                        ))}
+                        <td style={{ ...styles.forecastTd, ...styles.forecastTotalCol, fontSize: '0.8rem', color: '#888', fontStyle: 'italic' }}>
+                          {(() => {
+                            const weekTotal = Object.values(residentCovers).reduce((sum, day) => {
+                              return sum + (day['lunch'] || 0) + (day['dinner'] || 0)
+                            }, 0)
+                            return weekTotal > 0 ? weekTotal : '-'
+                          })()}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
-            )
-          })}
-        </div>
-      )}
+            )}
+            {/* Override Section */}
+            {showForecastBreakdown && isOverrideLoading && (
+              <div style={{ textAlign: 'center', padding: '1rem', color: '#888', fontSize: '0.85rem' }}>
+                Loading override data...
+              </div>
+            )}
+            {showForecastBreakdown && overrideData && !overrideData.has_snapshot && (
+              <div style={{ textAlign: 'center', padding: '1rem' }}>
+                <button
+                  onClick={() => snapshotMutation.mutate()}
+                  disabled={snapshotMutation.isPending}
+                  style={styles.snapshotBtn}
+                >
+                  {snapshotMutation.isPending ? 'Creating Snapshot...' : 'Snapshot Forecast & Override'}
+                </button>
+                <div style={{ fontSize: '0.8rem', color: '#888', marginTop: '0.5rem' }}>
+                  Takes a snapshot of the current forecast as a baseline for overrides
+                </div>
+              </div>
+            )}
+            {showForecastBreakdown && overrideData?.has_snapshot && (
+              <>
+                {/* Snapshot info bar */}
+                <div style={styles.snapshotInfoBar}>
+                  <span>
+                    Snapshot: £{overrideData.snapshot_revenue?.toLocaleString(undefined, { minimumFractionDigits: 2 }) ?? '-'}
+                    {overrideData.adjusted_revenue != null && Math.abs(overrideData.adjusted_revenue - (overrideData.snapshot_revenue ?? 0)) > 1 && (
+                      <span style={{
+                        marginLeft: '0.5rem',
+                        fontWeight: 'bold',
+                        color: overrideData.adjusted_revenue > (overrideData.snapshot_revenue ?? 0) ? '#27ae60' : '#e74c3c'
+                      }}>
+                        → £{overrideData.adjusted_revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    onClick={() => { if (window.confirm('Re-snapshot will update the baseline forecast. Continue?')) snapshotMutation.mutate() }}
+                    style={styles.resnapshotBtn}
+                    disabled={snapshotMutation.isPending}
+                  >
+                    {snapshotMutation.isPending ? '...' : 'Re-snapshot'}
+                  </button>
+                </div>
+
+                {/* Spend Rates Display - collapsible, shown as gross inc VAT, stored as net */}
+                <div style={styles.overrideTableContainer}>
+                  <div
+                    style={{ ...styles.overrideSectionHeader, cursor: 'pointer', userSelect: 'none' }}
+                    onClick={() => setShowSpendRates(!showSpendRates)}
+                  >
+                    {showSpendRates ? '▾' : '▸'} Food Spend Per Cover (Gross inc VAT)
+                  </div>
+                  {showSpendRates && (
+                    <table style={styles.forecastTable}>
+                      <thead>
+                        <tr>
+                          <th style={styles.forecastTh}></th>
+                          {overrideData.spend_rates.map(sr => (
+                            <th key={sr.period} style={styles.forecastTh}>
+                              {sr.period.charAt(0).toUpperCase() + sr.period.slice(1)}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr style={styles.forecastTr}>
+                          <td style={styles.forecastServiceCell}>Food £/hd</td>
+                          {overrideData.spend_rates.map(sr => {
+                            const grossVal = sr.food_spend_effective * overrideData.vat_rate
+                            return (
+                              <td key={sr.period} style={styles.forecastTd}>
+                                <input
+                                  type="number"
+                                  step="0.50"
+                                  defaultValue={grossVal.toFixed(2)}
+                                  key={`food-${sr.period}-${grossVal.toFixed(2)}`}
+                                  style={{
+                                    ...styles.spendInput,
+                                    ...(sr.food_spend_override !== null ? styles.spendInputOverridden : {}),
+                                  }}
+                                  onBlur={(e) => {
+                                    const inputGross = parseFloat(e.target.value)
+                                    if (!isNaN(inputGross) && Math.abs(inputGross - grossVal) > 0.001) {
+                                      const netVal = Math.round((inputGross / overrideData.vat_rate) * 100) / 100
+                                      saveSpendRate(sr.period, netVal, null)
+                                    }
+                                  }}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                />
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Cover Override Input Table */}
+                <div style={styles.overrideTableContainer}>
+                  <div style={{
+                    ...styles.overrideSectionHeader,
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}>
+                    <span>Cover Overrides (Lunch & Dinner)</span>
+                    {hasPendingChanges && (
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button onClick={() => setPendingOverrides({})} style={styles.discardBtn}>
+                          Discard
+                        </button>
+                        <button
+                          onClick={saveAllOverrides}
+                          disabled={isSavingOverrides}
+                          style={styles.saveOverrideBtn}
+                        >
+                          {isSavingOverrides ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <table style={styles.forecastTable}>
+                    <thead>
+                      <tr>
+                        <th style={styles.forecastTh}>Service</th>
+                        {overrideData.recalc_days.map(d => (
+                          <th key={d.date} style={styles.forecastTh}>{d.day_name}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(['lunch', 'dinner'] as const).map(period => (
+                        <tr key={period} style={styles.forecastTr}>
+                          <td style={styles.forecastServiceCell}>
+                            {period.charAt(0).toUpperCase() + period.slice(1)}
+                          </td>
+                          {overrideData.recalc_days.map(d => {
+                            const p = d.periods[period]
+                            if (!p) return <td key={d.date} style={styles.forecastTd}>-</td>
+
+                            const serverOverride = overrideData.overrides.find(
+                              o => o.override_date === d.date && o.period === period
+                            )
+                            const displayVal = getOverrideDisplayValue(d.date, period, serverOverride?.override_covers ?? p.effective)
+                            const hasOverride = isCellOverridden(d.date, period)
+                            const pendingKey = `${d.date}|${period}`
+                            const hasPending = pendingKey in pendingOverrides
+
+                            if (d.is_past) {
+                              return (
+                                <td key={d.date} style={{ ...styles.forecastTd, color: '#999' }}>
+                                  {p.effective}
+                                </td>
+                              )
+                            }
+
+                            return (
+                              <td key={d.date} style={styles.forecastTd}>
+                                <div style={styles.stepperCell}>
+                                  <button
+                                    onClick={() => adjustCover(d.date, period, serverOverride?.override_covers ?? p.effective, -1)}
+                                    style={styles.stepperBtn}
+                                  >−</button>
+                                  <span style={hasOverride ? styles.overriddenValue : undefined}>
+                                    {displayVal}
+                                  </span>
+                                  <button
+                                    onClick={() => adjustCover(d.date, period, serverOverride?.override_covers ?? p.effective, 1)}
+                                    style={styles.stepperBtn}
+                                  >+</button>
+                                  {serverOverride && !hasPending && (
+                                    <button
+                                      onClick={() => deleteOverride(serverOverride.id)}
+                                      style={styles.deleteOverrideBtn}
+                                      title="Remove override"
+                                    >×</button>
+                                  )}
+                                </div>
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Recalculated Breakdown Table */}
+                <div style={styles.overrideTableContainer}>
+                  <div style={styles.overrideSectionHeader}>Recalculated Forecast</div>
+                  <table style={styles.forecastTable}>
+                    <thead>
+                      <tr>
+                        <th style={styles.forecastTh}>Service</th>
+                        {overrideData.recalc_days.map(d => (
+                          <th key={d.date} style={styles.forecastTh}>{d.day_name}</th>
+                        ))}
+                        <th style={{ ...styles.forecastTh, ...styles.forecastTotalCol }}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(['breakfast', 'lunch', 'dinner'] as const).map(period => {
+                        let totalEffective = 0
+                        return (
+                          <tr key={period} style={styles.forecastTr}>
+                            <td style={styles.forecastServiceCell}>
+                              {period.charAt(0).toUpperCase() + period.slice(1)}
+                            </td>
+                            {overrideData.recalc_days.map(d => {
+                              const p = d.periods[period]
+                              if (!p) return <td key={d.date} style={styles.forecastTd}>-</td>
+                              totalEffective += p.effective
+
+                              if (d.is_past) {
+                                return (
+                                  <td key={d.date} style={styles.forecastTd}>
+                                    <span style={styles.fcActual}>{p.actual ?? p.effective}</span>
+                                    {p.variance != null && p.variance !== 0 && (
+                                      <span style={{
+                                        fontSize: '0.7rem',
+                                        marginLeft: '2px',
+                                        color: p.variance > 0 ? '#27ae60' : '#e74c3c',
+                                      }}>
+                                        {p.variance > 0 ? '▲' : '▼'}{Math.abs(p.variance)}
+                                      </span>
+                                    )}
+                                  </td>
+                                )
+                              }
+
+                              return (
+                                <td key={d.date} style={styles.forecastTd}>
+                                  <span style={styles.fcOtb}>{p.otb}</span>
+                                  {p.pickup > 0 && (
+                                    <span style={{
+                                      ...styles.fcPickup,
+                                      ...(p.is_overridden ? styles.overriddenValue : {}),
+                                    }}>
+                                      {' +' + p.pickup}
+                                    </span>
+                                  )}
+                                </td>
+                              )
+                            })}
+                            <td style={{ ...styles.forecastTd, ...styles.forecastTotalCol }}>
+                              {totalEffective}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                      {/* Revenue row */}
+                      <tr style={{ ...styles.forecastTr, borderTop: '2px solid #ddd' }}>
+                        <td style={{ ...styles.forecastServiceCell, fontStyle: 'italic', color: '#666' }}>Revenue</td>
+                        {overrideData.recalc_days.map(d => (
+                          <td key={d.date} style={{ ...styles.forecastTd, fontSize: '0.8rem', color: '#666' }}>
+                            £{d.day_revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          </td>
+                        ))}
+                        <td style={{ ...styles.forecastTd, ...styles.forecastTotalCol, fontSize: '0.8rem' }}>
+                          £{overrideData.adjusted_revenue?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? '-'}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Summary Cards */}
       <div style={styles.summaryCards}>
         <div style={styles.card}>
-          <div style={styles.cardLabel}>Forecast Revenue</div>
+          <div style={styles.cardLabel}>
+            {budgetData.has_overrides ? 'Adjusted Revenue' : 'Forecast Revenue'}
+          </div>
           <div style={styles.cardValue}>£{budgetData.forecast_revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
           <div style={styles.cardSubtext}>
-            OTB: £{budgetData.otb_revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {budgetData.has_overrides && budgetData.snapshot_revenue != null
+              ? `Snapshot: £${budgetData.snapshot_revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+              : `OTB: £${budgetData.otb_revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+            }
           </div>
         </div>
         <div style={styles.card}>
@@ -538,53 +1124,71 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     fontSize: '0.8rem',
   },
-  forecastBanner: {
+  forecastToggle: {
+    background: 'none',
+    border: '1px solid #ddd',
+    borderRadius: '4px',
+    padding: '0.5rem 1rem',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+    color: '#555',
+    fontWeight: '500',
+  },
+  forecastTableContainer: {
+    overflowX: 'auto',
     background: 'white',
     borderRadius: '8px',
     boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-    padding: '0.75rem 1rem',
-    marginBottom: '1rem',
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '0.25rem 2rem',
+    marginTop: '0.5rem',
   },
-  forecastRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.5rem',
-    fontSize: '0.9rem',
-  },
-  forecastLabel: {
-    fontWeight: 'bold',
-    color: '#333',
-    minWidth: '70px',
-  },
-  forecastValues: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.3rem',
-  },
-  forecastOtb: {
-    fontWeight: '600',
-    color: '#2c3e50',
-    fontSize: '1rem',
-  },
-  forecastGuests: {
-    color: '#7f8c8d',
+  forecastTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
     fontSize: '0.85rem',
   },
-  forecastSep: {
-    color: '#95a5a6',
+  forecastTh: {
+    padding: '0.6rem 0.5rem',
+    borderBottom: '2px solid #e0e0e0',
+    textAlign: 'center',
+    fontWeight: 'bold',
+    background: '#f5f5f5',
+    whiteSpace: 'nowrap',
     fontSize: '0.8rem',
   },
-  forecastPlus: {
-    color: '#27ae60',
-    fontWeight: 'bold',
+  forecastTr: {
+    borderBottom: '1px solid #e0e0e0',
   },
-  forecastPickup: {
+  forecastServiceCell: {
+    padding: '0.5rem 0.75rem',
     fontWeight: '600',
+    textAlign: 'left',
+    whiteSpace: 'nowrap',
+    color: '#333',
+  },
+  forecastTd: {
+    padding: '0.5rem',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+  },
+  forecastTotalCol: {
+    background: '#f0f7ff',
+    fontWeight: '600',
+  },
+  fcActual: {
     color: '#27ae60',
-    fontSize: '1rem',
+    fontWeight: '500',
+  },
+  fcOtb: {
+    color: '#2980b9',
+    fontWeight: '500',
+  },
+  fcPickup: {
+    color: '#e67e22',
+    fontSize: '0.85rem',
+  },
+  fcTotal: {
+    color: '#555',
+    fontWeight: '600',
   },
   summaryCards: {
     display: 'grid',
@@ -781,5 +1385,116 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '1rem',
     borderRadius: '8px',
     boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+  },
+  snapshotBtn: {
+    padding: '0.75rem 1.5rem',
+    background: '#3498db',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.95rem',
+    fontWeight: '600',
+  },
+  snapshotInfoBar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '0.5rem 0.75rem',
+    background: '#f0f7ff',
+    borderRadius: '6px',
+    fontSize: '0.85rem',
+    color: '#555',
+    marginBottom: '0.75rem',
+    marginTop: '0.75rem',
+  },
+  resnapshotBtn: {
+    background: 'none',
+    border: '1px solid #aaa',
+    borderRadius: '4px',
+    padding: '0.25rem 0.5rem',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    color: '#666',
+  },
+  overrideTableContainer: {
+    background: 'white',
+    borderRadius: '8px',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+    marginBottom: '0.75rem',
+    overflow: 'hidden',
+  },
+  overrideSectionHeader: {
+    padding: '0.5rem 0.75rem',
+    fontSize: '0.85rem',
+    fontWeight: '600',
+    color: '#555',
+    borderBottom: '1px solid #e0e0e0',
+    background: '#fafafa',
+  },
+  spendInput: {
+    width: '65px',
+    textAlign: 'center' as const,
+    border: '1px solid #ddd',
+    borderRadius: '3px',
+    padding: '3px 4px',
+    fontSize: '0.8rem',
+  },
+  spendInputOverridden: {
+    fontWeight: 'bold',
+    borderColor: '#3498db',
+    background: '#f0f7ff',
+  },
+  stepperCell: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '4px',
+  },
+  stepperBtn: {
+    width: '22px',
+    height: '22px',
+    border: '1px solid #ccc',
+    borderRadius: '3px',
+    background: '#f5f5f5',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    lineHeight: '1',
+  },
+  overriddenValue: {
+    fontWeight: 'bold' as const,
+    textDecoration: 'underline' as const,
+  },
+  deleteOverrideBtn: {
+    background: 'none',
+    border: 'none',
+    color: '#e74c3c',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    padding: '0 2px',
+    lineHeight: '1',
+  },
+  saveOverrideBtn: {
+    padding: '0.25rem 0.75rem',
+    background: '#27ae60',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+  },
+  discardBtn: {
+    padding: '0.25rem 0.75rem',
+    background: '#f0f0f0',
+    color: '#666',
+    border: '1px solid #ddd',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
   },
 }

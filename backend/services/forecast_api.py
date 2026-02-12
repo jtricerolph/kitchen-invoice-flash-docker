@@ -240,6 +240,18 @@ class ForecastAPIClient:
                 totals[period]["forecast"] += forecast
         return totals
 
+    async def get_spend_rates(self) -> dict:
+        """
+        Fetch spend-per-cover rates from /public/forecast/spend-rates
+
+        Returns dict with:
+            - vat_rate: float
+            - periods: {breakfast/lunch/dinner: {food_spend_gross, drinks_spend_gross, food_spend_net, drinks_spend_net}}
+        """
+        response = await self._request("/public/forecast/spend-rates")
+        logger.info("Fetched spend rates from forecast API")
+        return response
+
     def get_daily_breakdown(self, forecast_data: list[dict]) -> list[dict]:
         """
         Process forecast data into daily revenue breakdown for budget tracking.
