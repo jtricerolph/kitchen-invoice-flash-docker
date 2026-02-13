@@ -199,6 +199,18 @@ class KitchenSettings(Base):
     kds_away_timer_red_seconds: Mapped[int] = mapped_column(Integer, default=1200)    # 20 minutes
     kds_bookings_refresh_seconds: Mapped[int] = mapped_column(Integer, default=60)
 
+    # Cost distribution settings
+    cost_distribution_max_days: Mapped[int] = mapped_column(Integer, default=90)
+
+    # Kitchen details (for PO letterhead)
+    kitchen_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kitchen_address_line1: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kitchen_address_line2: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    kitchen_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    kitchen_postcode: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    kitchen_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    kitchen_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

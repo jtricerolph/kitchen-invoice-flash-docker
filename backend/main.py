@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -44,6 +44,9 @@ from migrations.add_kds_bookings_refresh import run_migration as run_kds_booking
 from migrations.add_budget_settings import migrate as run_budget_settings_migration
 from migrations.add_cover_overrides import migrate as run_cover_overrides_migration
 from migrations.add_purchase_orders import migrate as run_purchase_orders_migration
+from migrations.add_supplier_po_fields import migrate as run_supplier_po_fields_migration
+from migrations.add_kitchen_details import migrate as run_kitchen_details_migration
+from migrations.add_cost_distributions import migrate as run_cost_distributions_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -280,6 +283,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Purchase orders migration warning (may be expected): {e}")
 
+    # Run supplier PO fields migration
+    try:
+        await run_supplier_po_fields_migration()
+        logger.info("Supplier PO fields migration completed")
+    except Exception as e:
+        logger.warning(f"Supplier PO fields migration warning (may be expected): {e}")
+
+    # Run kitchen details migration
+    try:
+        await run_kitchen_details_migration()
+        logger.info("Kitchen details migration completed")
+    except Exception as e:
+        logger.warning(f"Kitchen details migration warning (may be expected): {e}")
+
+    # Run cost distributions migration
+    try:
+        await run_cost_distributions_migration()
+        logger.info("Cost distributions migration completed")
+    except Exception as e:
+        logger.warning(f"Cost distributions migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -337,6 +361,7 @@ app.include_router(kds.router, prefix="/api/kds", tags=["KDS"])
 app.include_router(budget.router, prefix="/api/budget", tags=["Budget"])
 app.include_router(cover_overrides.router, prefix="/api/cover-overrides", tags=["Cover Overrides"])
 app.include_router(purchase_orders.router, prefix="/api/purchase-orders", tags=["Purchase Orders"])
+app.include_router(cost_distributions.router, prefix="/api/cost-distributions", tags=["Cost Distributions"])
 
 
 @app.get("/")

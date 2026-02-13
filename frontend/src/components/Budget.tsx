@@ -1,15 +1,15 @@
-import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useState, useEffect, Fragment } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 import PurchaseOrderModal from './PurchaseOrderModal'
-import { Line } from 'react-chartjs-2'
+import CostDistributionModal from './CostDistributionModal'
+import { Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
-  PointElement,
-  LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
@@ -18,8 +18,7 @@ import {
 ChartJS.register(
   CategoryScale,
   LinearScale,
-  PointElement,
-  LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend
@@ -49,6 +48,8 @@ interface SupplierBudgetRow {
   invoices_by_date: Record<string, BudgetInvoice[]>
   purchase_orders_by_date: Record<string, BudgetPO[]>
   actual_spent: number
+  cd_adjustments_by_date: Record<string, number>
+  cd_total: number
   po_ordered: number
   remaining: number
   status: 'under' | 'on_track' | 'over'
@@ -114,6 +115,7 @@ interface WeeklyBudgetResponse {
   total_spent: number
   total_po_ordered: number
   total_remaining: number
+  cd_budget_reservation: number
   suppliers: SupplierBudgetRow[]
   all_supplier_names: string[]
   daily_data: DailyBudgetData[]
@@ -201,9 +203,37 @@ const formatWeekRange = (start: string, end: string): string => {
   return `${startDate.getDate()} ${startMonth} - ${endDate.getDate()} ${endMonth}`
 }
 
+interface WeeklyDistributionRow {
+  distribution_id: number
+  title: string
+  supplier_name?: string
+  invoice_number?: string
+  source_date_str?: string
+  summary?: string
+  notes?: string
+  invoice_id: number
+  entries_by_date: Record<string, number>
+  total_distributed_value: number
+  remaining_balance: number
+  bf_balance: number
+  cf_balance: number
+  status: string
+}
+
+interface WeeklyDistributionsResponse {
+  week_start: string
+  week_end: string
+  distributions: WeeklyDistributionRow[]
+  daily_totals: Record<string, number>
+  bf_balance: number
+  cf_balance: number
+  week_total: number
+}
+
 export default function Budget() {
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [weekOffset, setWeekOffset] = useState(0)
   const [showForecastBreakdown, setShowForecastBreakdown] = useState(false)
   const [showSpendRates, setShowSpendRates] = useState(false)
@@ -211,6 +241,14 @@ export default function Budget() {
   const [editPoId, setEditPoId] = useState<number | null>(null)
   const [poDefaultSupplierId, setPoDefaultSupplierId] = useState<number | null>(null)
   const [poDefaultDate, setPoDefaultDate] = useState<string | null>(null)
+
+  // Cost distribution state
+  const [selectInvoiceMode, setSelectInvoiceMode] = useState(false)
+  const [distModalOpen, setDistModalOpen] = useState(false)
+  const [distModalInvoiceId, setDistModalInvoiceId] = useState<number | null>(null)
+  const [distModalDistId, setDistModalDistId] = useState<number | null>(null)
+  const [showDistributions, setShowDistributions] = useState(false)
+  const [expandedDists, setExpandedDists] = useState<Set<number>>(new Set())
 
   // Fetch weekly budget data
   const { data: budgetData, isLoading, error, refetch } = useQuery<WeeklyBudgetResponse>({
@@ -220,6 +258,30 @@ export default function Budget() {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch budget data')
+      return res.json()
+    },
+    enabled: !!token,
+  })
+
+  // Fetch prior 2 weeks for chart comparison
+  const { data: prevWeek1 } = useQuery<WeeklyBudgetResponse>({
+    queryKey: ['budget', 'weekly', weekOffset - 1],
+    queryFn: async () => {
+      const res = await fetch(`/api/budget/weekly?week_offset=${weekOffset - 1}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return null
+      return res.json()
+    },
+    enabled: !!token,
+  })
+  const { data: prevWeek2 } = useQuery<WeeklyBudgetResponse>({
+    queryKey: ['budget', 'weekly', weekOffset - 2],
+    queryFn: async () => {
+      const res = await fetch(`/api/budget/weekly?week_offset=${weekOffset - 2}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return null
       return res.json()
     },
     enabled: !!token,
@@ -244,6 +306,29 @@ export default function Budget() {
     },
     enabled: !!token && showForecastBreakdown,
   })
+
+  // Fetch cost distribution data for this week
+  const { data: distData } = useQuery<WeeklyDistributionsResponse>({
+    queryKey: ['cost-distributions', 'weekly', weekOffset, budgetData?.week_start, budgetData?.week_end],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/cost-distributions/weekly?week_start=${budgetData!.week_start}&week_end=${budgetData!.week_end}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      if (!res.ok) throw new Error('Failed to fetch distribution data')
+      return res.json()
+    },
+    enabled: !!token && !!budgetData,
+  })
+
+  // Auto-expand distributions when active distributions have a balance in this period
+  useEffect(() => {
+    if (distData && distData.distributions.some(d =>
+      d.status === 'ACTIVE' && (d.bf_balance !== 0 || d.cf_balance !== 0)
+    )) {
+      setShowDistributions(true)
+    }
+  }, [distData])
 
   // Fetch resident (hotel guest) covers for the forecast table
   const { data: residentCovers } = useQuery<Record<string, Record<string, { covers: number; bookings: number }>>>({
@@ -349,43 +434,60 @@ export default function Budget() {
     return d < today
   }
 
-  // Prepare chart data
-  const chartData = budgetData ? {
-    labels: budgetData.daily_data.map((d) => d.day_name),
-    datasets: [
-      {
-        label: 'Cumulative Budget',
-        data: budgetData.daily_data.map((d) => d.cumulative_budget),
-        borderColor: '#3498db',
-        backgroundColor: 'rgba(52, 152, 219, 0.1)',
-        tension: 0.1,
-        borderDash: [5, 5],
-      },
-      {
-        label: 'Cumulative Spent',
-        data: budgetData.daily_data.map((d) => d.cumulative_spent),
-        borderColor: '#e74c3c',
-        backgroundColor: 'rgba(231, 76, 60, 0.1)',
-        tension: 0.1,
-      },
-      {
-        label: 'Historical Budget',
-        data: budgetData.daily_data.map((d) => d.historical_budget),
-        borderColor: '#2ecc71',
-        backgroundColor: 'rgba(46, 204, 113, 0.2)',
-        tension: 0.1,
-        fill: false,
-      },
-      {
-        label: 'Revenue Budget',
-        data: budgetData.daily_data.map((d) => d.revenue_budget),
-        borderColor: '#3498db',
-        backgroundColor: 'rgba(52, 152, 219, 0.2)',
-        tension: 0.1,
-        fill: false,
-      },
-    ],
-  } : null
+  // Helper: compute daily spend totals (invoices + POs) from a week's budget data
+  const getDailySpend = (data: WeeklyBudgetResponse): number[] => {
+    return data.dates.map(d => {
+      const invoiceSpend = data.daily_totals[d] ?? 0
+      let poSpend = 0
+      data.suppliers.forEach(s => {
+        const pos = (s.purchase_orders_by_date || {})[d] || []
+        pos.forEach(po => { poSpend += po.total_amount || 0 })
+      })
+      return invoiceSpend + poSpend
+    })
+  }
+
+  // Prepare chart data — daily spend comparison across 3 weeks
+  const chartData = budgetData ? (() => {
+    const thisWeekSpend = getDailySpend(budgetData)
+    const prev1Spend = prevWeek1 ? getDailySpend(prevWeek1) : Array(7).fill(0)
+    const prev2Spend = prevWeek2 ? getDailySpend(prevWeek2) : Array(7).fill(0)
+    const prev1Label = prevWeek1 ? formatWeekRange(prevWeek1.week_start, prevWeek1.week_end) : 'Week -2'
+    const prev2Label = prevWeek2 ? formatWeekRange(prevWeek2.week_start, prevWeek2.week_end) : 'Week -3'
+
+    return {
+      labels: budgetData.daily_data.map((d) => d.day_name),
+      datasets: [
+        {
+          label: prev2Label,
+          data: prev2Spend,
+          backgroundColor: 'rgba(189, 195, 199, 0.4)',
+          borderColor: 'rgba(189, 195, 199, 0.6)',
+          borderWidth: 1,
+          borderRadius: 3,
+          order: 3,
+        },
+        {
+          label: prev1Label,
+          data: prev1Spend,
+          backgroundColor: 'rgba(52, 152, 219, 0.35)',
+          borderColor: 'rgba(52, 152, 219, 0.5)',
+          borderWidth: 1,
+          borderRadius: 3,
+          order: 2,
+        },
+        {
+          label: 'This Week',
+          data: thisWeekSpend,
+          backgroundColor: 'rgba(46, 204, 113, 0.7)',
+          borderColor: 'rgba(39, 174, 96, 0.9)',
+          borderWidth: 1,
+          borderRadius: 3,
+          order: 1,
+        },
+      ],
+    }
+  })() : null
 
   const chartOptions = {
     responsive: true,
@@ -396,6 +498,11 @@ export default function Budget() {
       },
       title: {
         display: false,
+      },
+      tooltip: {
+        callbacks: {
+          label: (ctx: any) => `${ctx.dataset.label}: £${ctx.parsed.y?.toFixed(2) ?? '0.00'}`,
+        },
       },
     },
     scales: {
@@ -970,14 +1077,12 @@ export default function Budget() {
                     {budgetData.dates.map((d) => {
                       const invoices = supplier.invoices_by_date[d] || []
                       const pos = (supplier.purchase_orders_by_date || {})[d] || []
-                      const isPast = isPastOrToday(d)
                       const hasContent = invoices.length > 0 || pos.length > 0
                       return (
                         <td
                           key={d}
                           style={{
                             ...styles.td,
-                            ...(isPast ? {} : styles.futureCell),
                             ...(!hasContent && supplier.supplier_id ? styles.clickableCell : {}),
                           }}
                           onClick={() => {
@@ -996,12 +1101,22 @@ export default function Budget() {
                                 return (
                                   <button
                                     key={inv.id}
-                                    onClick={() => navigate(`/invoice/${inv.id}`)}
+                                    onClick={() => {
+                                      if (selectInvoiceMode && !isCreditNote) {
+                                        setDistModalInvoiceId(inv.id)
+                                        setDistModalDistId(null)
+                                        setDistModalOpen(true)
+                                        setSelectInvoiceMode(false)
+                                      } else {
+                                        navigate(`/invoice/${inv.id}`)
+                                      }
+                                    }}
                                     style={{
                                       ...styles.invoiceBtn,
                                       ...(isCreditNote ? styles.creditNoteBtn : {}),
+                                      ...(selectInvoiceMode && !isCreditNote ? styles.invoiceBtnSelectMode : {}),
                                     }}
-                                    title={inv.invoice_number || `Invoice #${inv.id}`}
+                                    title={selectInvoiceMode && !isCreditNote ? 'Click to distribute this invoice' : (inv.invoice_number || `Invoice #${inv.id}`)}
                                   >
                                     {isCreditNote && '-'}£{Math.abs(inv.net_stock).toFixed(2)}{isCreditNote && ' CR'}
                                   </button>
@@ -1020,7 +1135,7 @@ export default function Budget() {
                                   style={styles.poBtn}
                                   title={po.order_reference ? `PO: ${po.order_reference}` : `PO #${po.id}`}
                                 >
-                                  £{(po.total_amount || 0).toFixed(2)} PO
+                                  £{(po.total_amount || 0).toFixed(2)}
                                 </button>
                               ))}
                             </div>
@@ -1035,6 +1150,11 @@ export default function Budget() {
                     </td>
                     <td style={styles.spentCell}>
                       £{supplier.actual_spent.toFixed(2)}
+                      {supplier.cd_total !== 0 && (
+                        <div style={{ fontSize: '0.65rem', color: supplier.cd_total > 0 ? '#e65100' : '#2e7d32' }}>
+                          ({supplier.cd_total > 0 ? '+' : '-'}£{Math.abs(supplier.cd_total).toFixed(2)} dist)
+                        </div>
+                      )}
                     </td>
                     <td style={styles.orderedCell}>
                       {supplier.po_ordered > 0 ? `£${supplier.po_ordered.toFixed(2)}` : '-'}
@@ -1060,13 +1180,35 @@ export default function Budget() {
               })}
             </tbody>
             <tfoot>
+              {distData && distData.week_total !== 0 && (
+                <tr style={{ ...styles.footerRow, background: '#fff8e1' }}>
+                  <td style={{ ...styles.footerLabel, color: '#e65100', fontWeight: 600 }}>Distributed</td>
+                  {budgetData.dates.map((d) => {
+                    const adj = distData.daily_totals[d] ?? 0
+                    return (
+                      <td key={d} style={{ ...styles.footerTd, color: adj < 0 ? '#c62828' : adj > 0 ? '#2e7d32' : '#999', fontWeight: 500 }}>
+                        {adj !== 0 ? (
+                          <>{adj < 0 ? '-' : '+'}£{Math.abs(adj).toFixed(2)}</>
+                        ) : '-'}
+                      </td>
+                    )
+                  })}
+                  <td style={styles.footerTd}></td>
+                  <td style={{ ...styles.footerTd, color: '#e65100', fontWeight: 600 }}>
+                    {distData.week_total < 0 ? '-' : '+'}£{Math.abs(distData.week_total).toFixed(2)}
+                  </td>
+                  <td style={styles.footerTd}></td>
+                  <td style={styles.footerTd}></td>
+                  <td style={styles.footerTd}></td>
+                </tr>
+              )}
               <tr style={styles.footerRow}>
                 <td style={styles.footerLabel}>Daily Total</td>
                 {budgetData.dates.map((d) => {
                   const total = budgetData.daily_totals[d] ?? 0
                   const isPast = isPastOrToday(d)
                   return (
-                    <td key={d} style={{ ...styles.footerTd, ...(isPast ? {} : styles.futureCell) }}>
+                    <td key={d} style={styles.footerTd}>
                       {isPast ? `£${total.toFixed(2)}` : '-'}
                     </td>
                   )
@@ -1106,11 +1248,173 @@ export default function Budget() {
         </div>
       </div>
 
+      {/* Distributed Costs Section */}
+      <div style={styles.section}>
+        <div
+          style={styles.distributionHeader}
+          onClick={() => setShowDistributions(!showDistributions)}
+        >
+          <span style={{ cursor: 'pointer' }}>
+            {showDistributions ? '\u25BE' : '\u25B8'} Distributed Costs
+          </span>
+          {distData && distData.distributions.length > 0 && (
+            <span style={styles.distributionSummary}>
+              BF: {distData.bf_balance < 0 ? '-' : ''}£{Math.abs(distData.bf_balance).toFixed(2)}
+              {' | '}Movement: {distData.week_total < 0 ? '-' : distData.week_total > 0 ? '+' : ''}£{Math.abs(distData.week_total).toFixed(2)}
+              {' | '}CF: {distData.cf_balance < 0 ? '-' : ''}£{Math.abs(distData.cf_balance).toFixed(2)}
+            </span>
+          )}
+        </div>
+
+        {showDistributions && budgetData && (
+              <div style={{ overflowX: 'auto', marginTop: '0.5rem' }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...styles.th, ...styles.supplierHeader, minWidth: '180px' }}>Distribution</th>
+                      <th style={{ ...styles.th, minWidth: '70px' }}>BF</th>
+                      {budgetData.dates.map((d: string) => (
+                        <th key={d} style={{ ...styles.th, minWidth: '70px' }}>
+                          {new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })}
+                        </th>
+                      ))}
+                      <th style={{ ...styles.th, minWidth: '70px' }}>CF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {distData?.distributions.map((dist) => {
+                      const isExpanded = expandedDists.has(dist.distribution_id)
+                      return (
+                        <Fragment key={dist.distribution_id}>
+                          <tr>
+                            <td style={{ ...styles.supplierCell, fontSize: '0.8rem', padding: '0.3rem 0.5rem' }}>
+                              <span
+                                style={{ cursor: 'pointer', color: '#555', marginRight: '0.3rem', fontSize: '0.7rem' }}
+                                onClick={() => setExpandedDists(prev => {
+                                  const next = new Set(prev)
+                                  next.has(dist.distribution_id) ? next.delete(dist.distribution_id) : next.add(dist.distribution_id)
+                                  return next
+                                })}
+                              >
+                                {isExpanded ? '\u25BE' : '\u25B8'}
+                              </span>
+                              <span
+                                style={{ cursor: 'pointer', color: '#1565c0' }}
+                                onClick={() => {
+                                  setDistModalDistId(dist.distribution_id)
+                                  setDistModalInvoiceId(dist.invoice_id)
+                                  setDistModalOpen(true)
+                                }}
+                                title="Click to view/edit distribution"
+                              >
+                                {dist.title}
+                              </span>
+                            </td>
+                            <td style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem', color: '#555' }}>
+                              {dist.bf_balance !== 0 ? (
+                                <>{dist.bf_balance < 0 ? '-' : ''}£{Math.abs(dist.bf_balance).toFixed(2)}</>
+                              ) : '-'}
+                            </td>
+                            {budgetData.dates.map((d: string) => {
+                              const val = dist.entries_by_date[d]
+                              return (
+                                <td key={d} style={{ ...styles.dayCell, fontSize: '0.8rem' }}>
+                                  {val != null ? (
+                                    <span style={{ color: val < 0 ? '#c62828' : '#2e7d32', fontWeight: 500 }}>
+                                      {val < 0 ? '-' : ''}£{Math.abs(val).toFixed(2)}
+                                    </span>
+                                  ) : '-'}
+                                </td>
+                              )
+                            })}
+                            <td style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem', color: dist.cf_balance < 0 ? '#c62828' : dist.cf_balance === 0 ? '#2e7d32' : '#555' }}>
+                              {dist.cf_balance !== 0 ? (
+                                <>{dist.cf_balance < 0 ? '-' : ''}£{Math.abs(dist.cf_balance).toFixed(2)}</>
+                              ) : '£0.00'}
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr>
+                              <td
+                                colSpan={budgetData.dates.length + 3}
+                                style={{ padding: '0.3rem 0.5rem 0.5rem 1.5rem', background: '#fafafa', fontSize: '0.75rem', color: '#555', borderTop: 'none' }}
+                              >
+                                <div style={{ fontWeight: 600 }}>{dist.supplier_name || 'Unknown'} {dist.invoice_number || ''}</div>
+                                <div>{dist.summary}</div>
+                                {dist.notes && <div style={{ fontStyle: 'italic', marginTop: '0.2rem', color: '#888' }}>{dist.notes}</div>}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
+                    })}
+                  {/* Totals row */}
+                  {distData && distData.distributions.length > 0 && (
+                    <tr style={{ background: '#f8f9fa' }}>
+                      <td style={{ ...styles.supplierCell, fontWeight: 700 }}>Distribution Total</td>
+                      <td style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem' }}>
+                        {distData.bf_balance !== 0 ? (
+                          <>{distData.bf_balance < 0 ? '-' : ''}£{Math.abs(distData.bf_balance).toFixed(2)}</>
+                        ) : '-'}
+                      </td>
+                      {budgetData.dates.map((d: string) => {
+                        const adj = distData.daily_totals[d] ?? 0
+                        return (
+                          <td key={d} style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem' }}>
+                            {adj !== 0 ? (
+                              <span style={{ color: adj < 0 ? '#c62828' : '#2e7d32' }}>
+                                {adj < 0 ? '-' : ''}£{Math.abs(adj).toFixed(2)}
+                              </span>
+                            ) : '-'}
+                          </td>
+                        )
+                      })}
+                      <td style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem' }}>
+                        {distData.cf_balance !== 0 ? (
+                          <>{distData.cf_balance < 0 ? '-' : ''}£{Math.abs(distData.cf_balance).toFixed(2)}</>
+                        ) : '£0.00'}
+                      </td>
+                    </tr>
+                  )}
+                  {/* Add Distribution row */}
+                  <tr>
+                    <td
+                      colSpan={budgetData.dates.length + 3}
+                      style={{ padding: '0.5rem', textAlign: 'left', borderTop: '1px solid #e0e0e0' }}
+                    >
+                      {selectInvoiceMode ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <button
+                            onClick={() => setSelectInvoiceMode(false)}
+                            style={styles.spreadCostBtnActive}
+                          >
+                            Cancel
+                          </button>
+                          <span style={styles.selectModeHint}>
+                            Click an invoice in the table above to spread its cost
+                          </span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setSelectInvoiceMode(true)}
+                          style={styles.addDistributionBtn}
+                        >
+                          + Add Distribution
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+      </div>
+
       {/* Budget Chart */}
       <div style={styles.section}>
-        <h3 style={styles.sectionTitle}>Budget vs Actual</h3>
+        <h3 style={styles.sectionTitle}>Daily Spend Comparison</h3>
         <div style={styles.chartContainer}>
-          {chartData && <Line data={chartData} options={chartOptions} />}
+          {chartData && <Bar data={chartData} options={chartOptions} />}
         </div>
       </div>
 
@@ -1129,6 +1433,23 @@ export default function Budget() {
         poId={editPoId}
         defaultSupplierId={poDefaultSupplierId}
         defaultDate={poDefaultDate}
+      />
+
+      {/* Cost Distribution Modal */}
+      <CostDistributionModal
+        isOpen={distModalOpen}
+        onClose={() => {
+          setDistModalOpen(false)
+          setDistModalInvoiceId(null)
+          setDistModalDistId(null)
+        }}
+        onSaved={() => {
+          refetch()
+          queryClient.invalidateQueries({ queryKey: ['cost-distributions'] })
+        }}
+        invoiceId={distModalInvoiceId}
+        distributionId={distModalDistId}
+        isAdmin={user?.is_admin}
       />
     </div>
   )
@@ -1603,5 +1924,64 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '0.8rem',
+  },
+  spreadCostBtn: {
+    padding: '0.5rem 1rem',
+    background: '#f5f5f5',
+    border: '1px solid #ddd',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    fontWeight: 500,
+    color: '#555',
+  },
+  spreadCostBtnActive: {
+    padding: '0.5rem 1rem',
+    background: '#e3f2fd',
+    border: '1px solid #42a5f5',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    fontWeight: 500,
+    color: '#1565c0',
+    boxShadow: '0 0 0 2px rgba(66,165,245,0.3)',
+  },
+  selectModeHint: {
+    padding: '0.4rem 0.75rem',
+    background: '#e3f2fd',
+    borderRadius: '4px',
+    color: '#1565c0',
+    fontSize: '0.8rem',
+  },
+  invoiceBtnSelectMode: {
+    cursor: 'crosshair',
+    boxShadow: '0 0 0 2px rgba(66,165,245,0.5)',
+    border: '2px solid #42a5f5',
+  },
+  addDistributionBtn: {
+    padding: '0.4rem 0.75rem',
+    background: 'none',
+    border: '1px dashed #aaa',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '0.8rem',
+    fontWeight: 500,
+    color: '#666',
+  },
+  distributionHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '0.6rem 0.75rem',
+    background: '#f5f5f5',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: '0.9rem',
+  },
+  distributionSummary: {
+    fontSize: '0.8rem',
+    color: '#666',
+    fontWeight: 400,
   },
 }

@@ -26,6 +26,9 @@ interface DateRangeGPResponse {
   gross_profit_percent: number
   supplier_breakdown: SupplierBreakdown[]
   gl_account_breakdown: GLAccountBreakdown[]
+  // Cost distribution breakdown
+  cd_deductions_total: number | null
+  cd_reallocations_total: number | null
   // Allowances breakdown by type
   wastage_total: number | null
   transfer_total: number | null
@@ -498,7 +501,9 @@ export default function GPReport() {
     transfer_total = null,
     staff_food_total = null,
     manual_adjustment_total = null,
-    disputes_total = null
+    disputes_total = null,
+    cd_deductions_total = null,
+    cd_reallocations_total = null,
   } = data || {}
 
   const isNegativeGP = gross_profit < 0
@@ -623,6 +628,27 @@ export default function GPReport() {
               <span style={styles.calcLabel}>Net Food Purchases</span>
               <span style={styles.calcValue}>{formatCurrency(net_food_purchases)}</span>
             </div>
+
+            {(cd_deductions_total !== null || cd_reallocations_total !== null) && (
+              <>
+                {cd_deductions_total !== null && (
+                  <div style={styles.calcRow}>
+                    <span style={{ ...styles.calcLabel, fontSize: '0.85rem', paddingLeft: '0.75rem', color: '#888' }}>Distributed Deductions</span>
+                    <span style={{ ...styles.calcValue, fontSize: '0.85rem', color: '#c62828' }}>
+                      {formatCurrency(cd_deductions_total)}
+                    </span>
+                  </div>
+                )}
+                {cd_reallocations_total !== null && (
+                  <div style={styles.calcRow}>
+                    <span style={{ ...styles.calcLabel, fontSize: '0.85rem', paddingLeft: '0.75rem', color: '#888' }}>Distributed Reallocations</span>
+                    <span style={{ ...styles.calcValue, fontSize: '0.85rem', color: '#2e7d32' }}>
+                      +{formatCurrency(cd_reallocations_total)}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
 
             <div style={styles.divider} />
 

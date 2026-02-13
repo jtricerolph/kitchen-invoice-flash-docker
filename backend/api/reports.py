@@ -16,6 +16,7 @@ from models.user import User
 from models.invoice import Invoice, InvoiceStatus
 from models.gp import RevenueEntry, GPPeriod
 from models.newbook import NewbookDailyRevenue, NewbookGLAccount, NewbookDailyOccupancy
+from models.cost_distribution import CostDistribution, CostDistributionEntry, DistributionStatus
 from auth.jwt import get_current_user
 
 router = APIRouter()
@@ -297,6 +298,19 @@ async def calculate_gp(
     )
     total_costs = costs_result.scalar() or Decimal("0.00")
 
+    # Add cost distribution adjustments (net zero overall, but shifts cost between dates)
+    cd_adjustment_result = await db.execute(
+        select(func.sum(CostDistributionEntry.amount))
+        .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+        .where(
+            CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+            CostDistributionEntry.entry_date >= request.start_date,
+            CostDistributionEntry.entry_date <= request.end_date,
+            CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+        )
+    )
+    total_costs += cd_adjustment_result.scalar() or Decimal("0.00")
+
     # Calculate GP
     gp_amount = total_revenue - total_costs
     gp_percentage = (gp_amount / total_revenue * 100) if total_revenue > 0 else Decimal("0.00")
@@ -421,6 +435,19 @@ async def get_dashboard(
             .select_from(invoice_stock_subq)
         )
         costs = cost_result.scalar() or Decimal("0.00")
+
+        # Add cost distribution adjustments
+        cd_adj_result = await db.execute(
+            select(func.sum(CostDistributionEntry.amount))
+            .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+            .where(
+                CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+                CostDistributionEntry.entry_date >= start,
+                CostDistributionEntry.entry_date <= end,
+                CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+            )
+        )
+        costs += cd_adj_result.scalar() or Decimal("0.00")
 
         # Wastage total from logbook
         wastage_result = await db.execute(
@@ -1113,6 +1140,9 @@ class DateRangeGPResponse(BaseModel):
     transfer_total: Optional[Decimal] = None  # Transfer entries
     staff_food_total: Optional[Decimal] = None  # Staff food entries
     manual_adjustment_total: Optional[Decimal] = None  # Manual adjustment entries
+    # Cost distribution breakdown
+    cd_deductions_total: Optional[Decimal] = None  # Source offsets (negative amounts removing cost from invoice dates)
+    cd_reallocations_total: Optional[Decimal] = None  # Distribution entries (positive amounts adding cost to target dates)
     # Open disputes on invoices in this period
     disputes_total: Optional[Decimal] = None
 
@@ -1203,6 +1233,35 @@ async def get_gp_by_range(
         .select_from(invoice_stock_subq)
     )
     net_food_purchases = purchases_result.scalar() or Decimal("0.00")
+
+    # Add cost distribution adjustments — split into deductions (source offsets) and reallocations
+    cd_deductions_result = await db.execute(
+        select(func.sum(CostDistributionEntry.amount))
+        .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+        .where(
+            CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+            CostDistributionEntry.entry_date >= from_date,
+            CostDistributionEntry.entry_date <= to_date,
+            CostDistributionEntry.is_source_offset == True,
+            CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+        )
+    )
+    cd_deductions = cd_deductions_result.scalar() or Decimal("0.00")  # Will be negative
+
+    cd_reallocations_result = await db.execute(
+        select(func.sum(CostDistributionEntry.amount))
+        .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+        .where(
+            CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+            CostDistributionEntry.entry_date >= from_date,
+            CostDistributionEntry.entry_date <= to_date,
+            CostDistributionEntry.is_source_offset == False,
+            CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+        )
+    )
+    cd_reallocations = cd_reallocations_result.scalar() or Decimal("0.00")  # Will be positive
+
+    net_food_purchases += cd_deductions + cd_reallocations
 
     # Get logbook entry totals by type
     # Helper function to query a specific entry type
@@ -1345,7 +1404,9 @@ async def get_gp_by_range(
         transfer_total=transfer_total if transfer_total > 0 else None,
         staff_food_total=staff_food_total if staff_food_total > 0 else None,
         manual_adjustment_total=manual_adjustment_total if manual_adjustment_total > 0 else None,
-        disputes_total=disputes_total if disputes_total > 0 else None
+        disputes_total=disputes_total if disputes_total > 0 else None,
+        cd_deductions_total=cd_deductions if cd_deductions != 0 else None,
+        cd_reallocations_total=cd_reallocations if cd_reallocations != 0 else None,
     )
 
 
@@ -1448,6 +1509,25 @@ async def get_daily_gp_data(
         .group_by(invoice_daily_subq.c.inv_date)
     )
     purchases_by_date = {row[0]: row[1] or Decimal("0") for row in purchases_daily.all()}
+
+    # Add cost distribution adjustments grouped by date
+    cd_daily = await db.execute(
+        select(
+            CostDistributionEntry.entry_date,
+            func.sum(CostDistributionEntry.amount)
+        )
+        .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+        .where(
+            CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+            CostDistributionEntry.entry_date >= from_date,
+            CostDistributionEntry.entry_date <= to_date,
+            CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+        )
+        .group_by(CostDistributionEntry.entry_date)
+    )
+    for row in cd_daily.all():
+        cd_date, cd_amount = row[0], row[1] or Decimal("0")
+        purchases_by_date[cd_date] = purchases_by_date.get(cd_date, Decimal("0")) + cd_amount
 
     # Get Resos booking data (covers by service period)
     resos_daily = await db.execute(
@@ -1610,6 +1690,19 @@ async def get_monthly_gp(
         .select_from(invoice_stock_subq)
     )
     net_food_purchases = purchases_result.scalar() or Decimal("0.00")
+
+    # Add cost distribution adjustments
+    cd_adj_result = await db.execute(
+        select(func.sum(CostDistributionEntry.amount))
+        .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+        .where(
+            CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+            CostDistributionEntry.entry_date >= month_start,
+            CostDistributionEntry.entry_date <= month_end,
+            CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+        )
+    )
+    net_food_purchases += cd_adj_result.scalar() or Decimal("0.00")
 
     # Calculate GP
     gross_profit = net_food_sales - net_food_purchases

@@ -32,6 +32,8 @@ interface SettingsData {
   ocr_clean_product_codes: boolean
   ocr_filter_subtotal_rows: boolean
   ocr_use_weight_as_quantity: boolean
+  // Cost distribution settings
+  cost_distribution_max_days: number
 }
 
 interface NewbookSettingsData {
@@ -102,7 +104,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -258,6 +260,9 @@ export default function Settings() {
   const [ocrFilterSubtotalRows, setOcrFilterSubtotalRows] = useState(false)
   const [ocrUseWeightAsQuantity, setOcrUseWeightAsQuantity] = useState(false)
 
+  // Cost distribution settings
+  const [costDistMaxDays, setCostDistMaxDays] = useState(90)
+
   // SMTP Email state
   const [smtpHost, setSmtpHost] = useState('')
   const [smtpPort, setSmtpPort] = useState('587')
@@ -371,6 +376,16 @@ export default function Settings() {
   const [kdsBookingsRefresh, setKdsBookingsRefresh] = useState(60)
   const [kdsTestStatus, setKdsTestStatus] = useState<string | null>(null)
   const [kdsSaveMessage, setKdsSaveMessage] = useState<string | null>(null)
+
+  // Kitchen Details state
+  const [kitchenDisplayName, setKitchenDisplayName] = useState('')
+  const [kitchenAddressLine1, setKitchenAddressLine1] = useState('')
+  const [kitchenAddressLine2, setKitchenAddressLine2] = useState('')
+  const [kitchenCity, setKitchenCity] = useState('')
+  const [kitchenPostcode, setKitchenPostcode] = useState('')
+  const [kitchenPhone, setKitchenPhone] = useState('')
+  const [kitchenEmail, setKitchenEmail] = useState('')
+  const [kitchenDetailsSaveMessage, setKitchenDetailsSaveMessage] = useState<string | null>(null)
 
   // Budget/Forecast API state
   const [forecastApiUrl, setForecastApiUrl] = useState('')
@@ -604,6 +619,29 @@ export default function Settings() {
     enabled: !!token,
   })
 
+  // Fetch Kitchen Details
+  interface KitchenDetailsData {
+    kitchen_display_name: string | null
+    kitchen_address_line1: string | null
+    kitchen_address_line2: string | null
+    kitchen_city: string | null
+    kitchen_postcode: string | null
+    kitchen_phone: string | null
+    kitchen_email: string | null
+  }
+
+  const { data: kitchenDetails } = useQuery<KitchenDetailsData>({
+    queryKey: ['kitchen-details'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/kitchen-details', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch kitchen details')
+      return res.json()
+    },
+    enabled: !!token,
+  })
+
   // Fetch Budget settings
   interface BudgetSettingsData {
     forecast_api_url: string | null
@@ -780,6 +818,8 @@ export default function Settings() {
       setOcrCleanProductCodes(settings.ocr_clean_product_codes || false)
       setOcrFilterSubtotalRows(settings.ocr_filter_subtotal_rows || false)
       setOcrUseWeightAsQuantity(settings.ocr_use_weight_as_quantity || false)
+      // Cost distribution
+      setCostDistMaxDays(settings.cost_distribution_max_days ?? 90)
     }
   }, [settings])
 
@@ -888,6 +928,19 @@ export default function Settings() {
       setKdsBookingsRefresh(kdsSettings.kds_bookings_refresh_seconds || 60)
     }
   }, [kdsSettings])
+
+  // Populate Kitchen Details form from settings
+  useEffect(() => {
+    if (kitchenDetails) {
+      setKitchenDisplayName(kitchenDetails.kitchen_display_name || '')
+      setKitchenAddressLine1(kitchenDetails.kitchen_address_line1 || '')
+      setKitchenAddressLine2(kitchenDetails.kitchen_address_line2 || '')
+      setKitchenCity(kitchenDetails.kitchen_city || '')
+      setKitchenPostcode(kitchenDetails.kitchen_postcode || '')
+      setKitchenPhone(kitchenDetails.kitchen_phone || '')
+      setKitchenEmail(kitchenDetails.kitchen_email || '')
+    }
+  }, [kitchenDetails])
 
   // Populate Budget form from settings
   useEffect(() => {
@@ -1529,6 +1582,32 @@ export default function Settings() {
   })
 
   // Budget/Forecast API mutations
+  const saveKitchenDetailsMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await fetch('/api/settings/kitchen-details', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const error = await res.json()
+        throw new Error(error.detail || 'Failed to save kitchen details')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['kitchen-details'] })
+      setKitchenDetailsSaveMessage('Kitchen details saved successfully')
+      setTimeout(() => setKitchenDetailsSaveMessage(null), 3000)
+    },
+    onError: (error) => {
+      setKitchenDetailsSaveMessage(`Error: ${error.message}`)
+    },
+  })
+
   const saveBudgetMutation = useMutation({
     mutationFn: async (data: Record<string, unknown>) => {
       const res = await fetch('/api/budget/settings', {
@@ -1825,6 +1904,7 @@ export default function Settings() {
       ocr_clean_product_codes: ocrCleanProductCodes,
       ocr_filter_subtotal_rows: ocrFilterSubtotalRows,
       ocr_use_weight_as_quantity: ocrUseWeightAsQuantity,
+      cost_distribution_max_days: costDistMaxDays,
     }
     if (azureKey) {
       data.azure_key = azureKey
@@ -1975,6 +2055,19 @@ export default function Settings() {
     })
   }
 
+  // Kitchen Details handler
+  const handleSaveKitchenDetails = () => {
+    saveKitchenDetailsMutation.mutate({
+      kitchen_display_name: kitchenDisplayName || null,
+      kitchen_address_line1: kitchenAddressLine1 || null,
+      kitchen_address_line2: kitchenAddressLine2 || null,
+      kitchen_city: kitchenCity || null,
+      kitchen_postcode: kitchenPostcode || null,
+      kitchen_phone: kitchenPhone || null,
+      kitchen_email: kitchenEmail || null,
+    })
+  }
+
   // Budget handlers
   const handleSaveBudgetSettings = () => {
     const data: Record<string, unknown> = {
@@ -2037,6 +2130,7 @@ export default function Settings() {
     { id: 'sambapos', label: 'SambaPOS EPOS', restrictPath: '/settings-sambapos' },
     { id: 'kds', label: 'Kitchen Display', restrictPath: '/settings-kds' },
     { id: 'budget', label: 'Spend Budget', restrictPath: '/settings-budget' },
+    { id: 'kitchen', label: 'Kitchen Details', restrictPath: '/settings-kitchen' },
     { id: 'suppliers', label: 'Suppliers', restrictPath: '/settings-suppliers' },
     { id: 'search', label: 'Search & Pricing', restrictPath: '/settings-search' },
     { id: 'nextcloud', label: 'Nextcloud Storage', restrictPath: '/settings-nextcloud' },
@@ -4945,6 +5039,146 @@ export default function Settings() {
                 {budgetSaveMessage}
               </div>
             )}
+
+            {/* Cost Distribution Block */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Cost Distribution</h3>
+              <p style={{ marginBottom: '1rem', color: '#666' }}>
+                Configure how far into the future invoice costs can be spread when using the cost distribution feature on the Budget page.
+              </p>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Maximum Days Into Future
+                  <input
+                    type="number"
+                    min="7"
+                    max="365"
+                    value={costDistMaxDays}
+                    onChange={(e) => setCostDistMaxDays(parseInt(e.target.value) || 90)}
+                    style={{ ...styles.input, width: '120px' }}
+                  />
+                  <span style={styles.fieldHint}>
+                    Distributions cannot target dates beyond this many days from today (default: 90)
+                  </span>
+                </label>
+                <button
+                  onClick={() => updateMutation.mutate({ cost_distribution_max_days: costDistMaxDays })}
+                  style={styles.saveBtn}
+                  disabled={updateMutation.isPending}
+                >
+                  {updateMutation.isPending ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Kitchen Details Section */}
+        {activeSection === 'kitchen' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Kitchen Details</h2>
+            <p style={styles.hint}>
+              Your kitchen address and contact details appear on Purchase Order letterheads and emails sent to suppliers.
+            </p>
+
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Business Details</h3>
+              <div style={styles.form}>
+                <label style={styles.label}>
+                  Display Name
+                  <input
+                    type="text"
+                    value={kitchenDisplayName}
+                    onChange={(e) => setKitchenDisplayName(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., Number Four at Stow"
+                  />
+                  <span style={styles.fieldHint}>
+                    Name shown on PO letterhead (defaults to kitchen name if blank)
+                  </span>
+                </label>
+                <label style={styles.label}>
+                  Address Line 1
+                  <input
+                    type="text"
+                    value={kitchenAddressLine1}
+                    onChange={(e) => setKitchenAddressLine1(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., 4 The Square"
+                  />
+                </label>
+                <label style={styles.label}>
+                  Address Line 2
+                  <input
+                    type="text"
+                    value={kitchenAddressLine2}
+                    onChange={(e) => setKitchenAddressLine2(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., Stow-on-the-Wold"
+                  />
+                </label>
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <label style={{ ...styles.label, flex: 2 }}>
+                    City / Town
+                    <input
+                      type="text"
+                      value={kitchenCity}
+                      onChange={(e) => setKitchenCity(e.target.value)}
+                      style={styles.input}
+                      placeholder="e.g., Cheltenham"
+                    />
+                  </label>
+                  <label style={{ ...styles.label, flex: 1 }}>
+                    Postcode
+                    <input
+                      type="text"
+                      value={kitchenPostcode}
+                      onChange={(e) => setKitchenPostcode(e.target.value)}
+                      style={styles.input}
+                      placeholder="e.g., GL54 1BQ"
+                    />
+                  </label>
+                </div>
+                <label style={styles.label}>
+                  Phone
+                  <input
+                    type="tel"
+                    value={kitchenPhone}
+                    onChange={(e) => setKitchenPhone(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., 01451 830297"
+                  />
+                </label>
+                <label style={styles.label}>
+                  Email
+                  <input
+                    type="email"
+                    value={kitchenEmail}
+                    onChange={(e) => setKitchenEmail(e.target.value)}
+                    style={styles.input}
+                    placeholder="e.g., kitchen@example.com"
+                  />
+                </label>
+                <div style={styles.buttonRow}>
+                  <button
+                    onClick={handleSaveKitchenDetails}
+                    style={styles.saveBtn}
+                    disabled={saveKitchenDetailsMutation.isPending}
+                  >
+                    {saveKitchenDetailsMutation.isPending ? 'Saving...' : 'Save Details'}
+                  </button>
+                </div>
+                {kitchenDetailsSaveMessage && (
+                  <div style={{
+                    ...styles.statusMessage,
+                    background: kitchenDetailsSaveMessage.startsWith('Error') ? '#fee' : '#efe',
+                    marginTop: '1rem'
+                  }}>
+                    {kitchenDetailsSaveMessage}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 

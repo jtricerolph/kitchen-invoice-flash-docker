@@ -49,6 +49,8 @@ class SupplierCreate(BaseModel):
     template_config: dict = {}
     identifier_config: dict = {}
     skip_dext: bool = False
+    order_email: Optional[str] = None
+    account_number: Optional[str] = None
 
 
 class SupplierUpdate(BaseModel):
@@ -57,6 +59,8 @@ class SupplierUpdate(BaseModel):
     template_config: Optional[dict] = None
     identifier_config: Optional[dict] = None
     skip_dext: Optional[bool] = None
+    order_email: Optional[str] = None
+    account_number: Optional[str] = None
 
 
 class SupplierResponse(BaseModel):
@@ -66,6 +70,8 @@ class SupplierResponse(BaseModel):
     template_config: dict
     identifier_config: dict
     skip_dext: bool
+    order_email: Optional[str] = None
+    account_number: Optional[str] = None
     created_at: str
 
     class Config:
@@ -86,7 +92,9 @@ async def create_supplier(
         aliases=request.aliases,
         template_config=request.template_config,
         identifier_config=request.identifier_config,
-        skip_dext=request.skip_dext
+        skip_dext=request.skip_dext,
+        order_email=request.order_email,
+        account_number=request.account_number,
     )
     db.add(supplier)
     await db.commit()
@@ -102,6 +110,8 @@ async def create_supplier(
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         skip_dext=supplier.skip_dext,
+        order_email=supplier.order_email,
+        account_number=supplier.account_number,
         created_at=supplier.created_at.isoformat()
     )
 
@@ -127,6 +137,8 @@ async def list_suppliers(
             template_config=s.template_config,
             identifier_config=s.identifier_config,
             skip_dext=s.skip_dext,
+            order_email=s.order_email,
+            account_number=s.account_number,
             created_at=s.created_at.isoformat()
         )
         for s in suppliers
@@ -158,6 +170,8 @@ async def get_supplier(
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         skip_dext=supplier.skip_dext,
+        order_email=supplier.order_email,
+        account_number=supplier.account_number,
         created_at=supplier.created_at.isoformat()
     )
 
@@ -199,6 +213,8 @@ async def update_supplier(
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         skip_dext=supplier.skip_dext,
+        order_email=supplier.order_email,
+        account_number=supplier.account_number,
         created_at=supplier.created_at.isoformat()
     )
 
@@ -288,6 +304,8 @@ async def add_supplier_alias(
         template_config=supplier.template_config,
         identifier_config=supplier.identifier_config,
         skip_dext=supplier.skip_dext,
+        order_email=supplier.order_email,
+        account_number=supplier.account_number,
         created_at=supplier.created_at.isoformat()
     )
 

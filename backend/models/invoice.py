@@ -107,6 +107,10 @@ class Invoice(Base):
         "CreditNote",
         back_populates="invoice"
     )
+    cost_distributions: Mapped[list["CostDistribution"]] = relationship(
+        "CostDistribution",
+        back_populates="invoice"
+    )
 
     # Self-referential relationships for duplicate tracking
     duplicate_of: Mapped[Optional["Invoice"]] = relationship(
@@ -141,3 +145,4 @@ from .user import Kitchen, User
 from .supplier import Supplier
 from .line_item import LineItem
 from .dispute import InvoiceDispute, CreditNote
+from .cost_distribution import CostDistribution

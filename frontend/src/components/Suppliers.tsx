@@ -9,6 +9,8 @@ interface Supplier {
   template_config: Record<string, unknown>
   identifier_config: Record<string, unknown>
   skip_dext: boolean
+  order_email: string | null
+  account_number: string | null
   created_at: string
 }
 
@@ -22,6 +24,8 @@ export default function Suppliers() {
   const [newAliases, setNewAliases] = useState<string[]>([])
   const [aliasInput, setAliasInput] = useState('')
   const [skipDext, setSkipDext] = useState(false)
+  const [orderEmail, setOrderEmail] = useState('')
+  const [accountNumber, setAccountNumber] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
 
   const { data: suppliers, isLoading } = useQuery<Supplier[]>({
@@ -36,14 +40,14 @@ export default function Suppliers() {
   })
 
   const createMutation = useMutation({
-    mutationFn: async ({ name, aliases, skip_dext }: { name: string; aliases: string[]; skip_dext: boolean }) => {
+    mutationFn: async ({ name, aliases, skip_dext, order_email, account_number }: { name: string; aliases: string[]; skip_dext: boolean; order_email: string; account_number: string }) => {
       const res = await fetch('/api/suppliers/', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name, aliases, skip_dext }),
+        body: JSON.stringify({ name, aliases, skip_dext, order_email: order_email || null, account_number: account_number || null }),
       })
       if (!res.ok) throw new Error('Failed to create supplier')
       return res.json()
@@ -55,18 +59,20 @@ export default function Suppliers() {
       setNewAliases([])
       setAliasInput('')
       setSkipDext(false)
+      setOrderEmail('')
+      setAccountNumber('')
     },
   })
 
   const updateMutation = useMutation({
-    mutationFn: async ({ id, name, aliases, skip_dext }: { id: number; name: string; aliases: string[]; skip_dext: boolean }) => {
+    mutationFn: async ({ id, name, aliases, skip_dext, order_email, account_number }: { id: number; name: string; aliases: string[]; skip_dext: boolean; order_email: string; account_number: string }) => {
       const res = await fetch(`/api/suppliers/${id}`, {
         method: 'PATCH',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name, aliases, skip_dext }),
+        body: JSON.stringify({ name, aliases, skip_dext, order_email: order_email || null, account_number: account_number || null }),
       })
       if (!res.ok) throw new Error('Failed to update supplier')
       return res.json()
@@ -78,6 +84,8 @@ export default function Suppliers() {
       setNewAliases([])
       setAliasInput('')
       setSkipDext(false)
+      setOrderEmail('')
+      setAccountNumber('')
     },
   })
 
@@ -98,13 +106,13 @@ export default function Suppliers() {
 
   const handleAdd = () => {
     if (newName.trim()) {
-      createMutation.mutate({ name: newName.trim(), aliases: newAliases, skip_dext: skipDext })
+      createMutation.mutate({ name: newName.trim(), aliases: newAliases, skip_dext: skipDext, order_email: orderEmail, account_number: accountNumber })
     }
   }
 
   const handleUpdate = () => {
     if (editingSupplier && newName.trim()) {
-      updateMutation.mutate({ id: editingSupplier.id, name: newName.trim(), aliases: newAliases, skip_dext: skipDext })
+      updateMutation.mutate({ id: editingSupplier.id, name: newName.trim(), aliases: newAliases, skip_dext: skipDext, order_email: orderEmail, account_number: accountNumber })
     }
   }
 
@@ -114,6 +122,8 @@ export default function Suppliers() {
     setNewAliases(supplier.aliases || [])
     setAliasInput('')
     setSkipDext(supplier.skip_dext || false)
+    setOrderEmail(supplier.order_email || '')
+    setAccountNumber(supplier.account_number || '')
   }
 
   const addAlias = () => {
@@ -141,6 +151,8 @@ export default function Suppliers() {
     setNewAliases([])
     setAliasInput('')
     setSkipDext(false)
+    setOrderEmail('')
+    setAccountNumber('')
   }
 
   const closeEditModal = () => {
@@ -149,6 +161,8 @@ export default function Suppliers() {
     setNewAliases([])
     setAliasInput('')
     setSkipDext(false)
+    setOrderEmail('')
+    setAccountNumber('')
   }
 
   if (isLoading) {
@@ -195,6 +209,12 @@ export default function Suppliers() {
                         {alias}{idx < supplier.aliases.length - 1 ? ', ' : ''}
                       </span>
                     ))}
+                  </div>
+                )}
+                {(supplier.order_email || supplier.account_number) && (
+                  <div style={styles.poDetails}>
+                    {supplier.order_email && <span>Order email: {supplier.order_email}</span>}
+                    {supplier.account_number && <span>Account #: {supplier.account_number}</span>}
                   </div>
                 )}
                 <span style={styles.date}>
@@ -280,6 +300,30 @@ export default function Suppliers() {
               </span>
             </label>
 
+            <div style={styles.poFieldsSection}>
+              <h4 style={styles.poFieldsTitle}>Purchase Order Details</h4>
+              <label style={styles.label}>
+                Order Email
+                <input
+                  type="email"
+                  value={orderEmail}
+                  onChange={(e) => setOrderEmail(e.target.value)}
+                  style={styles.input}
+                  placeholder="orders@supplier.com"
+                />
+              </label>
+              <label style={styles.label}>
+                Account Number
+                <input
+                  type="text"
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
+                  style={styles.input}
+                  placeholder="e.g., ACC-12345"
+                />
+              </label>
+            </div>
+
             <div style={styles.modalActions}>
               <button onClick={closeAddModal} style={styles.cancelBtn}>
                 Cancel
@@ -357,6 +401,30 @@ export default function Suppliers() {
                 Invoices from this supplier won't be sent to Dext
               </span>
             </label>
+
+            <div style={styles.poFieldsSection}>
+              <h4 style={styles.poFieldsTitle}>Purchase Order Details</h4>
+              <label style={styles.label}>
+                Order Email
+                <input
+                  type="email"
+                  value={orderEmail}
+                  onChange={(e) => setOrderEmail(e.target.value)}
+                  style={styles.input}
+                  placeholder="orders@supplier.com"
+                />
+              </label>
+              <label style={styles.label}>
+                Account Number
+                <input
+                  type="text"
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
+                  style={styles.input}
+                  placeholder="e.g., ACC-12345"
+                />
+              </label>
+            </div>
 
             <div style={styles.modalActions}>
               <button onClick={closeEditModal} style={styles.cancelBtn}>
@@ -650,5 +718,24 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     marginLeft: '0.5rem',
     fontWeight: 'normal',
+  },
+  poDetails: {
+    display: 'flex',
+    gap: '1.5rem',
+    fontSize: '0.8rem',
+    color: '#666',
+    marginTop: '0.25rem',
+  },
+  poFieldsSection: {
+    marginTop: '1.25rem',
+    padding: '1rem',
+    background: '#f8f9fa',
+    borderRadius: '8px',
+  },
+  poFieldsTitle: {
+    margin: '0 0 0.75rem 0',
+    fontSize: '0.9rem',
+    color: '#555',
+    fontWeight: 600,
   },
 }

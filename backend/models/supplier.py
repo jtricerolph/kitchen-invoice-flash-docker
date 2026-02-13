@@ -27,6 +27,10 @@ class Supplier(Base):
     # Skip sending invoices from this supplier to Dext
     skip_dext: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Purchase order fields
+    order_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

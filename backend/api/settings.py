@@ -40,6 +40,8 @@ class SettingsResponse(BaseModel):
     ocr_clean_product_codes: bool
     ocr_filter_subtotal_rows: bool
     ocr_use_weight_as_quantity: bool
+    # Cost distribution settings
+    cost_distribution_max_days: int
 
     class Config:
         from_attributes = True
@@ -74,6 +76,8 @@ class SettingsUpdate(BaseModel):
     ocr_clean_product_codes: bool | None = None
     ocr_filter_subtotal_rows: bool | None = None
     ocr_use_weight_as_quantity: bool | None = None
+    # Cost distribution settings
+    cost_distribution_max_days: int | None = None
 
 
 @router.get("/", response_model=SettingsResponse)
@@ -126,7 +130,8 @@ async def get_settings(
         # OCR post-processing options
         ocr_clean_product_codes=settings.ocr_clean_product_codes,
         ocr_filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
-        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity
+        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity,
+        cost_distribution_max_days=settings.cost_distribution_max_days,
     )
 
 
@@ -183,7 +188,8 @@ async def update_settings(
         # OCR post-processing options
         ocr_clean_product_codes=settings.ocr_clean_product_codes,
         ocr_filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
-        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity
+        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity,
+        cost_distribution_max_days=settings.cost_distribution_max_days,
     )
 
 
@@ -248,6 +254,87 @@ async def test_smtp_connection(
         raise HTTPException(status_code=400, detail=message)
 
     return {"status": "success", "message": message}
+
+
+# ============ Kitchen Details Endpoints ============
+
+class KitchenDetailsResponse(BaseModel):
+    kitchen_display_name: str | None = None
+    kitchen_address_line1: str | None = None
+    kitchen_address_line2: str | None = None
+    kitchen_city: str | None = None
+    kitchen_postcode: str | None = None
+    kitchen_phone: str | None = None
+    kitchen_email: str | None = None
+
+
+class KitchenDetailsUpdate(BaseModel):
+    kitchen_display_name: str | None = None
+    kitchen_address_line1: str | None = None
+    kitchen_address_line2: str | None = None
+    kitchen_city: str | None = None
+    kitchen_postcode: str | None = None
+    kitchen_phone: str | None = None
+    kitchen_email: str | None = None
+
+
+@router.get("/kitchen-details", response_model=KitchenDetailsResponse)
+async def get_kitchen_details(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get kitchen details for PO letterhead"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        return KitchenDetailsResponse()
+
+    return KitchenDetailsResponse(
+        kitchen_display_name=settings.kitchen_display_name,
+        kitchen_address_line1=settings.kitchen_address_line1,
+        kitchen_address_line2=settings.kitchen_address_line2,
+        kitchen_city=settings.kitchen_city,
+        kitchen_postcode=settings.kitchen_postcode,
+        kitchen_phone=settings.kitchen_phone,
+        kitchen_email=settings.kitchen_email,
+    )
+
+
+@router.patch("/kitchen-details", response_model=KitchenDetailsResponse)
+async def update_kitchen_details(
+    update: KitchenDetailsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update kitchen details for PO letterhead"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        settings = KitchenSettings(kitchen_id=current_user.kitchen_id)
+        db.add(settings)
+
+    update_data = update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(settings, field, value)
+
+    await db.commit()
+    await db.refresh(settings)
+
+    return KitchenDetailsResponse(
+        kitchen_display_name=settings.kitchen_display_name,
+        kitchen_address_line1=settings.kitchen_address_line1,
+        kitchen_address_line2=settings.kitchen_address_line2,
+        kitchen_city=settings.kitchen_city,
+        kitchen_postcode=settings.kitchen_postcode,
+        kitchen_phone=settings.kitchen_phone,
+        kitchen_email=settings.kitchen_email,
+    )
 
 
 # ============ Page Restrictions Endpoints ============

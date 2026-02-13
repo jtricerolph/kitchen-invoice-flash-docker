@@ -8,6 +8,7 @@ import LineItemHistoryModal from './LineItemHistoryModal'
 import CreateDisputeModal from './CreateDisputeModal'
 import DisputeDetailModal from './DisputeDetailModal'
 import LinkDisputeModal from './LinkDisputeModal'
+import PurchaseOrderModal from './PurchaseOrderModal'
 
 // Use local worker file from public directory
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
@@ -405,6 +406,9 @@ export default function Review() {
     sourceLineItemId?: number
   } | null>(null)
 
+  // Purchase Order matching state
+  const [viewingPoId, setViewingPoId] = useState<number | null>(null)
+
   const { data: invoice, isLoading, refetch: refetchInvoice } = useQuery<Invoice>({
     queryKey: ['invoice', id],
     queryFn: async () => {
@@ -696,6 +700,37 @@ export default function Review() {
     },
   })
 
+  // PO matching query — find linked or matching POs for this invoice
+  const { data: poMatchData, refetch: refetchPoMatch } = useQuery<{
+    matches: Array<{
+      po_id: number
+      order_date: string | null
+      total_amount: number | null
+      order_reference: string | null
+      status: string
+      order_type: string
+      confidence: number
+    }>
+    linked_po: {
+      po_id: number
+      order_date: string | null
+      total_amount: number | null
+      order_reference: string | null
+      status: string
+      order_type: string
+    } | null
+  }>({
+    queryKey: ['po-match', id],
+    queryFn: async () => {
+      const res = await fetch(`/api/purchase-orders/matching/for-invoice?invoice_id=${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return { matches: [], linked_po: null }
+      return res.json()
+    },
+    enabled: !!invoice?.supplier_id,
+  })
+
   useEffect(() => {
     if (invoice) {
       setInvoiceNumber(invoice.invoice_number || '')
@@ -969,6 +1004,34 @@ export default function Review() {
       queryClient.invalidateQueries({ queryKey: ['invoice', id] })
     },
   })
+
+  // PO link/unlink handlers
+  const handleLinkPo = async (poId: number) => {
+    try {
+      const res = await fetch(`/api/purchase-orders/${poId}/link`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_id: parseInt(id!) }),
+      })
+      if (!res.ok) throw new Error('Failed to link PO')
+      refetchPoMatch()
+    } catch {
+      // silently fail, user can retry
+    }
+  }
+
+  const handleUnlinkPo = async (poId: number) => {
+    try {
+      const res = await fetch(`/api/purchase-orders/${poId}/unlink`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to unlink PO')
+      refetchPoMatch()
+    } catch {
+      // silently fail
+    }
+  }
 
   const handleCreateSupplier = () => {
     if (newSupplierName.trim()) {
@@ -2064,6 +2127,119 @@ export default function Review() {
               {invoice.duplicate_status === 'firm_duplicate'
                 ? '⚠️ DUPLICATE: This invoice matches an existing record. Click to compare.'
                 : '⚠️ Possible duplicate detected. Click to compare.'}
+            </div>
+          )}
+
+          {/* PO Linked Indicator */}
+          {poMatchData?.linked_po && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0.75rem 1rem',
+              marginBottom: '1rem',
+              background: '#d4edda',
+              border: '1px solid #c3e6cb',
+              borderRadius: '8px',
+              color: '#155724',
+              fontSize: '0.9rem',
+            }}>
+              <div>
+                <strong>Linked to PO-{poMatchData.linked_po.po_id}</strong>
+                {' '}({poMatchData.linked_po.total_amount != null ? `£${poMatchData.linked_po.total_amount.toFixed(2)}` : 'N/A'}, {poMatchData.linked_po.order_date ? new Date(poMatchData.linked_po.order_date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : ''})
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  onClick={() => setViewingPoId(poMatchData.linked_po!.po_id)}
+                  style={{ padding: '0.3rem 0.6rem', border: '1px solid #155724', borderRadius: '4px', background: 'white', color: '#155724', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}
+                >
+                  View PO
+                </button>
+                <button
+                  onClick={() => handleUnlinkPo(poMatchData.linked_po!.po_id)}
+                  style={{ padding: '0.3rem 0.6rem', border: '1px solid #856404', borderRadius: '4px', background: '#fff3cd', color: '#856404', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}
+                >
+                  Unlink
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* PO Matching Suggestions */}
+          {!poMatchData?.linked_po && poMatchData?.matches && poMatchData.matches.length > 0 && (
+            <div style={{
+              padding: '0.75rem 1rem',
+              marginBottom: '1rem',
+              background: '#e3f2fd',
+              border: '1px solid #bbdefb',
+              borderRadius: '8px',
+              fontSize: '0.9rem',
+              color: '#1565c0',
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>
+                This supplier has {poMatchData.matches.length} pending Purchase Order{poMatchData.matches.length > 1 ? 's' : ''}
+              </div>
+              {poMatchData.matches.map((m, idx) => {
+                const isSuggested = idx === 0 && m.confidence >= 0.8
+                const isPotential = !isSuggested && m.confidence >= 0.8
+                return (
+                <div key={m.po_id} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0.4rem 0.5rem',
+                  marginBottom: '0.25rem',
+                  background: 'rgba(255,255,255,0.6)',
+                  borderRadius: '4px',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontWeight: 500 }}>PO-{m.po_id}:</span>
+                    <span>{m.total_amount != null ? `£${m.total_amount.toFixed(2)}` : 'N/A'}</span>
+                    <span style={{ color: '#666' }}>
+                      ({m.order_date ? new Date(m.order_date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : 'No date'})
+                    </span>
+                    {isSuggested && (
+                      <span style={{
+                        background: '#4caf50',
+                        color: 'white',
+                        padding: '0.1rem 0.4rem',
+                        borderRadius: '3px',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                      }}>
+                        Suggested match
+                      </span>
+                    )}
+                    {isPotential && (
+                      <span style={{
+                        background: '#ff9800',
+                        color: 'white',
+                        padding: '0.1rem 0.4rem',
+                        borderRadius: '3px',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                      }}>
+                        Potential match
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    <button
+                      onClick={() => setViewingPoId(m.po_id)}
+                      style={{ padding: '0.2rem 0.5rem', border: '1px solid #1565c0', borderRadius: '4px', background: 'white', color: '#1565c0', cursor: 'pointer', fontSize: '0.8rem' }}
+                    >
+                      View
+                    </button>
+                    <button
+                      onClick={() => handleLinkPo(m.po_id)}
+                      style={{ padding: '0.2rem 0.5rem', border: 'none', borderRadius: '4px', background: '#1565c0', color: 'white', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}
+                    >
+                      Link
+                    </button>
+                  </div>
+                </div>
+                )
+              })}
             </div>
           )}
 
@@ -4394,6 +4570,14 @@ export default function Review() {
           </div>
         </div>
       )}
+
+      {/* PO View/Edit Modal */}
+      <PurchaseOrderModal
+        isOpen={viewingPoId !== null}
+        onClose={() => setViewingPoId(null)}
+        onSaved={() => refetchPoMatch()}
+        poId={viewingPoId}
+      />
     </div>
   )
 }

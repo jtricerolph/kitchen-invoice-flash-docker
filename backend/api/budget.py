@@ -23,6 +23,7 @@ from models.supplier import Supplier
 from models.line_item import LineItem
 from models.settings import KitchenSettings
 from models.purchase_order import PurchaseOrder
+from models.cost_distribution import CostDistribution, CostDistributionEntry, DistributionStatus
 from auth.jwt import get_current_user
 from services.forecast_api import ForecastAPIClient, ForecastAPIError
 
@@ -67,9 +68,11 @@ class SupplierBudgetRow(BaseModel):
     allocated_budget: Decimal  # total_budget * historical_pct
     invoices_by_date: dict[str, list[BudgetInvoice]]  # date -> invoices
     purchase_orders_by_date: dict[str, list[BudgetPOItem]]  # date -> POs
-    actual_spent: Decimal  # Sum of invoices this week
+    actual_spent: Decimal  # Sum of invoices this week (excluding CD)
+    cd_adjustments_by_date: dict[str, float] = {}  # date -> CD +/- for this supplier
+    cd_total: float = 0  # Total CD adjustment for this supplier
     po_ordered: Decimal  # Sum of pending PO totals this week
-    remaining: Decimal  # allocated - spent - po_ordered
+    remaining: Decimal  # allocated - (spent + cd) - po_ordered
     status: str  # "under", "on_track", "over"
 
     @field_serializer('historical_pct', 'allocated_budget', 'actual_spent', 'po_ordered', 'remaining')
@@ -160,6 +163,7 @@ class WeeklyBudgetResponse(BaseModel):
     total_spent: Decimal  # Actual spend from confirmed invoices
     total_po_ordered: Decimal  # Sum of pending PO totals
     total_remaining: Decimal  # budget - spent - po_ordered (negative = overspend)
+    cd_budget_reservation: Decimal = Decimal("0")  # Budget reserved for cost distributions
 
     # Supplier breakdown
     suppliers: list[SupplierBudgetRow]
@@ -169,7 +173,7 @@ class WeeklyBudgetResponse(BaseModel):
     daily_data: list[DailyBudgetData]
     daily_totals: dict[str, Decimal]  # date -> actual spend
 
-    @field_serializer('otb_revenue', 'forecast_revenue', 'gp_target_pct', 'min_budget', 'total_budget', 'total_spent', 'total_po_ordered', 'total_remaining')
+    @field_serializer('otb_revenue', 'forecast_revenue', 'gp_target_pct', 'min_budget', 'total_budget', 'total_spent', 'total_po_ordered', 'total_remaining', 'cd_budget_reservation')
     def serialize_decimals(self, v: Decimal) -> float:
         return float(v)
 
@@ -740,6 +744,37 @@ async def get_weekly_budget(
         for sid, sname in sup_result.all():
             po_supplier_names[sid] = sname
 
+    # Compute cost distribution adjustments per supplier per date.
+    # CD entries are attributed back to the supplier whose invoice was distributed.
+    cd_supplier_result = await db.execute(
+        select(
+            Invoice.supplier_id,
+            CostDistributionEntry.entry_date,
+            func.sum(CostDistributionEntry.amount)
+        )
+        .join(CostDistribution, CostDistributionEntry.distribution_id == CostDistribution.id)
+        .join(Invoice, CostDistribution.invoice_id == Invoice.id)
+        .where(
+            CostDistributionEntry.kitchen_id == current_user.kitchen_id,
+            CostDistributionEntry.entry_date >= week_start,
+            CostDistributionEntry.entry_date <= week_end,
+            CostDistribution.status.in_([DistributionStatus.ACTIVE.value, DistributionStatus.COMPLETED.value]),
+        )
+        .group_by(Invoice.supplier_id, CostDistributionEntry.entry_date)
+    )
+    # Per-supplier per-date amounts, plus aggregated totals
+    cd_by_supplier_date: dict[Optional[int], dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    cd_total_by_supplier: dict[Optional[int], Decimal] = defaultdict(lambda: Decimal("0"))
+    cd_daily_amounts: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    cd_total_adjustment = Decimal("0")
+    for row in cd_supplier_result.all():
+        sup_id, cd_date, cd_amount = row[0], row[1], row[2] or Decimal("0")
+        date_str = cd_date.isoformat()
+        cd_by_supplier_date[sup_id][date_str] += cd_amount
+        cd_total_by_supplier[sup_id] += cd_amount
+        cd_daily_amounts[date_str] += cd_amount
+        cd_total_adjustment += cd_amount
+
     # Build supplier rows
     supplier_rows = []
     all_supplier_names = []
@@ -756,7 +791,7 @@ async def get_weekly_budget(
             processed_po_suppliers.add(supplier_id)
         all_supplier_names.append(supplier_name)
 
-        # Calculate allocated budget
+        # Calculate allocated budget from full total_budget
         allocated = (total_budget * Decimal(str(hist_pct)) / 100).quantize(Decimal("0.01"))
 
         # Get invoices for this supplier this week
@@ -782,9 +817,13 @@ async def get_weekly_budget(
         supplier_po_dates = dict(po_by_supplier.get(supplier_id, {})) if supplier_id else {}
         supplier_po_total = po_totals_by_supplier.get(supplier_id, Decimal("0")) if supplier_id else Decimal("0")
 
+        # Get CD adjustments for this supplier
+        supplier_cd_dates = {k: float(v) for k, v in cd_by_supplier_date.get(supplier_id, {}).items()}
+        supplier_cd_total = cd_total_by_supplier.get(supplier_id, Decimal("0"))
+
         total_spent += actual_spent
         total_po_ordered += supplier_po_total
-        remaining = allocated - actual_spent - supplier_po_total
+        remaining = allocated - actual_spent - supplier_cd_total - supplier_po_total
 
         # Determine status
         if remaining < 0:
@@ -802,6 +841,8 @@ async def get_weekly_budget(
             invoices_by_date=dict(invoices_by_date),
             purchase_orders_by_date=supplier_po_dates,
             actual_spent=actual_spent,
+            cd_adjustments_by_date=supplier_cd_dates,
+            cd_total=float(supplier_cd_total),
             po_ordered=supplier_po_total,
             remaining=remaining,
             status=status,
@@ -833,9 +874,12 @@ async def get_weekly_budget(
             supplier_po_dates = dict(po_by_supplier.get(supplier_id, {})) if supplier_id else {}
             supplier_po_total = po_totals_by_supplier.get(supplier_id, Decimal("0")) if supplier_id else Decimal("0")
 
+            supplier_cd_dates = {k: float(v) for k, v in cd_by_supplier_date.get(supplier_id, {}).items()}
+            supplier_cd_total = cd_total_by_supplier.get(supplier_id, Decimal("0"))
+
             total_spent += actual_spent
             total_po_ordered += supplier_po_total
-            combined = actual_spent + supplier_po_total
+            combined = actual_spent + supplier_cd_total + supplier_po_total
 
             supplier_rows.append(SupplierBudgetRow(
                 supplier_id=supplier_id,
@@ -845,6 +889,8 @@ async def get_weekly_budget(
                 invoices_by_date=dict(invoices_by_date),
                 purchase_orders_by_date=supplier_po_dates,
                 actual_spent=actual_spent,
+                cd_adjustments_by_date=supplier_cd_dates,
+                cd_total=float(supplier_cd_total),
                 po_ordered=supplier_po_total,
                 remaining=-combined,  # Over by definition
                 status="over" if combined > 0 else "under",
@@ -958,6 +1004,14 @@ async def get_weekly_budget(
                 cumulative_spent=None,
             ))
 
+    # Apply pre-computed cost distribution adjustments to daily totals and total_spent
+    for date_str, cd_amount in cd_daily_amounts.items():
+        if date_str in daily_totals:
+            daily_totals[date_str] += cd_amount
+        else:
+            daily_totals[date_str] = cd_amount
+    total_spent += cd_total_adjustment
+
     total_remaining = total_budget - total_spent - total_po_ordered
 
     return WeeklyBudgetResponse(
@@ -977,6 +1031,7 @@ async def get_weekly_budget(
         total_spent=total_spent,
         total_po_ordered=total_po_ordered,
         total_remaining=total_remaining,
+        cd_budget_reservation=Decimal("0"),  # Not used; CD is attributed per-supplier
         suppliers=supplier_rows,
         all_supplier_names=all_supplier_names,
         daily_data=daily_data,

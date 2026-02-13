@@ -17,6 +17,7 @@ interface LineItem {
 interface Supplier {
   id: number
   name: string
+  order_email?: string | null
 }
 
 interface SearchResult {
@@ -52,18 +53,30 @@ export default function PurchaseOrderModal({ isOpen, onClose, onSaved, poId, def
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [saving, setSaving] = useState(false)
+  const [emailing, setEmailing] = useState(false)
+  const [emailMessage, setEmailMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [smtpConfigured, setSmtpConfigured] = useState(false)
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
-  // Load suppliers
+  // Load suppliers (including order_email for email button visibility)
   useEffect(() => {
     if (!token) return
     fetch('/api/suppliers/', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
-      .then(data => setSuppliers(data.suppliers || []))
+      .then(data => setSuppliers(data.suppliers || data || []))
       .catch(() => {})
+  }, [token])
+
+  // Check if SMTP is configured (for email button visibility)
+  useEffect(() => {
+    if (!token) return
+    fetch('/api/settings/', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(data => setSmtpConfigured(!!(data.smtp_host && data.smtp_from_email)))
+      .catch(() => setSmtpConfigured(false))
   }, [token])
 
   // Load PO if editing
@@ -301,6 +314,128 @@ export default function PurchaseOrderModal({ isOpen, onClose, onSaved, poId, def
     }
   }
 
+  const handlePreview = async () => {
+    if (!token) return
+    // If unsaved (new PO or has changes), save first then preview
+    if (!poId) {
+      // Save as draft first, then open preview
+      if (!supplierId || !orderDate) {
+        setError('Please fill in supplier and date')
+        return
+      }
+      setSaving(true)
+      setError(null)
+      const body: any = {
+        supplier_id: supplierId,
+        order_date: orderDate,
+        order_type: orderType,
+        status: 'DRAFT',
+        order_reference: orderReference || null,
+        notes: notes || null,
+        line_items: orderType === 'itemised' ? lineItems.map((li, idx) => ({
+          product_id: li.product_id || null,
+          product_code: li.product_code || null,
+          description: li.description,
+          unit: li.unit || null,
+          unit_price: li.unit_price,
+          quantity: li.quantity,
+          total: li.total,
+          line_number: idx,
+          source: li.source,
+        })) : [],
+        ...(orderType === 'single_value' ? { total_amount: totalAmount } : {}),
+      }
+      try {
+        const res = await fetch('/api/purchase-orders/', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) throw new Error('Failed to save')
+        const data = await res.json()
+        window.open(`/api/purchase-orders/${data.id}/preview?token=${encodeURIComponent(token || '')}`, '_blank')
+        onSaved()
+        onClose()
+      } catch (e: any) {
+        setError(e.message || 'Failed to save')
+      } finally {
+        setSaving(false)
+      }
+    } else {
+      // Existing PO — save current state then preview
+      await handleSave()
+      window.open(`/api/purchase-orders/${poId}/preview?token=${encodeURIComponent(token || '')}`, '_blank')
+    }
+  }
+
+  const handleSaveAndEmail = async () => {
+    if (!token || !supplierId || !orderDate) {
+      setError('Please fill in supplier and date')
+      return
+    }
+    setEmailing(true)
+    setError(null)
+    setEmailMessage(null)
+
+    // Save or create PO first
+    const body: any = {
+      supplier_id: supplierId,
+      order_date: orderDate,
+      order_type: orderType,
+      status: status === 'DRAFT' ? 'DRAFT' : status,
+      order_reference: orderReference || null,
+      notes: notes || null,
+      line_items: orderType === 'itemised' ? lineItems.map((li, idx) => ({
+        product_id: li.product_id || null,
+        product_code: li.product_code || null,
+        description: li.description,
+        unit: li.unit || null,
+        unit_price: li.unit_price,
+        quantity: li.quantity,
+        total: li.total,
+        line_number: idx,
+        source: li.source,
+      })) : [],
+      ...(orderType === 'single_value' ? { total_amount: totalAmount } : {}),
+    }
+
+    try {
+      const url = poId ? `/api/purchase-orders/${poId}` : '/api/purchase-orders/'
+      const method = poId ? 'PUT' : 'POST'
+      const saveRes = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!saveRes.ok) throw new Error('Failed to save PO')
+      const savedPo = await saveRes.json()
+
+      // Now send the email
+      const emailRes = await fetch(`/api/purchase-orders/${savedPo.id}/send-email`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!emailRes.ok) {
+        const err = await emailRes.json().catch(() => ({}))
+        throw new Error(err.detail || 'Failed to send email')
+      }
+      const emailData = await emailRes.json()
+      setEmailMessage(emailData.message || 'Email sent successfully')
+      onSaved()
+      // Close after a brief delay so user sees success message
+      setTimeout(() => onClose(), 1500)
+    } catch (e: any) {
+      setError(e.message || 'Failed to send email')
+    } finally {
+      setEmailing(false)
+    }
+  }
+
+  // Check if current supplier has order_email configured
+  const selectedSupplier = suppliers.find(s => s.id === supplierId)
+  const supplierHasEmail = !!(selectedSupplier?.order_email)
+  const canEmail = supplierHasEmail && smtpConfigured
+
   if (!isOpen) return null
 
   const isEditable = !poId || status === 'DRAFT' || status === 'PENDING'
@@ -323,6 +458,7 @@ export default function PurchaseOrderModal({ isOpen, onClose, onSaved, poId, def
           ) : (
             <>
               {error && <div style={styles.error}>{error}</div>}
+              {emailMessage && <div style={styles.success}>{emailMessage}</div>}
 
               {/* Top fields */}
               <div style={styles.fieldRow}>
@@ -550,22 +686,35 @@ export default function PurchaseOrderModal({ isOpen, onClose, onSaved, poId, def
 
         {/* Footer */}
         <div style={styles.footer}>
-          <div>
-            {poId && isEditable && status === 'DRAFT' && (
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            {poId && isEditable && (status === 'DRAFT' || status === 'PENDING') && (
               <button style={styles.deleteBtn} onClick={handleDelete}>Delete</button>
             )}
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <button style={styles.cancelBtn} onClick={onClose}>Cancel</button>
             {isEditable && (
               <>
-                <button style={styles.draftBtn} onClick={() => handleSave('DRAFT')} disabled={saving}>
+                <button style={styles.previewBtn} onClick={handlePreview} disabled={saving || emailing}>
+                  {saving ? 'Saving...' : 'Preview'}
+                </button>
+                {canEmail && (
+                  <button style={styles.emailBtn} onClick={handleSaveAndEmail} disabled={saving || emailing}>
+                    {emailing ? 'Sending...' : 'Save & Email'}
+                  </button>
+                )}
+                <button style={styles.draftBtn} onClick={() => handleSave('DRAFT')} disabled={saving || emailing}>
                   {saving ? 'Saving...' : 'Save Draft'}
                 </button>
-                <button style={styles.submitBtn} onClick={() => handleSave('PENDING')} disabled={saving}>
+                <button style={styles.submitBtn} onClick={() => handleSave('PENDING')} disabled={saving || emailing}>
                   {saving ? 'Saving...' : 'Save & Submit'}
                 </button>
               </>
+            )}
+            {!isEditable && poId && (
+              <button style={styles.previewBtn} onClick={() => window.open(`/api/purchase-orders/${poId}/preview?token=${encodeURIComponent(token || '')}`, '_blank')}>
+                Preview
+              </button>
             )}
           </div>
         </div>
@@ -826,5 +975,33 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#c62828',
     cursor: 'pointer',
     fontSize: '0.85rem',
+  },
+  previewBtn: {
+    padding: '0.5rem 1rem',
+    border: '1px solid #1565c0',
+    borderRadius: '6px',
+    background: '#e3f2fd',
+    color: '#1565c0',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+    fontWeight: 500,
+  },
+  emailBtn: {
+    padding: '0.5rem 1rem',
+    border: '1px solid #2e7d32',
+    borderRadius: '6px',
+    background: '#e8f5e9',
+    color: '#2e7d32',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+    fontWeight: 500,
+  },
+  success: {
+    background: '#e8f5e9',
+    color: '#2e7d32',
+    padding: '0.75rem',
+    borderRadius: '6px',
+    marginBottom: '1rem',
+    fontSize: '0.9rem',
   },
 }
