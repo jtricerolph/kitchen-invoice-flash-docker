@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
 import { useQueryClient } from '@tanstack/react-query'
@@ -34,6 +34,17 @@ export default function Upload() {
   const [error, setError] = useState('')
   const [status, setStatus] = useState('')
   const [queue, setQueue] = useState<QueueItem[]>([])
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
+
+  // Listen for PWA install prompt
+  useEffect(() => {
+    const handler = (e: Event) => {
+      e.preventDefault()
+      setDeferredPrompt(e)
+    }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
 
   // Compression options - balance quality vs size
   const compressionOptions = {
@@ -472,6 +483,30 @@ export default function Upload() {
         />
       </div>
 
+      {/* PWA Install / Mobile App */}
+      <div style={styles.pwaSection}>
+        <div style={styles.pwaContent}>
+          <div>
+            <strong>Upload App</strong>
+            <p style={styles.pwaHint}>Install the upload app for quick camera access on mobile</p>
+          </div>
+          {deferredPrompt ? (
+            <button
+              onClick={async () => {
+                deferredPrompt.prompt()
+                const { outcome } = await deferredPrompt.userChoice
+                if (outcome === 'accepted') setDeferredPrompt(null)
+              }}
+              style={styles.installBtn}
+            >
+              Install App
+            </button>
+          ) : (
+            <a href="/upload-app" style={styles.openAppLink}>Open Upload App</a>
+          )}
+        </div>
+      </div>
+
       <div style={styles.infoSection}>
         <h4>How it works:</h4>
         <ol style={styles.infoList}>
@@ -787,5 +822,44 @@ const styles: Record<string, React.CSSProperties> = {
     borderTopColor: '#0066cc',
     borderRadius: '50%',
     animation: 'spin 1s linear infinite',
+  },
+  pwaSection: {
+    marginTop: '1.5rem',
+    padding: '1.25rem 1.5rem',
+    background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+    borderRadius: '12px',
+  },
+  pwaContent: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '1rem',
+    color: 'white',
+  },
+  pwaHint: {
+    fontSize: '0.8rem',
+    color: 'rgba(255,255,255,0.6)',
+    marginTop: '0.25rem',
+  },
+  installBtn: {
+    padding: '0.6rem 1.25rem',
+    background: '#e94560',
+    color: 'white',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '0.9rem',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  openAppLink: {
+    padding: '0.6rem 1.25rem',
+    background: 'rgba(255,255,255,0.1)',
+    color: 'white',
+    border: '1px solid rgba(255,255,255,0.3)',
+    borderRadius: '8px',
+    fontSize: '0.9rem',
+    textDecoration: 'none',
+    whiteSpace: 'nowrap',
   },
 }

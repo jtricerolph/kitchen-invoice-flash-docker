@@ -22,6 +22,7 @@ import BookingsStats from './pages/BookingsStats'
 import WastageLogbook from './pages/WastageLogbook'
 import KDS from './pages/KDS'
 import PurchaseOrderList from './components/PurchaseOrderList'
+import UploadApp from './pages/UploadApp'
 import SupportButton from './components/SupportButton'
 
 interface User {
@@ -110,7 +111,14 @@ function App() {
   }
 
   const location = useLocation()
-  const isFullscreenPage = location.pathname === '/kds'
+  const isFullscreenPage = location.pathname === '/kds' || location.pathname === '/upload-app'
+
+  // Register service worker for PWA
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    }
+  }, [])
 
   return (
     <AuthContext.Provider value={{ user, token, restrictedPages, login, logout }}>
@@ -247,6 +255,10 @@ function App() {
               element={
                 token ? (isPageAccessible('/kds') ? <KDS /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
+            />
+            <Route
+              path="/upload-app"
+              element={<UploadApp />}
             />
           </Routes>
         </main>
