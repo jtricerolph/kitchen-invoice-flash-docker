@@ -163,7 +163,9 @@ export default function GPReport() {
     transfer: true,       // Transfer: checked by default
     staffFood: true,      // Staff Food: checked by default
     manualAdjustment: true, // Manual Adjustment: checked by default
-    disputes: true        // Open Disputes: checked by default
+    disputes: true,       // Open Disputes: checked by default
+    cdDeductions: true,   // Distributed Deductions: checked by default
+    cdReallocations: true // Distributed Reallocations: checked by default
   })
 
   // Track if dates have changed since last generation
@@ -514,12 +516,27 @@ export default function GPReport() {
   const hasStaffFood = staff_food_total !== null && staff_food_total > 0
   const hasManualAdjustment = manual_adjustment_total !== null && manual_adjustment_total > 0
   const hasDisputes = disputes_total !== null && disputes_total > 0
+  const hasCdDeductions = cd_deductions_total !== null && cd_deductions_total !== 0
+  const hasCdReallocations = cd_reallocations_total !== null && cd_reallocations_total !== 0
 
-  // Check if any allowances data exists
-  const hasAnyAllowancesData = hasWastage || hasTransfer || hasStaffFood || hasManualAdjustment || hasDisputes
+  // Check if any allowances/adjustments data exists
+  const hasAnyAllowancesData = hasWastage || hasTransfer || hasStaffFood || hasManualAdjustment || hasDisputes || hasCdDeductions || hasCdReallocations
 
   // Calculate selected allowances total based on checkbox selection
   // Note: API returns decimals as strings, so we need Number() conversion
+  const salesNum = Number(net_food_sales) || 0
+  const purchasesNum = Number(net_food_purchases) || 0
+  const cdDeductions = Number(cd_deductions_total) || 0
+  const cdReallocations = Number(cd_reallocations_total) || 0
+
+  const calculateSelectedAdjustments = () => {
+    let total = 0
+    // CD adjustments reduce/increase purchases (deductions are negative = reduce cost)
+    if (allowancesSelection.cdDeductions && hasCdDeductions) total += cdDeductions  // negative value
+    if (allowancesSelection.cdReallocations && hasCdReallocations) total += cdReallocations  // positive value
+    return total
+  }
+
   const calculateSelectedAllowances = () => {
     let total = 0
     if (allowancesSelection.wastage && hasWastage) total += Number(wastage_total) || 0
@@ -530,15 +547,14 @@ export default function GPReport() {
     return total
   }
 
+  const selectedCdTotal = calculateSelectedAdjustments()
   const selectedAllowancesTotal = calculateSelectedAllowances()
-  const hasSelectedAllowances = selectedAllowancesTotal > 0
+  const adjustedPurchases = purchasesNum + selectedCdTotal
+  const hasSelectedAllowances = selectedAllowancesTotal > 0 || selectedCdTotal !== 0
 
-  // Calculate GP with selected allowances
-  // Note: API returns decimals as strings, so we need Number() conversion
-  const salesNum = Number(net_food_sales) || 0
-  const purchasesNum = Number(net_food_purchases) || 0
+  // Calculate GP with selected allowances + CD adjustments
   const gpWithSelectedAllowances = salesNum > 0
-    ? ((salesNum - purchasesNum + selectedAllowancesTotal) / salesNum * 100)
+    ? ((salesNum - adjustedPurchases + selectedAllowancesTotal) / salesNum * 100)
     : 0
 
   // Toggle checkbox handler
@@ -629,26 +645,6 @@ export default function GPReport() {
               <span style={styles.calcValue}>{formatCurrency(net_food_purchases)}</span>
             </div>
 
-            {(cd_deductions_total !== null || cd_reallocations_total !== null) && (
-              <>
-                {cd_deductions_total !== null && (
-                  <div style={styles.calcRow}>
-                    <span style={{ ...styles.calcLabel, fontSize: '0.85rem', paddingLeft: '0.75rem', color: '#888' }}>Distributed Deductions</span>
-                    <span style={{ ...styles.calcValue, fontSize: '0.85rem', color: '#c62828' }}>
-                      {formatCurrency(cd_deductions_total)}
-                    </span>
-                  </div>
-                )}
-                {cd_reallocations_total !== null && (
-                  <div style={styles.calcRow}>
-                    <span style={{ ...styles.calcLabel, fontSize: '0.85rem', paddingLeft: '0.75rem', color: '#888' }}>Distributed Reallocations</span>
-                    <span style={{ ...styles.calcValue, fontSize: '0.85rem', color: '#2e7d32' }}>
-                      +{formatCurrency(cd_reallocations_total)}
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
 
             <div style={styles.divider} />
 
@@ -669,7 +665,39 @@ export default function GPReport() {
             {hasAnyAllowancesData && (
               <>
                 <div style={styles.wastageSection} />
-                <div style={styles.allowancesHeader}>Allowances</div>
+                <div style={styles.allowancesHeader}>Adjustments</div>
+
+                {hasCdDeductions && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.cdDeductions}
+                        onChange={() => toggleAllowance('cdDeductions')}
+                      />
+                      <span>Distributed Deductions</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#2e7d32' }}>
+                      {formatCurrency(cd_deductions_total || 0)}
+                    </span>
+                  </div>
+                )}
+
+                {hasCdReallocations && (
+                  <div style={styles.allowanceRow}>
+                    <label style={styles.allowanceCheckbox}>
+                      <input
+                        type="checkbox"
+                        checked={allowancesSelection.cdReallocations}
+                        onChange={() => toggleAllowance('cdReallocations')}
+                      />
+                      <span>Distributed Reallocations</span>
+                    </label>
+                    <span style={{ ...styles.calcValue, color: '#e65100' }}>
+                      +{formatCurrency(cd_reallocations_total || 0)}
+                    </span>
+                  </div>
+                )}
 
                 {hasWastage && (
                   <div style={styles.allowanceRow}>
@@ -753,15 +781,26 @@ export default function GPReport() {
 
                 <div style={styles.divider} />
 
-                <div style={styles.calcRow}>
-                  <span style={styles.calcLabel}>Selected Allowances</span>
-                  <span style={{ ...styles.calcValue, color: hasSelectedAllowances ? '#27ae60' : '#999' }}>
-                    {formatCurrency(selectedAllowancesTotal)}
-                  </span>
-                </div>
+                {selectedCdTotal !== 0 && (
+                  <div style={styles.calcRow}>
+                    <span style={styles.calcLabel}>Adjusted Purchases</span>
+                    <span style={styles.calcValue}>
+                      {formatCurrency(adjustedPurchases)}
+                    </span>
+                  </div>
+                )}
+
+                {selectedAllowancesTotal > 0 && (
+                  <div style={styles.calcRow}>
+                    <span style={styles.calcLabel}>Selected Allowances</span>
+                    <span style={{ ...styles.calcValue, color: '#27ae60' }}>
+                      {formatCurrency(selectedAllowancesTotal)}
+                    </span>
+                  </div>
+                )}
 
                 <div style={styles.calcRow}>
-                  <span style={styles.calcLabelBold}>GP % (with allowances)</span>
+                  <span style={styles.calcLabelBold}>Adjusted GP %</span>
                   <span style={{ ...styles.calcValueBold, color: hasSelectedAllowances ? '#27ae60' : '#999' }}>
                     {gpWithSelectedAllowances.toFixed(1)}%
                   </span>

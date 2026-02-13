@@ -1348,34 +1348,55 @@ export default function Budget() {
                         </Fragment>
                       )
                     })}
-                  {/* Totals row */}
+                  {/* Total Movement row */}
                   {distData && distData.distributions.length > 0 && (
-                    <tr style={{ background: '#f8f9fa' }}>
-                      <td style={{ ...styles.supplierCell, fontWeight: 700 }}>Distribution Total</td>
-                      <td style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem' }}>
-                        {distData.bf_balance !== 0 ? (
-                          <>{distData.bf_balance < 0 ? '-' : ''}£{Math.abs(distData.bf_balance).toFixed(2)}</>
-                        ) : '-'}
-                      </td>
+                    <tr style={{ background: '#f8f9fa', borderTop: '2px solid #ddd' }}>
+                      <td style={{ ...styles.supplierCell, fontWeight: 600, fontSize: '0.8rem' }}>Total Movement</td>
+                      <td style={styles.dayCell}></td>
                       {budgetData.dates.map((d: string) => {
                         const adj = distData.daily_totals[d] ?? 0
                         return (
                           <td key={d} style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem' }}>
                             {adj !== 0 ? (
                               <span style={{ color: adj < 0 ? '#c62828' : '#2e7d32' }}>
-                                {adj < 0 ? '-' : ''}£{Math.abs(adj).toFixed(2)}
+                                {adj < 0 ? '-' : '+'}£{Math.abs(adj).toFixed(2)}
                               </span>
                             ) : '-'}
                           </td>
                         )
                       })}
-                      <td style={{ ...styles.dayCell, fontWeight: 600, fontSize: '0.8rem' }}>
-                        {distData.cf_balance !== 0 ? (
-                          <>{distData.cf_balance < 0 ? '-' : ''}£{Math.abs(distData.cf_balance).toFixed(2)}</>
-                        ) : '£0.00'}
-                      </td>
+                      <td style={styles.dayCell}></td>
                     </tr>
                   )}
+                  {/* Balance row — running balance: BF then BF + cumulative daily movements */}
+                  {distData && distData.distributions.length > 0 && (() => {
+                    let running = distData.bf_balance
+                    return (
+                      <tr style={{ background: '#f0f4f8' }}>
+                        <td style={{ ...styles.supplierCell, fontWeight: 700, fontSize: '0.8rem' }}>Balance</td>
+                        <td style={{ ...styles.dayCell, fontWeight: 700, fontSize: '0.8rem' }}>
+                          {running !== 0 ? (
+                            <>{running < 0 ? '-' : ''}£{Math.abs(running).toFixed(2)}</>
+                          ) : '-'}
+                        </td>
+                        {budgetData.dates.map((d: string) => {
+                          running += (distData.daily_totals[d] ?? 0)
+                          return (
+                            <td key={d} style={{ ...styles.dayCell, fontWeight: 700, fontSize: '0.8rem', color: running < 0 ? '#c62828' : running === 0 ? '#2e7d32' : '#333' }}>
+                              {running !== 0 ? (
+                                <>{running < 0 ? '-' : ''}£{Math.abs(running).toFixed(2)}</>
+                              ) : '£0.00'}
+                            </td>
+                          )
+                        })}
+                        <td style={{ ...styles.dayCell, fontWeight: 700, fontSize: '0.8rem', color: distData.cf_balance < 0 ? '#c62828' : distData.cf_balance === 0 ? '#2e7d32' : '#333' }}>
+                          {distData.cf_balance !== 0 ? (
+                            <>{distData.cf_balance < 0 ? '-' : ''}£{Math.abs(distData.cf_balance).toFixed(2)}</>
+                          ) : '£0.00'}
+                        </td>
+                      </tr>
+                    )
+                  })()}
                   {/* Add Distribution row */}
                   <tr>
                     <td

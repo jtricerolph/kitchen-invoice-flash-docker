@@ -1261,7 +1261,10 @@ async def get_gp_by_range(
     )
     cd_reallocations = cd_reallocations_result.scalar() or Decimal("0.00")  # Will be positive
 
-    net_food_purchases += cd_deductions + cd_reallocations
+    # net_food_purchases stays as raw invoice total — CD adjustments are
+    # returned separately so the frontend can toggle them on/off.
+    # GP is calculated from raw purchases; the frontend applies CD + allowances
+    # to compute the "Adjusted GP %".
 
     # Get logbook entry totals by type
     # Helper function to query a specific entry type
