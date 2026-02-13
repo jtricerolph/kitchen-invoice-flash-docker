@@ -25,15 +25,15 @@ export default function UploadApp() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [captures, setCaptures] = useState<{ id: string; file: File; preview: string }[]>([])
 
-  // Set viewport for mobile when in standalone PWA mode
+  // Override viewport for mobile-friendly layout on this page
   useEffect(() => {
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches
-      || (navigator as any).standalone === true
-    if (isStandalone) {
-      const viewport = document.querySelector('meta[name="viewport"]')
-      if (viewport) {
-        viewport.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no')
-      }
+    const viewport = document.querySelector('meta[name="viewport"]')
+    const original = viewport?.getAttribute('content') || ''
+    if (viewport) {
+      viewport.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no')
+    }
+    return () => {
+      if (viewport && original) viewport.setAttribute('content', original)
     }
   }, [])
 
@@ -339,23 +339,25 @@ export default function UploadApp() {
                   <div style={styles.pageLabel}>Page {idx + 1}</div>
                 </div>
               ))}
+              {/* Add Page card in grid */}
+              <button
+                onClick={() => cameraRef.current?.click()}
+                style={styles.addPageCard}
+                disabled={isWorking}
+              >
+                <span style={{ fontSize: '2.5rem' }}>📷</span>
+                <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>Add Page</span>
+              </button>
             </div>
 
             {/* Actions */}
             <div style={styles.actionBar}>
               <button
-                onClick={() => cameraRef.current?.click()}
-                style={styles.addMoreBtn}
-                disabled={isWorking}
-              >
-                + Add Page
-              </button>
-              <button
                 onClick={() => setCaptures([])}
                 style={styles.clearBtn}
                 disabled={isWorking}
               >
-                Clear
+                Clear All
               </button>
             </div>
 
@@ -571,19 +573,33 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
     gap: '0.75rem',
-    flex: 1,
+    alignContent: 'start',
   },
   previewCard: {
     position: 'relative',
     borderRadius: '8px',
     overflow: 'hidden',
     background: '#0f0f23',
+    height: '180px',
   },
   previewImg: {
     width: '100%',
-    height: '180px',
+    height: '100%',
     objectFit: 'cover',
     display: 'block',
+  },
+  addPageCard: {
+    height: '180px',
+    borderRadius: '8px',
+    border: '2px dashed rgba(255,255,255,0.25)',
+    background: 'rgba(255,255,255,0.05)',
+    color: 'rgba(255,255,255,0.7)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.5rem',
+    cursor: 'pointer',
   },
   removeBtn: {
     position: 'absolute',
@@ -614,26 +630,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   actionBar: {
     display: 'flex',
-    gap: '0.5rem',
-  },
-  addMoreBtn: {
-    flex: 1,
-    padding: '0.65rem',
-    background: 'rgba(255,255,255,0.1)',
-    border: '1px solid rgba(255,255,255,0.2)',
-    borderRadius: '8px',
-    color: 'white',
-    fontSize: '0.9rem',
-    cursor: 'pointer',
-    fontWeight: 500,
+    justifyContent: 'flex-end',
   },
   clearBtn: {
-    padding: '0.65rem 1rem',
+    padding: '0.5rem 1rem',
     background: 'transparent',
     border: '1px solid rgba(255,255,255,0.15)',
     borderRadius: '8px',
     color: 'rgba(255,255,255,0.5)',
-    fontSize: '0.9rem',
+    fontSize: '0.85rem',
     cursor: 'pointer',
   },
   uploadBtn: {
