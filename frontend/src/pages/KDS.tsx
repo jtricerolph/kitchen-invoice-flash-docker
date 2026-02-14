@@ -172,6 +172,8 @@ export default function KDS() {
   const [selectedTicket, setSelectedTicket] = useState<KDSTicket | null>(null)
   const [showPending, setShowPending] = useState(false)
   const [showBookings, setShowBookings] = useState(false)
+  const [recipeOverlay, setRecipeOverlay] = useState<any>(null)
+  const [recipeLoading, setRecipeLoading] = useState(false)
   // Tick counter for live timer updates
   const [, setTick] = useState(0)
 
@@ -257,6 +259,24 @@ export default function KDS() {
       if (es) es.close()
     }
   }, [queryClient])
+
+  // Fetch recipe link for a KDS order item
+  const showRecipeLink = useCallback(async (menuItemName: string) => {
+    if (!token || recipeLoading) return
+    setRecipeLoading(true)
+    try {
+      const res = await fetch(`/api/kds/recipe-link/${encodeURIComponent(menuItemName)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data) {
+          setRecipeOverlay(data)
+        }
+      }
+    } catch { /* ignore */ }
+    setRecipeLoading(false)
+  }, [token, recipeLoading])
 
   // Course AWAY mutation (mark course as called away)
   const courseAwayMutation = useMutation({
@@ -630,7 +650,11 @@ export default function KDS() {
                                   ...(!voided && order.is_sent ? { textDecoration: 'line-through', opacity: 0.45 } : {}),
                                 }}>
                                   <span style={styles.orderQty}>{order.quantity}x</span>
-                                  <span style={styles.orderName}>{order.name}</span>
+                                  <span
+                                    style={{ ...styles.orderName, cursor: 'pointer' }}
+                                    onClick={(e) => { e.stopPropagation(); showRecipeLink(order.name) }}
+                                    title="View recipe"
+                                  >{order.name}</span>
                                   {order.portion && order.portion !== 'Normal' && (
                                     <span style={styles.orderPortion}>({order.portion})</span>
                                   )}
@@ -976,6 +1000,81 @@ export default function KDS() {
           <ExitIcon />
         </button>
       </div>
+
+      {/* Recipe Overlay */}
+      {recipeOverlay && (
+        <div
+          style={styles.recipeOverlayBackdrop}
+          onClick={() => setRecipeOverlay(null)}
+        >
+          <div
+            style={styles.recipeOverlayPanel}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.recipeOverlayHeader}>
+              <h2 style={{ margin: 0, fontSize: '1.3rem', color: '#fff' }}>{recipeOverlay.name}</h2>
+              <button
+                onClick={() => setRecipeOverlay(null)}
+                style={styles.recipeOverlayClose}
+              >X</button>
+            </div>
+
+            {recipeOverlay.description && (
+              <p style={{ color: '#aaa', fontSize: '0.9rem', margin: '0.5rem 0' }}>{recipeOverlay.description}</p>
+            )}
+
+            {recipeOverlay.flags && recipeOverlay.flags.length > 0 && (
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                {recipeOverlay.flags.map((f: any, i: number) => (
+                  <span key={i} style={{
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    background: f.category === 'Allergy' ? 'rgba(233,69,96,0.3)' : 'rgba(74,222,128,0.3)',
+                    color: f.category === 'Allergy' ? '#ff6b6b' : '#4ade80',
+                  }}>
+                    {f.icon || ''} {f.code || f.name}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {recipeOverlay.plating_image && (
+              <div style={{ marginBottom: '0.75rem', textAlign: 'center' }}>
+                <img
+                  src={`/api/recipes/${recipeOverlay.recipe_id}/images/${recipeOverlay.plating_image.id}`}
+                  alt="Plating"
+                  style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '8px' }}
+                />
+              </div>
+            )}
+
+            {recipeOverlay.ingredients && recipeOverlay.ingredients.length > 0 && (
+              <div style={{ marginBottom: '0.75rem' }}>
+                <h4 style={{ color: '#ccc', margin: '0 0 0.4rem', fontSize: '0.9rem' }}>Ingredients</h4>
+                {recipeOverlay.ingredients.map((ing: any, i: number) => (
+                  <div key={i} style={{ color: '#ddd', fontSize: '0.85rem', padding: '0.15rem 0' }}>
+                    {ing.quantity} {ing.unit} {ing.name}
+                    {ing.notes && <span style={{ color: '#888' }}> — {ing.notes}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {recipeOverlay.steps && recipeOverlay.steps.length > 0 && (
+              <div>
+                <h4 style={{ color: '#ccc', margin: '0 0 0.4rem', fontSize: '0.9rem' }}>Method</h4>
+                {recipeOverlay.steps.map((s: any) => (
+                  <div key={s.step_number} style={{ color: '#ddd', fontSize: '0.85rem', padding: '0.2rem 0' }}>
+                    <strong>{s.step_number}.</strong> {s.instruction}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1485,5 +1584,46 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#2ecc71',
     letterSpacing: '0.05em',
     marginTop: '0.1rem',
+  },
+  recipeOverlayBackdrop: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.7)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  recipeOverlayPanel: {
+    background: '#2d2d44',
+    borderRadius: '12px',
+    padding: '1.5rem',
+    maxWidth: '500px',
+    width: '90%',
+    maxHeight: '80vh',
+    overflowY: 'auto' as const,
+    boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+  },
+  recipeOverlayHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '0.75rem',
+  },
+  recipeOverlayClose: {
+    background: 'none',
+    border: '1px solid #4a4a6a',
+    color: '#ccc',
+    fontSize: '1rem',
+    cursor: 'pointer',
+    borderRadius: '4px',
+    width: '32px',
+    height: '32px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 }

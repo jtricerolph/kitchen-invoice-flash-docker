@@ -1378,6 +1378,98 @@ async def test_connection(
 
 
 # =============================================================================
+# Recipe Link (links KDS menu items to plated recipes)
+# =============================================================================
+
+@router.get("/recipe-link/{menu_item_name}")
+async def get_recipe_link(
+    menu_item_name: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Look up a linked recipe for a KDS order item by menu_item_name.
+
+    Returns a lightweight recipe summary suitable for KDS overlay display:
+    plating photo, ingredients, key steps, and flag badges.
+    """
+    from models.recipe import Recipe, RecipeIngredient, RecipeStep, RecipeImage
+    from models.ingredient import Ingredient
+    from models.food_flag import FoodFlag, RecipeFlag
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Recipe)
+        .options(selectinload(Recipe.images))
+        .where(
+            Recipe.kitchen_id == current_user.kitchen_id,
+            Recipe.kds_menu_item_name == menu_item_name,
+            Recipe.is_archived == False,
+        )
+    )
+    recipe = result.scalar_one_or_none()
+    if not recipe:
+        return None
+
+    # Get ingredients
+    ri_result = await db.execute(
+        select(RecipeIngredient)
+        .options(selectinload(RecipeIngredient.ingredient))
+        .where(RecipeIngredient.recipe_id == recipe.id)
+        .order_by(RecipeIngredient.sort_order)
+    )
+    ingredients = [
+        {
+            "name": ri.ingredient.name if ri.ingredient else "?",
+            "quantity": float(ri.quantity),
+            "unit": ri.ingredient.standard_unit if ri.ingredient else "",
+            "notes": ri.notes,
+        }
+        for ri in ri_result.scalars().all()
+    ]
+
+    # Get steps
+    steps_result = await db.execute(
+        select(RecipeStep)
+        .where(RecipeStep.recipe_id == recipe.id)
+        .order_by(RecipeStep.step_number)
+    )
+    steps = [
+        {"step_number": s.step_number, "instruction": s.instruction}
+        for s in steps_result.scalars().all()
+    ]
+
+    # Get flags
+    from api.food_flags import compute_recipe_flags
+    flags_raw = await compute_recipe_flags(recipe.id, current_user.kitchen_id, db)
+    flags = [
+        {"name": f.flag_name, "code": f.flag_code, "icon": f.flag_icon, "category": f.category_name}
+        for f in flags_raw if f.is_active
+    ]
+
+    # Plating image
+    plating_image = None
+    for img in (recipe.images or []):
+        if img.image_type == "plating":
+            plating_image = {"id": img.id, "caption": img.caption}
+            break
+    if not plating_image and recipe.images:
+        plating_image = {"id": recipe.images[0].id, "caption": recipe.images[0].caption}
+
+    return {
+        "recipe_id": recipe.id,
+        "name": recipe.name,
+        "description": recipe.description,
+        "batch_portions": recipe.batch_portions,
+        "prep_time_minutes": recipe.prep_time_minutes,
+        "cook_time_minutes": recipe.cook_time_minutes,
+        "plating_image": plating_image,
+        "ingredients": ingredients,
+        "steps": steps,
+        "flags": flags,
+    }
+
+
+# =============================================================================
 # SSE (Server-Sent Events) for Real-Time Updates
 # =============================================================================
 

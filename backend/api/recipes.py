@@ -211,6 +211,45 @@ async def delete_menu_section(
     return {"ok": True}
 
 
+# ── Dashboard Stats ──────────────────────────────────────────────────────────
+
+@router.get("/dashboard-stats")
+async def recipe_dashboard_stats(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight stats for the main dashboard widget."""
+    kid = user.kitchen_id
+
+    total = (await db.execute(
+        select(func.count()).select_from(Recipe).where(Recipe.kitchen_id == kid, Recipe.is_archived == False)
+    )).scalar() or 0
+
+    plated = (await db.execute(
+        select(func.count()).select_from(Recipe).where(Recipe.kitchen_id == kid, Recipe.recipe_type == "plated", Recipe.is_archived == False)
+    )).scalar() or 0
+
+    component = total - plated
+
+    # Ingredients with no sources
+    unmapped = (await db.execute(
+        select(func.count()).select_from(Ingredient).where(
+            Ingredient.kitchen_id == kid,
+            Ingredient.is_archived == False,
+            ~Ingredient.id.in_(
+                select(IngredientSource.ingredient_id).where(IngredientSource.kitchen_id == kid)
+            ),
+        )
+    )).scalar() or 0
+
+    return {
+        "total_recipes": total,
+        "plated_recipes": plated,
+        "component_recipes": component,
+        "unmapped_ingredients": unmapped,
+    }
+
+
 # ── Recipe List & CRUD ───────────────────────────────────────────────────────
 
 @router.get("")

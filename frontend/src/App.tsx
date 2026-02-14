@@ -22,6 +22,11 @@ import BookingsStats from './pages/BookingsStats'
 import WastageLogbook from './pages/WastageLogbook'
 import KDS from './pages/KDS'
 import PurchaseOrderList from './components/PurchaseOrderList'
+import Ingredients from './components/Ingredients'
+import RecipeList from './components/RecipeList'
+import RecipeEditor from './components/RecipeEditor'
+import EventOrders from './components/EventOrders'
+import EventOrderEditor from './components/EventOrderEditor'
 import UploadApp from './pages/UploadApp'
 import SupportButton from './components/SupportButton'
 
@@ -257,6 +262,36 @@ function App() {
               }
             />
             <Route
+              path="/ingredients"
+              element={
+                token ? (isPageAccessible('/recipes') ? <Ingredients /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/recipes"
+              element={
+                token ? (isPageAccessible('/recipes') ? <RecipeList /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/recipes/:id"
+              element={
+                token ? (isPageAccessible('/recipes') ? <RecipeEditor /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/event-orders"
+              element={
+                token ? (isPageAccessible('/recipes') ? <EventOrders /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/event-orders/:id"
+              element={
+                token ? (isPageAccessible('/recipes') ? <EventOrderEditor /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/upload-app"
               element={<UploadApp />}
             />
@@ -273,6 +308,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
   const [searchOpen, setSearchOpen] = useState(false)
   const [invoicesOpen, setInvoicesOpen] = useState(false)
   const [bookingsOpen, setBookingsOpen] = useState(false)
+  const [recipesOpen, setRecipesOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   // Check if a page should be shown in nav
@@ -289,6 +325,9 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
 
   // Check if reports dropdown should be shown (at least one report accessible)
   const showReports = showNavItem('/gp-report')
+
+  // Check if recipes dropdown should be shown
+  const showRecipes = showNavItem('/recipes')
 
   // Check if search dropdown should be shown
   const showSearch = showNavItem('/search')
@@ -345,6 +384,24 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                     {showNavItem('/resos') && <a href="/resos" style={styles.dropdownLink}>Restaurant Calendar</a>}
                     {showNavItem('/resos') && <a href="/resos-stats" style={styles.dropdownLink}>Restaurant Stats</a>}
                     {showNavItem('/resos') && <a href="/residents-table-chart" style={styles.dropdownLink}>Residents Table Chart</a>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {showRecipes && (
+            <div
+              style={styles.dropdownContainer}
+              onMouseEnter={() => setRecipesOpen(true)}
+              onMouseLeave={() => setRecipesOpen(false)}
+            >
+              <span style={styles.navLink}>Recipes ▾</span>
+              {recipesOpen && (
+                <div style={styles.dropdown}>
+                  <div style={styles.dropdownContent}>
+                    <a href="/recipes" style={styles.dropdownLink}>Recipes</a>
+                    <a href="/ingredients" style={styles.dropdownLink}>Ingredients</a>
+                    <a href="/event-orders" style={styles.dropdownLink}>Event Orders</a>
                   </div>
                 </div>
               )}

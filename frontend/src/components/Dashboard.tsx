@@ -203,6 +203,24 @@ export default function Dashboard() {
     staleTime: 5 * 60 * 1000 // Cache for 5 minutes
   })
 
+  const { data: recipeStats } = useQuery<{
+    total_recipes: number
+    plated_recipes: number
+    component_recipes: number
+    unmapped_ingredients: number
+  }>({
+    queryKey: ['recipe-dashboard-stats'],
+    queryFn: async () => {
+      const res = await fetch('/api/recipes/dashboard-stats', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch recipe stats')
+      return res.json()
+    },
+    enabled: !!token,
+    staleTime: 5 * 60 * 1000,
+  })
+
   const { data: disputeStats } = useQuery<DisputeStats>({
     queryKey: ['dispute-stats'],
     queryFn: async () => {
@@ -489,6 +507,43 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ===== Recipes Section ===== */}
+      {recipeStats && (recipeStats.total_recipes > 0 || recipeStats.unmapped_ingredients > 0) && (
+        <>
+          <h3 style={styles.sectionTitle}>Recipes</h3>
+          <div style={styles.fourGrid}>
+            <div
+              style={{ ...styles.card, ...styles.cardFlex, cursor: 'pointer' }}
+              onClick={() => navigate('/recipes')}
+            >
+              <h3 style={styles.cardTitle}>Recipes</h3>
+              <div style={styles.statValue}>{recipeStats.total_recipes}</div>
+              <div style={styles.details}>
+                <span>{recipeStats.plated_recipes} plated</span>
+                <span>{recipeStats.component_recipes} components</span>
+              </div>
+              <div style={styles.cardLinkArea}>
+                <span style={styles.linkText}>View all →</span>
+              </div>
+            </div>
+
+            {recipeStats.unmapped_ingredients > 0 && (
+              <div
+                style={{ ...styles.card, ...styles.cardFlex, ...styles.alertCard, cursor: 'pointer' }}
+                onClick={() => navigate('/ingredients?unmapped=true')}
+              >
+                <h3 style={styles.cardTitle}>Unmapped Ingredients</h3>
+                <div style={{ ...styles.statValue, color: '#e94560' }}>{recipeStats.unmapped_ingredients}</div>
+                <p style={styles.statLabel}>Without supplier source</p>
+                <div style={styles.cardLinkArea}>
+                  <span style={styles.linkText}>Map now →</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* ===== Covers Section ===== */}
       <h3 style={styles.sectionTitle}>Covers</h3>
