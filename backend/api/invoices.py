@@ -726,6 +726,19 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
             await db.commit()
             await db.refresh(invoice)
 
+            # Auto-update ingredient source prices from matched line items
+            try:
+                from api.ingredients import update_ingredient_prices_for_invoice
+                updated_ids = await update_ingredient_prices_for_invoice(invoice_id, kitchen_id, db)
+                if updated_ids:
+                    from api.recipes import snapshot_recipes_using_ingredient
+                    for ing_id in updated_ids:
+                        await snapshot_recipes_using_ingredient(ing_id, db, f"ingredient_price_update: invoice #{invoice_id}")
+                    await db.commit()
+                    logger.info(f"Auto-updated ingredient prices for {len(updated_ids)} ingredients from invoice {invoice_id}")
+            except Exception as e:
+                logger.warning(f"Ingredient price auto-update failed (non-critical): {e}")
+
             # Run duplicate detection
             detector = DuplicateDetector(db, kitchen_id)
             duplicates = await detector.check_duplicates(invoice)
@@ -1860,6 +1873,19 @@ async def update_line_item(
 
     await db.commit()
     await db.refresh(line_item)
+
+    # Auto-update ingredient source price when unit_price changes
+    if "unit_price" in update_data:
+        try:
+            from api.ingredients import update_ingredient_prices_for_invoice
+            from api.recipes import snapshot_recipes_using_ingredient
+            updated_ids = await update_ingredient_prices_for_invoice(invoice_id, current_user.kitchen_id, db)
+            if updated_ids:
+                for ing_id in updated_ids:
+                    await snapshot_recipes_using_ingredient(ing_id, db, f"line_item_update: #{item_id}")
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Ingredient price auto-update failed: {e}")
 
     # Auto-update PDF highlights when is_non_stock status changes (if annotations enabled)
     if "is_non_stock" in update_data:

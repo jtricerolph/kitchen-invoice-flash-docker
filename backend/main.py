@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions, ingredients, recipes, food_flags, event_orders, external
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -370,6 +370,11 @@ app.include_router(budget.router, prefix="/api/budget", tags=["Budget"])
 app.include_router(cover_overrides.router, prefix="/api/cover-overrides", tags=["Cover Overrides"])
 app.include_router(purchase_orders.router, prefix="/api/purchase-orders", tags=["Purchase Orders"])
 app.include_router(cost_distributions.router, prefix="/api/cost-distributions", tags=["Cost Distributions"])
+app.include_router(ingredients.router, prefix="/api/ingredients", tags=["Ingredients"])
+app.include_router(recipes.router, prefix="/api/recipes", tags=["Recipes"])
+app.include_router(food_flags.router, prefix="/api/food-flags", tags=["Food Flags"])
+app.include_router(event_orders.router, prefix="/api/event-orders", tags=["Event Orders"])
+app.include_router(external.router, prefix="/api/external", tags=["External API"])
 
 
 @app.get("/")
