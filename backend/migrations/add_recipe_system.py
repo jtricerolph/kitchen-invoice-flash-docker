@@ -37,6 +37,30 @@ async def migrate():
     except Exception as e:
         print(f"- pg_trgm extension not available ({e}), fuzzy search will be limited")
 
+    # ══ Add missing UNIQUE constraints (tables may have been created by
+    # SQLAlchemy create_all WITHOUT these constraints) ══
+    try:
+        async with engine.begin() as conn:
+            for idx_name, idx_def in [
+                ("uix_ingredient_categories_kn", "ingredient_categories(kitchen_id, name)"),
+                ("uix_ingredients_kn", "ingredients(kitchen_id, name)"),
+                ("uix_ingredient_sources_kisc", "ingredient_sources(kitchen_id, ingredient_id, supplier_id, product_code)"),
+                ("uix_ingredient_flags_if", "ingredient_flags(ingredient_id, food_flag_id)"),
+                ("uix_food_flag_categories_kn", "food_flag_categories(kitchen_id, name)"),
+                ("uix_food_flags_kn", "food_flags(kitchen_id, name)"),
+                ("uix_line_item_flags_lf", "line_item_flags(line_item_id, food_flag_id)"),
+                ("uix_menu_sections_kn", "menu_sections(kitchen_id, name)"),
+                ("uix_recipes_kn", "recipes(kitchen_id, name)"),
+                ("uix_recipe_flags_rf", "recipe_flags(recipe_id, food_flag_id)"),
+                ("uix_recipe_cost_snapshots_rd", "recipe_cost_snapshots(recipe_id, snapshot_date)"),
+            ]:
+                await conn.execute(text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {idx_name} ON {idx_def}"
+                ))
+            print("+ Ensured all unique constraints/indexes exist")
+    except Exception as e:
+        print(f"! Warning adding unique indexes: {e}")
+
     async with engine.begin() as conn:
         # ── ingredient_categories ──
         try:
@@ -490,6 +514,8 @@ async def migrate():
                 pass  # Skip silently — indexes are non-critical if they exist
         print("+ Created indexes")
 
+    # ══ Seeding in separate transaction (so failures don't rollback table creation) ══
+    async with engine.begin() as conn:
         # ── Pre-seed ingredient categories for all existing kitchens ──
         try:
             result = await conn.execute(text("SELECT id FROM kitchens"))
@@ -504,8 +530,8 @@ async def migrate():
             for kid in kitchen_ids:
                 for i, cat in enumerate(categories):
                     await conn.execute(text("""
-                        INSERT INTO ingredient_categories (kitchen_id, name, sort_order)
-                        VALUES (:kid, :name, :sort)
+                        INSERT INTO ingredient_categories (kitchen_id, name, sort_order, created_at)
+                        VALUES (:kid, :name, :sort, NOW())
                         ON CONFLICT (kitchen_id, name) DO NOTHING
                     """), {"kid": kid, "name": cat, "sort": i})
 
@@ -542,8 +568,8 @@ async def migrate():
             for kid in kitchen_ids:
                 # Create Allergy category
                 result = await conn.execute(text("""
-                    INSERT INTO food_flag_categories (kitchen_id, name, propagation_type, sort_order)
-                    VALUES (:kid, 'Allergy', 'contains', 0)
+                    INSERT INTO food_flag_categories (kitchen_id, name, propagation_type, sort_order, created_at)
+                    VALUES (:kid, 'Allergy', 'contains', 0, NOW())
                     ON CONFLICT (kitchen_id, name) DO NOTHING
                     RETURNING id
                 """), {"kid": kid})
@@ -558,8 +584,8 @@ async def migrate():
 
                 # Create Dietary category
                 result = await conn.execute(text("""
-                    INSERT INTO food_flag_categories (kitchen_id, name, propagation_type, sort_order)
-                    VALUES (:kid, 'Dietary', 'suitable_for', 1)
+                    INSERT INTO food_flag_categories (kitchen_id, name, propagation_type, sort_order, created_at)
+                    VALUES (:kid, 'Dietary', 'suitable_for', 1, NOW())
                     ON CONFLICT (kitchen_id, name) DO NOTHING
                     RETURNING id
                 """), {"kid": kid})
@@ -575,16 +601,16 @@ async def migrate():
                 # Seed allergy flags
                 for i, (name, code, icon) in enumerate(allergy_flags):
                     await conn.execute(text("""
-                        INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order)
-                        VALUES (:cat_id, :kid, :name, :code, :icon, :sort)
+                        INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order, created_at)
+                        VALUES (:cat_id, :kid, :name, :code, :icon, :sort, NOW())
                         ON CONFLICT (kitchen_id, name) DO NOTHING
                     """), {"cat_id": allergy_cat_id, "kid": kid, "name": name, "code": code, "icon": icon, "sort": i})
 
                 # Seed dietary flags
                 for i, (name, code, icon) in enumerate(dietary_flags):
                     await conn.execute(text("""
-                        INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order)
-                        VALUES (:cat_id, :kid, :name, :code, :icon, :sort)
+                        INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order, created_at)
+                        VALUES (:cat_id, :kid, :name, :code, :icon, :sort, NOW())
                         ON CONFLICT (kitchen_id, name) DO NOTHING
                     """), {"cat_id": dietary_cat_id, "kid": kid, "name": name, "code": code, "icon": icon, "sort": i})
 

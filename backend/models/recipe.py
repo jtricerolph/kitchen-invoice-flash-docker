@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
-from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean, Date, CheckConstraint
+from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean, Date, CheckConstraint, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -9,6 +9,7 @@ from database import Base
 class MenuSection(Base):
     """Groupings for recipes (both plated and component)"""
     __tablename__ = "menu_sections"
+    __table_args__ = (UniqueConstraint("kitchen_id", "name", name="uq_menu_sections_kitchen_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False)
@@ -24,6 +25,7 @@ class MenuSection(Base):
 class Recipe(Base):
     """Component and plated recipes"""
     __tablename__ = "recipes"
+    __table_args__ = (UniqueConstraint("kitchen_id", "name", name="uq_recipes_kitchen_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False, index=True)
@@ -88,7 +90,7 @@ class RecipeSubRecipe(Base):
 
     # Relationships
     parent_recipe: Mapped["Recipe"] = relationship("Recipe", foreign_keys=[parent_recipe_id], back_populates="sub_recipes")
-    child_recipe: Mapped["Recipe"] = relationship("Recipe", foreign_keys=[child_recipe_id])
+    child_recipe: Mapped["Recipe"] = relationship("Recipe", foreign_keys=[child_recipe_id], overlaps="used_in_recipes")
 
 
 class RecipeStep(Base):
@@ -143,6 +145,7 @@ class RecipeChangeLog(Base):
 class RecipeCostSnapshot(Base):
     """Cost trending over time (upsert: one snapshot per recipe per day)"""
     __tablename__ = "recipe_cost_snapshots"
+    __table_args__ = (UniqueConstraint("recipe_id", "snapshot_date", name="uq_recipe_cost_snapshots_recipe_date"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id", ondelete="CASCADE"), nullable=False, index=True)

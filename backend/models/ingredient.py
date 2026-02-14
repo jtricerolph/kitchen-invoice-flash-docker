@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
-from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean, Date
+from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean, Date, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -9,6 +9,7 @@ from database import Base
 class IngredientCategory(Base):
     """Configurable ingredient groupings (Dairy, Meat, Produce, etc.)"""
     __tablename__ = "ingredient_categories"
+    __table_args__ = (UniqueConstraint("kitchen_id", "name", name="uq_ingredient_categories_kitchen_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False)
@@ -24,6 +25,7 @@ class IngredientCategory(Base):
 class Ingredient(Base):
     """Canonical ingredient library entry"""
     __tablename__ = "ingredients"
+    __table_args__ = (UniqueConstraint("kitchen_id", "name", name="uq_ingredients_kitchen_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False, index=True)
@@ -49,6 +51,7 @@ class Ingredient(Base):
 class IngredientSource(Base):
     """Maps supplier products to ingredients with unit conversion and price tracking"""
     __tablename__ = "ingredient_sources"
+    __table_args__ = (UniqueConstraint("kitchen_id", "ingredient_id", "supplier_id", "product_code", name="uq_ingredient_sources_kitchen_ing_sup_code"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False)
@@ -81,6 +84,7 @@ class IngredientSource(Base):
 class IngredientFlag(Base):
     """Canonical flag assignments on ingredients (latching from line items)"""
     __tablename__ = "ingredient_flags"
+    __table_args__ = (UniqueConstraint("ingredient_id", "food_flag_id", name="uq_ingredient_flags_ing_flag"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     ingredient_id: Mapped[int] = mapped_column(ForeignKey("ingredients.id", ondelete="CASCADE"), nullable=False, index=True)

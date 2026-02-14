@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List
-from sqlalchemy import String, DateTime, ForeignKey, Integer, Text, Boolean
+from sqlalchemy import String, DateTime, ForeignKey, Integer, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -8,6 +8,7 @@ from database import Base
 class FoodFlagCategory(Base):
     """Configurable flag category types (Allergy, Dietary, etc.)"""
     __tablename__ = "food_flag_categories"
+    __table_args__ = (UniqueConstraint("kitchen_id", "name", name="uq_food_flag_categories_kitchen_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False)
@@ -24,6 +25,7 @@ class FoodFlagCategory(Base):
 class FoodFlag(Base):
     """Individual flags within categories (Gluten, Milk, Vegetarian, etc.)"""
     __tablename__ = "food_flags"
+    __table_args__ = (UniqueConstraint("kitchen_id", "name", name="uq_food_flags_kitchen_name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     category_id: Mapped[int] = mapped_column(ForeignKey("food_flag_categories.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -42,6 +44,7 @@ class FoodFlag(Base):
 class LineItemFlag(Base):
     """Flags on supplier line items (data entry mechanism, triggers latching)"""
     __tablename__ = "line_item_flags"
+    __table_args__ = (UniqueConstraint("line_item_id", "food_flag_id", name="uq_line_item_flags_li_flag"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     line_item_id: Mapped[int] = mapped_column(ForeignKey("line_items.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -58,6 +61,7 @@ class LineItemFlag(Base):
 class RecipeFlag(Base):
     """Flag state on recipes (manual additions + override state)"""
     __tablename__ = "recipe_flags"
+    __table_args__ = (UniqueConstraint("recipe_id", "food_flag_id", name="uq_recipe_flags_recipe_flag"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id", ondelete="CASCADE"), nullable=False, index=True)
