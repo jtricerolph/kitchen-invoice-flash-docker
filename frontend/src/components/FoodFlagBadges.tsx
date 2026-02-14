@@ -1,21 +1,21 @@
 import { CSSProperties } from 'react'
 
 interface FlagInfo {
-  name?: string
-  code?: string
-  icon?: string
-  category?: string
-  propagation?: string
-  active?: boolean
-  excludable?: boolean
-  food_flag_id?: number
-  flag_name?: string
-  flag_code?: string
-  flag_icon?: string
-  category_name?: string
-  propagation_type?: string
-  is_active?: boolean
-  excludable_on_request?: boolean
+  name?: string | null
+  code?: string | null
+  icon?: string | null
+  category?: string | null
+  propagation?: string | null
+  active?: boolean | null
+  excludable?: boolean | null
+  food_flag_id?: number | null
+  flag_name?: string | null
+  flag_code?: string | null
+  flag_icon?: string | null
+  category_name?: string | null
+  propagation_type?: string | null
+  is_active?: boolean | null
+  excludable_on_request?: boolean | null
 }
 
 interface Props {

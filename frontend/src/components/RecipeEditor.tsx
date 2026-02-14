@@ -156,7 +156,6 @@ export default function RecipeEditor() {
 
   // Add sub-recipe modal
   const [showAddSub, setShowAddSub] = useState(false)
-  const [subSearch, setSubSearch] = useState('')
   const [selectedSubId, setSelectedSubId] = useState<number | null>(null)
   const [subPortions, setSubPortions] = useState('')
 

@@ -88,7 +88,7 @@ export default function RecipeFlagMatrix({ recipeId }: Props) {
     }
   }
 
-  const renderCell = (flagId: number, cell: MatrixCell | undefined, propagation: string) => {
+  const renderCell = (_flagId: number, cell: MatrixCell | undefined, propagation: string) => {
     if (!cell) return <td style={styles.cell}></td>
     if (cell.is_unassessed) return <td style={{ ...styles.cell, color: '#f59e0b' }} title="Unassessed">❓</td>
     if (propagation === 'contains') {
