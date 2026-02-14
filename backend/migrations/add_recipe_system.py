@@ -8,17 +8,15 @@ from database import engine
 
 
 async def migrate():
-    async with engine.begin() as conn:
-        # ── pg_trgm extension (for fuzzy ingredient name matching) ──
-        try:
+    # ── pg_trgm extension (separate transaction — may need superuser) ──
+    try:
+        async with engine.begin() as conn:
             await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
             print("+ Enabled pg_trgm extension")
-        except Exception as e:
-            if "already exists" in str(e).lower():
-                print("- pg_trgm extension already exists, skipping")
-            else:
-                raise
+    except Exception as e:
+        print(f"- pg_trgm extension not available ({e}), fuzzy search will be limited")
 
+    async with engine.begin() as conn:
         # ── ingredient_categories ──
         try:
             await conn.execute(text("""
@@ -440,51 +438,27 @@ async def migrate():
 
         # ── Existing table modifications ──
 
-        # Add ingredient_id to line_items
-        try:
-            await conn.execute(text("""
-                ALTER TABLE line_items ADD COLUMN ingredient_id INTEGER REFERENCES ingredients(id) ON DELETE SET NULL
-            """))
-            print("+ Added ingredient_id column to line_items")
-        except Exception as e:
-            if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
-                print("- line_items.ingredient_id already exists, skipping")
-            else:
-                raise
+        # Add ingredient_id to line_items (IF NOT EXISTS — safe for re-runs)
+        await conn.execute(text("""
+            ALTER TABLE line_items ADD COLUMN IF NOT EXISTS ingredient_id INTEGER REFERENCES ingredients(id) ON DELETE SET NULL
+        """))
+        print("+ Ensured line_items.ingredient_id column exists")
 
-        try:
-            await conn.execute(text("""
-                CREATE INDEX IF NOT EXISTS idx_line_items_ingredient ON line_items(ingredient_id)
-            """))
-            print("+ Created index idx_line_items_ingredient")
-        except Exception as e:
-            if "already exists" in str(e).lower():
-                print("- Index idx_line_items_ingredient already exists, skipping")
-            else:
-                raise
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_line_items_ingredient ON line_items(ingredient_id)
+        """))
+        print("+ Ensured index idx_line_items_ingredient exists")
 
         # Add api_key fields to kitchen_settings
-        try:
-            await conn.execute(text("""
-                ALTER TABLE kitchen_settings ADD COLUMN api_key VARCHAR(100)
-            """))
-            print("+ Added api_key column to kitchen_settings")
-        except Exception as e:
-            if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
-                print("- kitchen_settings.api_key already exists, skipping")
-            else:
-                raise
+        await conn.execute(text("""
+            ALTER TABLE kitchen_settings ADD COLUMN IF NOT EXISTS api_key VARCHAR(100)
+        """))
+        print("+ Ensured kitchen_settings.api_key column exists")
 
-        try:
-            await conn.execute(text("""
-                ALTER TABLE kitchen_settings ADD COLUMN api_key_enabled BOOLEAN DEFAULT false
-            """))
-            print("+ Added api_key_enabled column to kitchen_settings")
-        except Exception as e:
-            if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
-                print("- kitchen_settings.api_key_enabled already exists, skipping")
-            else:
-                raise
+        await conn.execute(text("""
+            ALTER TABLE kitchen_settings ADD COLUMN IF NOT EXISTS api_key_enabled BOOLEAN DEFAULT false
+        """))
+        print("+ Ensured kitchen_settings.api_key_enabled column exists")
 
         # ── Indexes ──
         for idx_name, idx_def in [
