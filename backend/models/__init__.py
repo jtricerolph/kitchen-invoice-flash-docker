@@ -15,6 +15,13 @@ from .dispute import (
     DisputeType, DisputeStatus, DisputePriority
 )
 from .purchase_order import PurchaseOrder, PurchaseOrderLineItem
+from .ingredient import Ingredient, IngredientCategory, IngredientSource, IngredientFlag
+from .food_flag import FoodFlagCategory, FoodFlag, LineItemFlag, RecipeFlag, RecipeFlagOverride
+from .recipe import (
+    Recipe, MenuSection, RecipeIngredient, RecipeSubRecipe,
+    RecipeStep, RecipeImage, RecipeChangeLog, RecipeCostSnapshot
+)
+from .event_order import EventOrder, EventOrderItem
 
 __all__ = [
     "User", "Kitchen", "Invoice", "Supplier", "RevenueEntry", "GPPeriod",
@@ -25,4 +32,9 @@ __all__ = [
     "InvoiceDispute", "DisputeLineItem", "DisputeAttachment", "DisputeActivity", "CreditNote",
     "DisputeType", "DisputeStatus", "DisputePriority",
     "PurchaseOrder", "PurchaseOrderLineItem",
+    "Ingredient", "IngredientCategory", "IngredientSource", "IngredientFlag",
+    "FoodFlagCategory", "FoodFlag", "LineItemFlag", "RecipeFlag", "RecipeFlagOverride",
+    "Recipe", "MenuSection", "RecipeIngredient", "RecipeSubRecipe",
+    "RecipeStep", "RecipeImage", "RecipeChangeLog", "RecipeCostSnapshot",
+    "EventOrder", "EventOrderItem",
 ]

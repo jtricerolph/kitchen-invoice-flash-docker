@@ -47,6 +47,7 @@ from migrations.add_purchase_orders import migrate as run_purchase_orders_migrat
 from migrations.add_supplier_po_fields import migrate as run_supplier_po_fields_migration
 from migrations.add_kitchen_details import migrate as run_kitchen_details_migration
 from migrations.add_cost_distributions import migrate as run_cost_distributions_migration
+from migrations.add_recipe_system import migrate as run_recipe_system_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -303,6 +304,13 @@ async def lifespan(app: FastAPI):
         logger.info("Cost distributions migration completed")
     except Exception as e:
         logger.warning(f"Cost distributions migration warning (may be expected): {e}")
+
+    # Run recipe system migration
+    try:
+        await run_recipe_system_migration()
+        logger.info("Recipe system migration completed")
+    except Exception as e:
+        logger.warning(f"Recipe system migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()

@@ -202,6 +202,10 @@ class KitchenSettings(Base):
     # Cost distribution settings
     cost_distribution_max_days: Mapped[int] = mapped_column(Integer, default=90)
 
+    # Internal API key (for in-house apps like menu display plugin)
+    api_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    api_key_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Kitchen details (for PO letterhead)
     kitchen_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     kitchen_address_line1: Mapped[str | None] = mapped_column(String(255), nullable=True)

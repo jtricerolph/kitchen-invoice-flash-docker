@@ -49,12 +49,21 @@ class LineItem(Base):
     # OCR warnings (e.g., "quantity capped from 11112121115 to 999999")
     ocr_warnings: Mapped[str] = mapped_column(Text, nullable=True)
 
+    # Ingredient mapping (set when user maps line item to ingredient via modal)
+    ingredient_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingredients.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationship
+    # Relationships
     invoice: Mapped["Invoice"] = relationship("Invoice", back_populates="line_items")
+    ingredient: Mapped["Ingredient | None"] = relationship("Ingredient", foreign_keys=[ingredient_id])
 
 
 from .invoice import Invoice
+from .ingredient import Ingredient
