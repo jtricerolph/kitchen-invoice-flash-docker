@@ -8,6 +8,27 @@ from database import engine
 
 
 async def migrate():
+    # ══ CRITICAL: Add columns to existing tables FIRST (own transaction) ══
+    # These MUST succeed even if new table creation fails, otherwise
+    # the KitchenSettings SQLAlchemy model breaks ALL existing endpoints.
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE kitchen_settings ADD COLUMN IF NOT EXISTS api_key VARCHAR(100)"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE kitchen_settings ADD COLUMN IF NOT EXISTS api_key_enabled BOOLEAN DEFAULT false"
+            ))
+            await conn.execute(text(
+                "ALTER TABLE line_items ADD COLUMN IF NOT EXISTS ingredient_id INTEGER REFERENCES ingredients(id) ON DELETE SET NULL"
+            ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_line_items_ingredient ON line_items(ingredient_id)"
+            ))
+            print("+ Added columns to existing tables (api_key, api_key_enabled, ingredient_id)")
+    except Exception as e:
+        print(f"! CRITICAL: Failed to add columns to existing tables: {e}")
+
     # ── pg_trgm extension (separate transaction — may need superuser) ──
     try:
         async with engine.begin() as conn:
@@ -436,29 +457,7 @@ async def migrate():
             else:
                 raise
 
-        # ── Existing table modifications ──
-
-        # Add ingredient_id to line_items (IF NOT EXISTS — safe for re-runs)
-        await conn.execute(text("""
-            ALTER TABLE line_items ADD COLUMN IF NOT EXISTS ingredient_id INTEGER REFERENCES ingredients(id) ON DELETE SET NULL
-        """))
-        print("+ Ensured line_items.ingredient_id column exists")
-
-        await conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_line_items_ingredient ON line_items(ingredient_id)
-        """))
-        print("+ Ensured index idx_line_items_ingredient exists")
-
-        # Add api_key fields to kitchen_settings
-        await conn.execute(text("""
-            ALTER TABLE kitchen_settings ADD COLUMN IF NOT EXISTS api_key VARCHAR(100)
-        """))
-        print("+ Ensured kitchen_settings.api_key column exists")
-
-        await conn.execute(text("""
-            ALTER TABLE kitchen_settings ADD COLUMN IF NOT EXISTS api_key_enabled BOOLEAN DEFAULT false
-        """))
-        print("+ Ensured kitchen_settings.api_key_enabled column exists")
+        # (ALTER TABLE for existing tables already ran in separate transaction above)
 
         # ── Indexes ──
         for idx_name, idx_def in [
