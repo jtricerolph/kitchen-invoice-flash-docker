@@ -2190,6 +2190,116 @@ async def get_line_item_preview(
         return Response(content=buf.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
+# Field name mapping: URL param -> Azure OCR field key
+_FIELD_KEY_MAP = {
+    "product_code": "ProductCode",
+    "description": "Description",
+    "unit_price": "UnitPrice",
+    "amount": "Amount",
+    "quantity": "Quantity",
+}
+
+
+@router.get("/{invoice_id}/line-items/{line_number}/preview/field/{field_name}")
+async def get_line_item_field_preview(
+    invoice_id: int,
+    line_number: int,
+    field_name: str,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a cropped image preview of a specific field within a line item (e.g. product_code)."""
+    import json as json_module
+    import io
+    from auth.jwt import get_current_user_from_token
+    from starlette.responses import Response
+    from services.file_archival_service import FileArchivalService
+
+    azure_key = _FIELD_KEY_MAP.get(field_name)
+    if not azure_key:
+        raise HTTPException(status_code=400, detail=f"Unknown field: {field_name}")
+
+    current_user = await get_current_user_from_token(token, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    if not invoice.ocr_raw_json:
+        raise HTTPException(status_code=404, detail="No OCR data")
+
+    try:
+        ocr_json = json_module.loads(invoice.ocr_raw_json)
+    except json_module.JSONDecodeError:
+        raise HTTPException(status_code=404, detail="Invalid OCR data")
+
+    # Navigate to the specific field's bounding box within the line item
+    try:
+        items = ocr_json["documents"][0]["fields"]["Items"]["value"]
+        if line_number < 0 or line_number >= len(items):
+            raise HTTPException(status_code=404, detail="Line number out of range")
+        item_value = items[line_number].get("value", {})
+        field_data = item_value.get(azure_key)
+        if not field_data:
+            raise HTTPException(status_code=404, detail=f"Field '{field_name}' not found in line item")
+        region = field_data.get("bounding_regions", [{}])[0]
+        polygon = region.get("polygon")
+        page_number = region.get("page_number", 1)
+        if not polygon or len(polygon) < 4:
+            raise HTTPException(status_code=404, detail="No bounding box for field")
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=404, detail="No bounding box data")
+
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    x0_inches, x1_inches = min(xs), max(xs)
+    y0_inches, y1_inches = min(ys), max(ys)
+
+    pages = ocr_json.get("pages", [])
+    page_info = pages[page_number - 1] if page_number <= len(pages) else {}
+    page_w_inches = page_info.get("width", 8.5)
+    page_h_inches = page_info.get("height", 11)
+
+    pad = 0.05  # smaller padding for individual fields
+
+    archival_service = FileArchivalService(db, current_user.kitchen_id)
+    success, file_bytes = await archival_service.get_file_content(invoice)
+    if not success:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ext = invoice.image_path.split(".")[-1].lower()
+
+    if ext == "pdf":
+        import fitz
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        page = doc[page_number - 1]
+        rect = fitz.Rect(
+            (x0_inches - pad) * 72,
+            (y0_inches - pad) * 72,
+            (x1_inches + pad) * 72,
+            (y1_inches + pad) * 72,
+        )
+        rect = rect & page.rect
+        pixmap = page.get_pixmap(clip=rect, dpi=200)
+        img_bytes = pixmap.tobytes("png")
+        doc.close()
+        return Response(content=img_bytes, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+    else:
+        from PIL import Image
+        img = Image.open(io.BytesIO(file_bytes))
+        w, h = img.size
+        crop_box = (
+            max(0, int((x0_inches / page_w_inches - pad / page_w_inches) * w)),
+            max(0, int((y0_inches / page_h_inches - pad / page_h_inches) * h)),
+            min(w, int((x1_inches / page_w_inches + pad / page_w_inches) * w)),
+            min(h, int((y1_inches / page_h_inches + pad / page_h_inches) * h)),
+        )
+        cropped = img.crop(crop_box)
+        buf = io.BytesIO()
+        cropped.save(buf, format="PNG")
+        return Response(content=buf.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
 @router.get("/{invoice_id}/parse-dates")
 async def parse_dates_from_ocr(
     invoice_id: int,

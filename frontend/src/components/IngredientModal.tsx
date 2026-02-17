@@ -598,12 +598,23 @@ export default function IngredientModal({
                 )}
                 {selectedLi?.supplier_name?.toLowerCase().includes('brakes') && (
                   <>
+                    <div style={{ borderTop: '1px solid #ddd', margin: '0.5rem 0 0.4rem' }} />
+                    {selectedLi.most_recent_line_number != null && (
+                      <div style={{ marginBottom: '0.35rem', borderRadius: '4px', overflow: 'hidden', border: '1px solid #e0e0e0' }}>
+                        <img
+                          src={`/api/invoices/${selectedLi.most_recent_invoice_id}/line-items/${selectedLi.most_recent_line_number}/preview/field/product_code?token=${encodeURIComponent(token || '')}`}
+                          alt="Product code from invoice"
+                          style={{ width: '100%', height: 'auto', display: 'block' }}
+                          onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none' }}
+                        />
+                      </div>
+                    )}
                     {brakesFetching && (
-                      <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#f59e0b' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#f59e0b' }}>
                         Fetching Brakes product data...
                       </div>
                     )}
-                    <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.35rem', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
                       <input
                         value={brakesManualCode}
                         onChange={(e) => setBrakesManualCode(e.target.value)}
@@ -635,6 +646,24 @@ export default function IngredientModal({
                         Fetch Brakes
                       </button>
                     </div>
+                    {brakesAutoApplyIds.length > 0 && scanResult?.suggested_flags && (
+                      <div style={{
+                        marginTop: '0.4rem',
+                        padding: '0.4rem 0.6rem',
+                        background: '#e8f5e9',
+                        border: '1px solid #a5d6a7',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        color: '#2e7d32',
+                      }}>
+                        <span style={{ fontWeight: 600 }}>Auto-flagged: </span>
+                        {scanResult.suggested_flags
+                          .filter(f => brakesAutoApplyIds.includes(f.flag_id))
+                          .map(f => f.flag_name)
+                          .join(', ')
+                        }
+                      </div>
+                    )}
                   </>
                 )}
               </div>
