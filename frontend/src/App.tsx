@@ -447,6 +447,21 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
           )}
           {showNavItem('/kds') && <Link to="/kds" style={styles.navLink}>KDS</Link>}
           {showNavItem('/settings') && <Link to="/settings" style={styles.navLink}>Settings</Link>}
+          <button
+            onClick={async () => {
+              try {
+                const keys = await caches.keys()
+                await Promise.all(keys.map(k => caches.delete(k)))
+                const regs = await navigator.serviceWorker?.getRegistrations()
+                if (regs) await Promise.all(regs.map(r => r.unregister()))
+              } catch { /* ignore */ }
+              window.location.reload()
+            }}
+            style={styles.clearCacheBtn}
+            title="Clear cached files and reload with fresh assets"
+          >
+            ↻ Refresh
+          </button>
         </nav>
       </div>
     </header>
@@ -535,6 +550,19 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'none',
     whiteSpace: 'nowrap',
   },
+  clearCacheBtn: {
+    color: 'rgba(255,255,255,0.6)',
+    textDecoration: 'none',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    padding: '0.75rem 1rem',
+    display: 'block',
+    borderRadius: '4px',
+    background: 'none',
+    border: 'none',
+    fontSize: 'inherit',
+    fontFamily: 'inherit',
+  },
   main: {
     maxWidth: '1200px',
     margin: '0 auto',
@@ -551,9 +579,10 @@ const styles: Record<string, React.CSSProperties> = {
 // Add global styles for responsive behavior
 const styleTag = document.createElement('style')
 styleTag.innerHTML = `
-  nav a:hover, nav > div > span:hover {
+  nav a:hover, nav > div > span:hover, nav > button:hover {
     background: rgba(255,255,255,0.1);
     border-radius: 4px;
+    color: white;
   }
 
   nav > div > div a:hover {
