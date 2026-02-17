@@ -479,6 +479,7 @@ export default function Settings() {
   const [newFlagCode, setNewFlagCode] = useState('')
   const [newFlagIcon, setNewFlagIcon] = useState('')
   const [foodFlagMessage, setFoodFlagMessage] = useState<string | null>(null)
+  const [seedingDefaults, setSeedingDefaults] = useState(false)
 
   // Allergen keywords state
   const [newKeyword, setNewKeyword] = useState('')
@@ -6251,9 +6252,42 @@ export default function Settings() {
         {activeSection === 'food_flags' && (
           <div style={styles.section}>
             <h2 style={styles.sectionTitle}>Food Flags</h2>
-            <p style={styles.hint}>
-              Manage allergen and dietary flag categories and their individual flags. These are used to tag ingredients, line items, and recipes.
-            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <p style={{ ...styles.hint, marginBottom: 0 }}>
+                Manage allergen and dietary flag categories and their individual flags.
+              </p>
+              <button
+                onClick={async () => {
+                  setSeedingDefaults(true)
+                  setFoodFlagMessage(null)
+                  try {
+                    const res = await fetch('/api/food-flags/seed-defaults', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` },
+                    })
+                    const data = await res.json()
+                    if (res.ok) {
+                      if (data.created_flags === 0 && data.created_categories === 0) {
+                        setFoodFlagMessage('All default flags already exist.')
+                      } else {
+                        setFoodFlagMessage(`Loaded ${data.created_flags} flags in ${data.created_categories} categories + ${data.seeded_keywords} keywords.`)
+                      }
+                      queryClient.invalidateQueries({ queryKey: ['food-flag-categories'] })
+                      queryClient.invalidateQueries({ queryKey: ['allergen-keywords'] })
+                    } else {
+                      setFoodFlagMessage(`Error: ${data.detail || 'Failed to seed defaults'}`)
+                    }
+                  } catch {
+                    setFoodFlagMessage('Error: Network error')
+                  }
+                  setSeedingDefaults(false)
+                }}
+                disabled={seedingDefaults}
+                style={{ padding: '0.4rem 0.75rem', background: '#1a1a2e', color: 'white', border: 'none', borderRadius: '6px', cursor: seedingDefaults ? 'wait' : 'pointer', fontSize: '0.8rem', fontWeight: 600, whiteSpace: 'nowrap' as const, opacity: seedingDefaults ? 0.6 : 1 }}
+              >
+                {seedingDefaults ? 'Loading...' : 'Load UK 14 Defaults'}
+              </button>
+            </div>
 
             {foodFlagMessage && (
               <div style={{ ...styles.statusMessage, background: foodFlagMessage.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
