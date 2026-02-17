@@ -14,6 +14,34 @@ import {
   parsePackFromDescription,
 } from '../utils/ingredientHelpers'
 
+// ── Supplier product lookup config (add entries here for new suppliers) ──────
+interface SupplierLookup {
+  key: string           // unique identifier
+  namePattern: RegExp   // match against supplier_name
+  label: string         // display label e.g. "Fetch Brakes"
+  color: string         // accent color for button/border
+  endpoint: string      // API endpoint path
+  paramName: string     // query param name for product code
+}
+
+const SUPPLIER_LOOKUPS: SupplierLookup[] = [
+  {
+    key: 'brakes',
+    namePattern: /brakes/i,
+    label: 'Fetch Brakes',
+    color: '#f59e0b',
+    endpoint: '/api/food-flags/brakes-lookup',
+    paramName: 'product_code',
+  },
+  // To add another supplier, add an entry here:
+  // { key: 'bidfood', namePattern: /bidfood/i, label: 'Fetch Bidfood', color: '#3b82f6', endpoint: '/api/food-flags/bidfood-lookup', paramName: 'product_code' },
+]
+
+function getSupplierLookup(supplierName: string | null | undefined): SupplierLookup | null {
+  if (!supplierName) return null
+  return SUPPLIER_LOOKUPS.find(l => l.namePattern.test(supplierName)) || null
+}
+
 interface IngredientModalProps {
   open: boolean
   onClose: () => void
@@ -65,12 +93,12 @@ export default function IngredientModal({
   const [showLabelModal, setShowLabelModal] = useState(false)
   const [showLineItemPreview, setShowLineItemPreview] = useState(false)
   const [cropFile, setCropFile] = useState<File | null>(null)
-  const [brakesFetching, setBrakesFetching] = useState(false)
-  const [brakesManualCode, setBrakesManualCode] = useState('')
-  const [brakesAutoApplyIds, setBrakesAutoApplyIds] = useState<number[]>([])
+  const [supplierFetching, setSupplierFetching] = useState(false)
+  const [supplierManualCode, setSupplierManualCode] = useState('')
+  const [supplierAutoApplyIds, setSupplierAutoApplyIds] = useState<number[]>([])
 
-  // Track if initial brakes fetch is needed (set during init, consumed by separate effect)
-  const [pendingBrakesFetch, setPendingBrakesFetch] = useState<string | null>(null)
+  // Track if initial supplier fetch is needed (set during init, consumed by separate effect)
+  const [pendingSupplierFetch, setPendingSupplierFetch] = useState<string | null>(null)
 
   // ---- Queries ----
 
@@ -158,10 +186,10 @@ export default function IngredientModal({
     setShowLabelModal(false)
     setShowLineItemPreview(false)
     setCropFile(null)
-    setBrakesFetching(false)
-    setBrakesManualCode('')
-    setBrakesAutoApplyIds([])
-    setPendingBrakesFetch(null)
+    setSupplierFetching(false)
+    setSupplierManualCode('')
+    setSupplierAutoApplyIds([])
+    setPendingSupplierFetch(null)
   }
 
   const handleClose = () => {
@@ -169,12 +197,14 @@ export default function IngredientModal({
     onClose()
   }
 
-  const fetchBrakesProduct = async (productCode: string, force = false) => {
-    setBrakesFetching(true)
+  const activeLookup = useMemo(() => getSupplierLookup(selectedLi?.supplier_name), [selectedLi?.supplier_name])
+
+  const fetchSupplierProduct = async (productCode: string, lookup: SupplierLookup, force = false) => {
+    setSupplierFetching(true)
     try {
-      const params = new URLSearchParams({ product_code: productCode })
+      const params = new URLSearchParams({ [lookup.paramName]: productCode })
       if (force) params.set('force', 'true')
-      const res = await fetch(`/api/food-flags/brakes-lookup?${params}`, {
+      const res = await fetch(`${lookup.endpoint}?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
@@ -198,11 +228,11 @@ export default function IngredientModal({
           const autoApplyIds = (data.suggested_flags || [])
             .filter((f: { source: string }) => f.source === 'contains' || f.source === 'dietary')
             .map((f: { flag_id: number }) => f.flag_id)
-          if (autoApplyIds.length > 0) setBrakesAutoApplyIds(autoApplyIds)
+          if (autoApplyIds.length > 0) setSupplierAutoApplyIds(autoApplyIds)
         }
       }
     } catch { /* ignore */ }
-    setBrakesFetching(false)
+    setSupplierFetching(false)
   }
 
   const handleScanLabel = async (file: File) => {
@@ -317,22 +347,23 @@ export default function IngredientModal({
             setLiUnitSizeType(parsed.type)
           }
         }
-        if (preSelectLineItem.supplier_name?.toLowerCase().includes('brakes') && preSelectLineItem.product_code) {
-          setBrakesManualCode(preSelectLineItem.product_code)
-          setPendingBrakesFetch(preSelectLineItem.product_code)
+        const lookup = getSupplierLookup(preSelectLineItem.supplier_name)
+        if (lookup && preSelectLineItem.product_code) {
+          setSupplierManualCode(preSelectLineItem.product_code)
+          setPendingSupplierFetch(preSelectLineItem.product_code)
         }
       }
     }
   }, [open])
 
-  // Handle deferred Brakes fetch (triggered from init effect)
+  // Handle deferred supplier fetch (triggered from init effect)
   useEffect(() => {
-    if (pendingBrakesFetch && token) {
-      const code = pendingBrakesFetch
-      setPendingBrakesFetch(null)
-      fetchBrakesProduct(code)
+    if (pendingSupplierFetch && token && activeLookup) {
+      const code = pendingSupplierFetch
+      setPendingSupplierFetch(null)
+      fetchSupplierProduct(code, activeLookup)
     }
-  }, [pendingBrakesFetch, token])
+  }, [pendingSupplierFetch, token, activeLookup])
 
   // Duplicate check
   useEffect(() => {
@@ -435,9 +466,10 @@ export default function IngredientModal({
         setLiUnitSizeType(formUnit)
       }
     }
-    if (item.supplier_name?.toLowerCase().includes('brakes') && item.product_code) {
-      setBrakesManualCode(item.product_code)
-      fetchBrakesProduct(item.product_code)
+    const lookup = getSupplierLookup(item.supplier_name)
+    if (lookup && item.product_code) {
+      setSupplierManualCode(item.product_code)
+      fetchSupplierProduct(item.product_code, lookup)
     }
   }
 
@@ -599,76 +631,6 @@ export default function IngredientModal({
                     Analysing label image...
                   </div>
                 )}
-                {selectedLi?.supplier_name?.toLowerCase().includes('brakes') && (
-                  <>
-                    <div style={{ borderTop: '1px solid #ddd', margin: '0.5rem 0 0.4rem' }} />
-                    {selectedLi.most_recent_line_number != null && (
-                      <div style={{ marginBottom: '0.35rem', borderRadius: '4px', overflow: 'hidden', border: '1px solid #e0e0e0' }}>
-                        <img
-                          src={`/api/invoices/${selectedLi.most_recent_invoice_id}/line-items/${selectedLi.most_recent_line_number}/preview/field/product_code?token=${encodeURIComponent(token || '')}`}
-                          alt="Product code from invoice"
-                          style={{ width: '100%', height: 'auto', display: 'block' }}
-                          onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none' }}
-                        />
-                      </div>
-                    )}
-                    {brakesFetching && (
-                      <div style={{ fontSize: '0.75rem', color: '#f59e0b' }}>
-                        Fetching Brakes product data...
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
-                      <input
-                        value={brakesManualCode}
-                        onChange={(e) => setBrakesManualCode(e.target.value)}
-                        style={{ ...styles.input, flex: 1, fontSize: '0.75rem', padding: '0.25rem 0.4rem' }}
-                        placeholder="Brakes product code"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && brakesManualCode.trim()) {
-                            fetchBrakesProduct(brakesManualCode.trim(), true)
-                          }
-                        }}
-                      />
-                      <button
-                        onClick={() => {
-                          if (brakesManualCode.trim()) fetchBrakesProduct(brakesManualCode.trim(), true)
-                        }}
-                        disabled={!brakesManualCode.trim() || brakesFetching}
-                        style={{
-                          padding: '0.25rem 0.5rem',
-                          border: '1px solid #f59e0b',
-                          borderRadius: '4px',
-                          background: brakesFetching ? '#e0e0e0' : '#f59e0b',
-                          color: 'white',
-                          cursor: brakesFetching ? 'default' : 'pointer',
-                          fontSize: '0.7rem',
-                          fontWeight: 600,
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        Fetch Brakes
-                      </button>
-                    </div>
-                    {brakesAutoApplyIds.length > 0 && scanResult?.suggested_flags && (
-                      <div style={{
-                        marginTop: '0.4rem',
-                        padding: '0.4rem 0.6rem',
-                        background: '#e8f5e9',
-                        border: '1px solid #a5d6a7',
-                        borderRadius: '6px',
-                        fontSize: '0.75rem',
-                        color: '#2e7d32',
-                      }}>
-                        <span style={{ fontWeight: 600 }}>Auto-flagged: </span>
-                        {scanResult.suggested_flags
-                          .filter(f => brakesAutoApplyIds.includes(f.flag_id))
-                          .map(f => f.flag_name)
-                          .join(', ')
-                        }
-                      </div>
-                    )}
-                  </>
-                )}
               </div>
             )}
           </div>
@@ -813,6 +775,81 @@ export default function IngredientModal({
               </div>
             )}
 
+            {/* Supplier product lookup (Brakes, etc.) */}
+            {selectedLi && activeLookup && (
+              <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: '#fefce8', borderRadius: '6px', border: `1px solid ${activeLookup.color}33` }}>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'stretch' }}>
+                  {selectedLi.most_recent_line_number != null && (
+                    <div style={{ flex: '0 0 auto', maxWidth: '120px', borderRadius: '4px', overflow: 'hidden', border: '1px solid #e0e0e0' }}>
+                      <img
+                        src={`/api/invoices/${selectedLi.most_recent_invoice_id}/line-items/${selectedLi.most_recent_line_number}/preview/field/product_code?token=${encodeURIComponent(token || '')}`}
+                        alt="Product code from invoice"
+                        style={{ width: '100%', height: 'auto', display: 'block' }}
+                        onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none' }}
+                      />
+                    </div>
+                  )}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    {supplierFetching && (
+                      <div style={{ fontSize: '0.72rem', color: activeLookup.color }}>
+                        Fetching product data...
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                      <input
+                        value={supplierManualCode}
+                        onChange={(e) => setSupplierManualCode(e.target.value)}
+                        style={{ ...styles.input, flex: 1, fontSize: '0.75rem', padding: '0.25rem 0.4rem' }}
+                        placeholder="Product code"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && supplierManualCode.trim()) {
+                            fetchSupplierProduct(supplierManualCode.trim(), activeLookup, true)
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (supplierManualCode.trim()) fetchSupplierProduct(supplierManualCode.trim(), activeLookup, true)
+                        }}
+                        disabled={!supplierManualCode.trim() || supplierFetching}
+                        style={{
+                          padding: '0.25rem 0.5rem',
+                          border: `1px solid ${activeLookup.color}`,
+                          borderRadius: '4px',
+                          background: supplierFetching ? '#e0e0e0' : activeLookup.color,
+                          color: 'white',
+                          cursor: supplierFetching ? 'default' : 'pointer',
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {activeLookup.label}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {supplierAutoApplyIds.length > 0 && scanResult?.suggested_flags && (
+                  <div style={{
+                    marginTop: '0.35rem',
+                    padding: '0.35rem 0.5rem',
+                    background: '#e8f5e9',
+                    border: '1px solid #a5d6a7',
+                    borderRadius: '4px',
+                    fontSize: '0.72rem',
+                    color: '#2e7d32',
+                  }}>
+                    <span style={{ fontWeight: 600 }}>Auto-flagged: </span>
+                    {scanResult.suggested_flags
+                      .filter(f => supplierAutoApplyIds.includes(f.flag_id))
+                      .map(f => f.flag_name)
+                      .join(', ')
+                    }
+                  </div>
+                )}
+              </div>
+            )}
+
             {liMappingError && <div style={{ marginTop: '0.35rem', padding: '0.35rem 0.5rem', background: '#fdecea', borderRadius: '4px', fontSize: '0.8rem', color: '#c62828' }}>{liMappingError}</div>}
           </div>
         </div>
@@ -823,7 +860,7 @@ export default function IngredientModal({
           ingredientName={formName}
           productIngredients={formPrepackaged ? formProductIngredients : undefined}
           scanSuggestions={scanResult?.suggested_flags}
-          autoApplyFlagIds={brakesAutoApplyIds}
+          autoApplyFlagIds={supplierAutoApplyIds}
         />
         <div style={styles.modalFooter}>
           <button onClick={handleClose} style={styles.cancelBtn}>Cancel</button>
