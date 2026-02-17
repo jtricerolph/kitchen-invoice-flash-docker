@@ -220,32 +220,45 @@ async def seed_default_flags(
 
         await db.flush()
 
-        # --- Seed allergen keywords for any newly created flags ---
-        if created_flags > 0:
-            for flag_name, keywords in ALLERGEN_KEYWORDS.items():
-                flag_result = await db.execute(
-                    select(FoodFlag).where(
-                        FoodFlag.kitchen_id == kid, FoodFlag.name == flag_name,
-                    )
+        # --- Seed allergen keywords ---
+        # Flush new flags first, then seed keywords separately to avoid autoflush conflicts
+        await db.commit()
+
+        # Re-fetch all flags for keyword seeding (clean session, no pending objects)
+        for flag_name, keywords in ALLERGEN_KEYWORDS.items():
+            flag_result = await db.execute(
+                select(FoodFlag).where(
+                    FoodFlag.kitchen_id == kid, FoodFlag.name == flag_name,
                 )
-                flag = flag_result.scalar_one_or_none()
-                if not flag:
-                    continue
-                # Check if keywords already exist for this flag
-                existing = await db.execute(
-                    select(func.count()).select_from(AllergenKeyword).where(
-                        AllergenKeyword.kitchen_id == kid,
-                        AllergenKeyword.food_flag_id == flag.id,
-                    )
+            )
+            flag = flag_result.scalar_one_or_none()
+            if not flag:
+                continue
+            # Get all existing keywords for this flag
+            existing_result = await db.execute(
+                select(AllergenKeyword.keyword).where(
+                    AllergenKeyword.kitchen_id == kid,
+                    AllergenKeyword.food_flag_id == flag.id,
                 )
-                if existing.scalar() > 0:
+            )
+            existing_keywords = {row[0] for row in existing_result.all()}
+            if existing_keywords:
+                continue
+
+            # Deduplicate keyword list and add only new ones
+            seen: set[str] = set()
+            for kw_str in keywords:
+                kw = kw_str.lower()
+                if kw in seen:
                     continue
-                for kw_str in keywords:
-                    db.add(AllergenKeyword(
-                        kitchen_id=kid, food_flag_id=flag.id,
-                        keyword=kw_str.lower(), is_default=True,
-                    ))
-                    seeded_keywords += 1
+                seen.add(kw)
+                db.add(AllergenKeyword(
+                    kitchen_id=kid, food_flag_id=flag.id,
+                    keyword=kw, is_default=True,
+                ))
+                seeded_keywords += 1
+            # Flush after each flag to avoid cross-flag autoflush issues
+            await db.flush()
 
         await db.commit()
         logger.info(f"Seeded defaults for kitchen {kid}: {created_cats} categories, {created_flags} flags, {seeded_keywords} keywords")
