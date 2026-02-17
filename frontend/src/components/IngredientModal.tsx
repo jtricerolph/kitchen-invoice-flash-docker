@@ -594,43 +594,47 @@ export default function IngredientModal({
                     Analysing label image...
                   </div>
                 )}
-                {brakesFetching && (
-                  <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#f59e0b' }}>
-                    Fetching Brakes product data...
-                  </div>
+                {selectedLi?.supplier_name?.toLowerCase().includes('brakes') && (
+                  <>
+                    {brakesFetching && (
+                      <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#f59e0b' }}>
+                        Fetching Brakes product data...
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.35rem', alignItems: 'center' }}>
+                      <input
+                        value={brakesManualCode}
+                        onChange={(e) => setBrakesManualCode(e.target.value)}
+                        style={{ ...styles.input, flex: 1, fontSize: '0.75rem', padding: '0.25rem 0.4rem' }}
+                        placeholder="Brakes product code"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && brakesManualCode.trim()) {
+                            fetchBrakesProduct(brakesManualCode.trim(), true)
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (brakesManualCode.trim()) fetchBrakesProduct(brakesManualCode.trim(), true)
+                        }}
+                        disabled={!brakesManualCode.trim() || brakesFetching}
+                        style={{
+                          padding: '0.25rem 0.5rem',
+                          border: '1px solid #f59e0b',
+                          borderRadius: '4px',
+                          background: brakesFetching ? '#e0e0e0' : '#f59e0b',
+                          color: 'white',
+                          cursor: brakesFetching ? 'default' : 'pointer',
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Fetch Brakes
+                      </button>
+                    </div>
+                  </>
                 )}
-                <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.35rem', alignItems: 'center' }}>
-                  <input
-                    value={brakesManualCode}
-                    onChange={(e) => setBrakesManualCode(e.target.value)}
-                    style={{ ...styles.input, flex: 1, fontSize: '0.75rem', padding: '0.25rem 0.4rem' }}
-                    placeholder="Brakes product code"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && brakesManualCode.trim()) {
-                        fetchBrakesProduct(brakesManualCode.trim(), true)
-                      }
-                    }}
-                  />
-                  <button
-                    onClick={() => {
-                      if (brakesManualCode.trim()) fetchBrakesProduct(brakesManualCode.trim(), true)
-                    }}
-                    disabled={!brakesManualCode.trim() || brakesFetching}
-                    style={{
-                      padding: '0.25rem 0.5rem',
-                      border: '1px solid #f59e0b',
-                      borderRadius: '4px',
-                      background: brakesFetching ? '#e0e0e0' : '#f59e0b',
-                      color: 'white',
-                      cursor: brakesFetching ? 'default' : 'pointer',
-                      fontSize: '0.7rem',
-                      fontWeight: 600,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    Fetch Brakes
-                  </button>
-                </div>
               </div>
             )}
           </div>

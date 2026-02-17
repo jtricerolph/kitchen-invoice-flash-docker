@@ -768,6 +768,7 @@ async def process_invoice_with_azure(
                                     else:
                                         logger.debug(f"No weight pattern found in raw_content for KG item with qty mismatch")
 
+                        line_item["ocr_index"] = item_idx  # Original OCR array index for preview
                         line_items.append(line_item)
                         desc_preview = (line_item.get('description') or 'N/A')[:30]
                         logger.debug(f"Line item {item_idx}: {desc_preview} - "

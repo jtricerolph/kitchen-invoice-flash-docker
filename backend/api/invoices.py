@@ -749,7 +749,7 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
                     tax_rate=item_data.get("tax_rate"),
                     tax_amount=Decimal(str(item_data["tax_amount"])) if item_data.get("tax_amount") else None,
                     amount=Decimal(str(item_data["amount"])) if item_data.get("amount") else None,
-                    line_number=idx,
+                    line_number=item_data.get("ocr_index", idx),
                     # Pack size fields from OCR extraction + product definitions
                     raw_content=item_data.get("raw_content"),
                     pack_quantity=item_data.get("pack_quantity"),
@@ -3305,9 +3305,10 @@ async def reprocess_invoice(
                 fields = doc.get("fields", {})
                 if "Items" in fields:
                     items = fields["Items"].get("value", [])
-                    for item in items:
+                    for ocr_idx, item in enumerate(items):
                         item_fields = item.get("value", {})
                         line_items_data.append({
+                            "ocr_index": ocr_idx,
                             "product_code": item_fields.get("ProductCode", {}).get("value"),
                             "description": item_fields.get("Description", {}).get("value"),
                             "unit": item_fields.get("Unit", {}).get("value"),
@@ -3403,7 +3404,7 @@ async def reprocess_invoice(
                 tax_rate=item_data.get("tax_rate"),
                 tax_amount=Decimal(str(item_data["tax_amount"])) if item_data.get("tax_amount") else None,
                 amount=Decimal(str(item_data["amount"])) if item_data.get("amount") else None,
-                line_number=idx,
+                line_number=item_data.get("ocr_index", idx),
                 raw_content=item_data.get("raw_content"),
                 pack_quantity=item_data.get("pack_quantity"),
                 unit_size=Decimal(str(item_data["unit_size"])) if item_data.get("unit_size") else None,

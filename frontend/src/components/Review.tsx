@@ -4912,7 +4912,7 @@ export default function Review() {
         open={showCreateIngredient}
         onClose={() => setShowCreateIngredient(false)}
         onSaved={handleIngredientCreated}
-        prePopulateName={ingredientSearch || ''}
+        prePopulateName={ingredientSearch || ingredientModalItem?.description?.split('\n')[0] || ''}
         preSelectLineItem={ingredientModalItem ? {
           product_code: ingredientModalItem.product_code,
           description: ingredientModalItem.description,
