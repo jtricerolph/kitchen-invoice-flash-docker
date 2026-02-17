@@ -147,112 +147,117 @@ async def seed_default_flags(
     db: AsyncSession = Depends(get_db),
 ):
     """Seed the standard 14 UK allergens + 4 dietary flags. Skips any that already exist."""
-    from migrations.add_allergen_keywords import ALLERGEN_KEYWORDS
+    import traceback
+    try:
+        from migrations.add_allergen_keywords import ALLERGEN_KEYWORDS
 
-    kid = user.kitchen_id
-    created_cats = 0
-    created_flags = 0
-    seeded_keywords = 0
+        kid = user.kitchen_id
+        created_cats = 0
+        created_flags = 0
+        seeded_keywords = 0
 
-    # --- Allergy category ---
-    result = await db.execute(
-        select(FoodFlagCategory).where(
-            FoodFlagCategory.kitchen_id == kid,
-            FoodFlagCategory.name == "Allergy",
-        )
-    )
-    allergy_cat = result.scalar_one_or_none()
-    if not allergy_cat:
-        allergy_cat = FoodFlagCategory(
-            kitchen_id=kid, name="Allergy", propagation_type="contains",
-            required=True, sort_order=0,
-        )
-        db.add(allergy_cat)
-        await db.flush()
-        created_cats += 1
-
-    for i, (name, code) in enumerate(DEFAULT_ALLERGY_FLAGS):
-        exists = await db.execute(
-            select(FoodFlag).where(
-                FoodFlag.kitchen_id == kid, FoodFlag.name == name,
+        # --- Allergy category ---
+        result = await db.execute(
+            select(FoodFlagCategory).where(
+                FoodFlagCategory.kitchen_id == kid,
+                FoodFlagCategory.name == "Allergy",
             )
         )
-        if exists.scalar_one_or_none():
-            continue
-        db.add(FoodFlag(
-            category_id=allergy_cat.id, kitchen_id=kid,
-            name=name, code=code, sort_order=i,
-        ))
-        created_flags += 1
-
-    # --- Dietary category ---
-    result = await db.execute(
-        select(FoodFlagCategory).where(
-            FoodFlagCategory.kitchen_id == kid,
-            FoodFlagCategory.name == "Dietary",
-        )
-    )
-    dietary_cat = result.scalar_one_or_none()
-    if not dietary_cat:
-        dietary_cat = FoodFlagCategory(
-            kitchen_id=kid, name="Dietary", propagation_type="suitable_for",
-            required=False, sort_order=1,
-        )
-        db.add(dietary_cat)
-        await db.flush()
-        created_cats += 1
-
-    for i, (name, code) in enumerate(DEFAULT_DIETARY_FLAGS):
-        exists = await db.execute(
-            select(FoodFlag).where(
-                FoodFlag.kitchen_id == kid, FoodFlag.name == name,
+        allergy_cat = result.scalar_one_or_none()
+        if not allergy_cat:
+            allergy_cat = FoodFlagCategory(
+                kitchen_id=kid, name="Allergy", propagation_type="contains",
+                required=True, sort_order=0,
             )
-        )
-        if exists.scalar_one_or_none():
-            continue
-        db.add(FoodFlag(
-            category_id=dietary_cat.id, kitchen_id=kid,
-            name=name, code=code, sort_order=i,
-        ))
-        created_flags += 1
+            db.add(allergy_cat)
+            await db.flush()
+            created_cats += 1
 
-    await db.flush()
-
-    # --- Seed allergen keywords for any newly created flags ---
-    if created_flags > 0:
-        for flag_name, keywords in ALLERGEN_KEYWORDS.items():
-            flag_result = await db.execute(
+        for i, (name, code) in enumerate(DEFAULT_ALLERGY_FLAGS):
+            exists = await db.execute(
                 select(FoodFlag).where(
-                    FoodFlag.kitchen_id == kid, FoodFlag.name == flag_name,
+                    FoodFlag.kitchen_id == kid, FoodFlag.name == name,
                 )
             )
-            flag = flag_result.scalar_one_or_none()
-            if not flag:
+            if exists.scalar_one_or_none():
                 continue
-            # Check if keywords already exist for this flag
-            existing = await db.execute(
-                select(func.count()).select_from(AllergenKeyword).where(
-                    AllergenKeyword.kitchen_id == kid,
-                    AllergenKeyword.food_flag_id == flag.id,
-                )
-            )
-            if existing.scalar() > 0:
-                continue
-            for kw_str in keywords:
-                db.add(AllergenKeyword(
-                    kitchen_id=kid, food_flag_id=flag.id,
-                    keyword=kw_str.lower(), is_default=True,
-                ))
-                seeded_keywords += 1
+            db.add(FoodFlag(
+                category_id=allergy_cat.id, kitchen_id=kid,
+                name=name, code=code, sort_order=i,
+            ))
+            created_flags += 1
 
-    await db.commit()
-    logger.info(f"Seeded defaults for kitchen {kid}: {created_cats} categories, {created_flags} flags, {seeded_keywords} keywords")
-    return {
-        "ok": True,
-        "created_categories": created_cats,
-        "created_flags": created_flags,
-        "seeded_keywords": seeded_keywords,
-    }
+        # --- Dietary category ---
+        result = await db.execute(
+            select(FoodFlagCategory).where(
+                FoodFlagCategory.kitchen_id == kid,
+                FoodFlagCategory.name == "Dietary",
+            )
+        )
+        dietary_cat = result.scalar_one_or_none()
+        if not dietary_cat:
+            dietary_cat = FoodFlagCategory(
+                kitchen_id=kid, name="Dietary", propagation_type="suitable_for",
+                required=False, sort_order=1,
+            )
+            db.add(dietary_cat)
+            await db.flush()
+            created_cats += 1
+
+        for i, (name, code) in enumerate(DEFAULT_DIETARY_FLAGS):
+            exists = await db.execute(
+                select(FoodFlag).where(
+                    FoodFlag.kitchen_id == kid, FoodFlag.name == name,
+                )
+            )
+            if exists.scalar_one_or_none():
+                continue
+            db.add(FoodFlag(
+                category_id=dietary_cat.id, kitchen_id=kid,
+                name=name, code=code, sort_order=i,
+            ))
+            created_flags += 1
+
+        await db.flush()
+
+        # --- Seed allergen keywords for any newly created flags ---
+        if created_flags > 0:
+            for flag_name, keywords in ALLERGEN_KEYWORDS.items():
+                flag_result = await db.execute(
+                    select(FoodFlag).where(
+                        FoodFlag.kitchen_id == kid, FoodFlag.name == flag_name,
+                    )
+                )
+                flag = flag_result.scalar_one_or_none()
+                if not flag:
+                    continue
+                # Check if keywords already exist for this flag
+                existing = await db.execute(
+                    select(func.count()).select_from(AllergenKeyword).where(
+                        AllergenKeyword.kitchen_id == kid,
+                        AllergenKeyword.food_flag_id == flag.id,
+                    )
+                )
+                if existing.scalar() > 0:
+                    continue
+                for kw_str in keywords:
+                    db.add(AllergenKeyword(
+                        kitchen_id=kid, food_flag_id=flag.id,
+                        keyword=kw_str.lower(), is_default=True,
+                    ))
+                    seeded_keywords += 1
+
+        await db.commit()
+        logger.info(f"Seeded defaults for kitchen {kid}: {created_cats} categories, {created_flags} flags, {seeded_keywords} keywords")
+        return {
+            "ok": True,
+            "created_categories": created_cats,
+            "created_flags": created_flags,
+            "seeded_keywords": seeded_keywords,
+        }
+    except Exception as e:
+        logger.error(f"seed-defaults failed: {e}\n{traceback.format_exc()}")
+        raise HTTPException(500, detail=f"Seed failed: {str(e)}")
 
 
 # ── Category endpoints ───────────────────────────────────────────────────────
