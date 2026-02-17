@@ -243,6 +243,56 @@ async def delete_menu_section(
     return {"ok": True}
 
 
+# ── Default recipe sections and dish courses ────────────────────────────────
+
+DEFAULT_RECIPE_SECTIONS = [
+    ("Meats & Protein", 0),
+    ("Sauces & Jus", 1),
+    ("Starch & Vegetables", 2),
+    ("Sides & Accompaniments", 3),
+    ("Pastry & Dessert", 4),
+    ("Garnish & Toppings", 5),
+    ("Marinades & Glazes", 6),
+    ("Stews & Casseroles", 7),
+]
+
+DEFAULT_DISH_COURSES = [
+    ("Starter", 0),
+    ("Main", 1),
+    ("Dessert", 2),
+    ("Side", 3),
+    ("Specials", 4),
+]
+
+
+@router.post("/menu-sections/seed-defaults")
+async def seed_default_menu_sections(
+    section_type: str = Query("recipe"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if section_type not in ("recipe", "dish"):
+        raise HTTPException(400, "section_type must be 'recipe' or 'dish'")
+
+    defaults = DEFAULT_RECIPE_SECTIONS if section_type == "recipe" else DEFAULT_DISH_COURSES
+    kid = user.kitchen_id
+    created = 0
+    for name, sort_order in defaults:
+        exists = await db.execute(
+            select(MenuSection).where(
+                MenuSection.kitchen_id == kid,
+                MenuSection.name == name,
+                MenuSection.section_type == section_type,
+            )
+        )
+        if exists.scalar_one_or_none():
+            continue
+        db.add(MenuSection(kitchen_id=kid, name=name, section_type=section_type, sort_order=sort_order))
+        created += 1
+    await db.commit()
+    return {"ok": True, "created": created}
+
+
 # ── Dashboard Stats ──────────────────────────────────────────────────────────
 
 @router.get("/dashboard-stats")

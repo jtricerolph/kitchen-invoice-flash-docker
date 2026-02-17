@@ -104,7 +104,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'food_flags' | 'allergen_keywords' | 'ingredient_categories' | 'api_access' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'food_flags' | 'allergen_keywords' | 'ingredient_categories' | 'recipe_sections' | 'dish_courses' | 'api_access' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -494,6 +494,10 @@ export default function Settings() {
   const [ingCatNewOrder, setIngCatNewOrder] = useState(0)
   const [ingCatShowAdd, setIngCatShowAdd] = useState(false)
   const [ingCatMessage, setIngCatMessage] = useState<string | null>(null)
+
+  // Recipe Sections / Dish Courses state
+  const [recipeSectionsMsg, setRecipeSectionsMsg] = useState<string | null>(null)
+  const [dishCoursesMsg, setDishCoursesMsg] = useState<string | null>(null)
 
   // API Access state
   const [apiKeyEnabled, setApiKeyEnabled] = useState(false)
@@ -1369,6 +1373,32 @@ export default function Settings() {
     updateIngCatMutation.mutate({ id: ingCategories[idx].id, data: { sort_order: otherOrder } })
     updateIngCatMutation.mutate({ id: ingCategories[swapIdx].id, data: { sort_order: thisOrder } })
   }
+
+  // Recipe Sections query
+  const { data: recipeSections, refetch: refetchRecipeSections } = useQuery<{ id: number; name: string; sort_order: number; section_type: string; recipe_count: number }[]>({
+    queryKey: ['recipe-sections-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/recipes/menu-sections?section_type=recipe', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && activeSection === 'recipe_sections',
+  })
+
+  // Dish Courses query
+  const { data: dishCourses, refetch: refetchDishCourses } = useQuery<{ id: number; name: string; sort_order: number; section_type: string; recipe_count: number }[]>({
+    queryKey: ['dish-courses-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/recipes/menu-sections?section_type=dish', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && activeSection === 'dish_courses',
+  })
 
   // API Access mutations
   const saveApiAccessMutation = useMutation({
@@ -2553,6 +2583,8 @@ export default function Settings() {
     { id: 'food_flags', label: 'Food Flags', restrictPath: '/settings-food-flags' },
     { id: 'allergen_keywords', label: 'Allergen Keywords', restrictPath: '/settings-food-flags' },
     { id: 'ingredient_categories', label: 'Ingredient Categories', restrictPath: '/settings-ingredient-categories' },
+    { id: 'recipe_sections', label: 'Recipe Sections', restrictPath: '/settings-recipe-sections' },
+    { id: 'dish_courses', label: 'Dish Courses', restrictPath: '/settings-dish-courses' },
     { id: 'api_access', label: 'API Access', restrictPath: '/settings-api-access' },
     { id: 'data', label: 'Data Management', restrictPath: '/settings-data' },
   ]
@@ -6846,6 +6878,228 @@ export default function Settings() {
                 + Add Category
               </button>
             )}
+          </div>
+        )}
+
+        {/* Recipe Sections */}
+        {activeSection === 'recipe_sections' && (
+          <div style={styles.section}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={styles.sectionTitle}>Recipe Sections</h2>
+              <button
+                onClick={async () => {
+                  setRecipeSectionsMsg(null)
+                  try {
+                    const res = await fetch('/api/recipes/menu-sections/seed-defaults?section_type=recipe', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` },
+                    })
+                    const data = await res.json()
+                    if (res.ok) {
+                      setRecipeSectionsMsg(data.created === 0 ? 'All default sections already exist.' : `Loaded ${data.created} default sections.`)
+                      refetchRecipeSections()
+                    } else {
+                      setRecipeSectionsMsg(`Error: ${data.detail || 'Failed to seed defaults'}`)
+                    }
+                  } catch { setRecipeSectionsMsg('Error: Network error') }
+                }}
+                style={{ padding: '0.4rem 0.75rem', background: '#6366f1', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+              >
+                Load Defaults
+              </button>
+            </div>
+            <p style={styles.hint}>
+              Recipe sections group component recipes (e.g. Sauces & Jus, Meats & Protein). Used to organise recipes in the recipe list.
+            </p>
+
+            {recipeSectionsMsg && (
+              <div style={{ ...styles.statusMessage, background: recipeSectionsMsg.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {recipeSectionsMsg}
+              </div>
+            )}
+
+            {recipeSections && recipeSections.length > 0 ? (
+              <div style={styles.settingsBlock}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Name</th>
+                      <th style={{ textAlign: 'center', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Recipes</th>
+                      <th style={{ textAlign: 'right', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recipeSections.map((sec) => (
+                      <tr key={sec.id} style={{ borderBottom: '1px solid #eee' }}>
+                        <td style={{ padding: '0.5rem 0.75rem', fontWeight: 500 }}>{sec.name}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', textAlign: 'center', color: '#666', fontSize: '0.85rem' }}>{sec.recipe_count}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', textAlign: 'right' }}>
+                          <button
+                            onClick={async () => {
+                              if (confirm(`Delete "${sec.name}"?${sec.recipe_count > 0 ? ` ${sec.recipe_count} recipe(s) will become unsectioned.` : ''}`)) {
+                                const res = await fetch(`/api/recipes/menu-sections/${sec.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+                                if (res.ok) refetchRecipeSections()
+                              }
+                            }}
+                            style={{ ...styles.smallBtn, color: '#dc3545' }}
+                            title="Delete"
+                          >&#10005;</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={styles.hint}>No recipe sections yet. Click "Load Defaults" or add one below.</p>
+            )}
+
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+              <input
+                type="text"
+                placeholder="New section name..."
+                id="newRecipeSectionName"
+                style={{ ...styles.input, marginBottom: 0, flex: 1, maxWidth: '300px' }}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    const input = e.currentTarget
+                    const name = input.value.trim()
+                    if (!name) return
+                    const res = await fetch('/api/recipes/menu-sections', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name, section_type: 'recipe', sort_order: recipeSections?.length || 0 }),
+                    })
+                    if (res.ok) { input.value = ''; refetchRecipeSections() }
+                  }
+                }}
+              />
+              <button
+                onClick={async () => {
+                  const input = document.getElementById('newRecipeSectionName') as HTMLInputElement
+                  const name = input?.value.trim()
+                  if (!name) return
+                  const res = await fetch('/api/recipes/menu-sections', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, section_type: 'recipe', sort_order: recipeSections?.length || 0 }),
+                  })
+                  if (res.ok) { input.value = ''; refetchRecipeSections() }
+                }}
+                style={styles.saveBtn}
+              >Add</button>
+            </div>
+          </div>
+        )}
+
+        {/* Dish Courses */}
+        {activeSection === 'dish_courses' && (
+          <div style={styles.section}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={styles.sectionTitle}>Dish Courses</h2>
+              <button
+                onClick={async () => {
+                  setDishCoursesMsg(null)
+                  try {
+                    const res = await fetch('/api/recipes/menu-sections/seed-defaults?section_type=dish', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` },
+                    })
+                    const data = await res.json()
+                    if (res.ok) {
+                      setDishCoursesMsg(data.created === 0 ? 'All default courses already exist.' : `Loaded ${data.created} default courses.`)
+                      refetchDishCourses()
+                    } else {
+                      setDishCoursesMsg(`Error: ${data.detail || 'Failed to seed defaults'}`)
+                    }
+                  } catch { setDishCoursesMsg('Error: Network error') }
+                }}
+                style={{ padding: '0.4rem 0.75rem', background: '#6366f1', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+              >
+                Load Defaults
+              </button>
+            </div>
+            <p style={styles.hint}>
+              Dish courses categorise menu items (e.g. Starter, Main, Dessert). Used to organise dishes in the dish list.
+            </p>
+
+            {dishCoursesMsg && (
+              <div style={{ ...styles.statusMessage, background: dishCoursesMsg.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {dishCoursesMsg}
+              </div>
+            )}
+
+            {dishCourses && dishCourses.length > 0 ? (
+              <div style={styles.settingsBlock}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Name</th>
+                      <th style={{ textAlign: 'center', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Dishes</th>
+                      <th style={{ textAlign: 'right', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dishCourses.map((course) => (
+                      <tr key={course.id} style={{ borderBottom: '1px solid #eee' }}>
+                        <td style={{ padding: '0.5rem 0.75rem', fontWeight: 500 }}>{course.name}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', textAlign: 'center', color: '#666', fontSize: '0.85rem' }}>{course.recipe_count}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', textAlign: 'right' }}>
+                          <button
+                            onClick={async () => {
+                              if (confirm(`Delete "${course.name}"?${course.recipe_count > 0 ? ` ${course.recipe_count} dish(es) will become uncategorised.` : ''}`)) {
+                                const res = await fetch(`/api/recipes/menu-sections/${course.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+                                if (res.ok) refetchDishCourses()
+                              }
+                            }}
+                            style={{ ...styles.smallBtn, color: '#dc3545' }}
+                            title="Delete"
+                          >&#10005;</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={styles.hint}>No dish courses yet. Click "Load Defaults" or add one below.</p>
+            )}
+
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+              <input
+                type="text"
+                placeholder="New course name..."
+                id="newDishCourseName"
+                style={{ ...styles.input, marginBottom: 0, flex: 1, maxWidth: '300px' }}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    const input = e.currentTarget
+                    const name = input.value.trim()
+                    if (!name) return
+                    const res = await fetch('/api/recipes/menu-sections', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name, section_type: 'dish', sort_order: dishCourses?.length || 0 }),
+                    })
+                    if (res.ok) { input.value = ''; refetchDishCourses() }
+                  }
+                }}
+              />
+              <button
+                onClick={async () => {
+                  const input = document.getElementById('newDishCourseName') as HTMLInputElement
+                  const name = input?.value.trim()
+                  if (!name) return
+                  const res = await fetch('/api/recipes/menu-sections', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, section_type: 'dish', sort_order: dishCourses?.length || 0 }),
+                  })
+                  if (res.ok) { input.value = ''; refetchDishCourses() }
+                }}
+                style={styles.saveBtn}
+              >Add</button>
+            </div>
           </div>
         )}
 
