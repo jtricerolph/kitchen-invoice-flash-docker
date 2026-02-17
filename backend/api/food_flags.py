@@ -1597,8 +1597,9 @@ async def brakes_lookup(
         if not cached.not_found and age < cache_ttl:
             # Serve from cache — build suggestions
             contains = json.loads(cached.contains_allergens) if cached.contains_allergens else []
+            dietary = json.loads(cached.dietary_info) if cached.dietary_info else []
             suggestions = await _build_brakes_suggestions(
-                db, user.kitchen_id, contains, cached.ingredients_text or ""
+                db, user.kitchen_id, contains, cached.ingredients_text or "", dietary
             )
             return {
                 "found": True,
@@ -1606,6 +1607,7 @@ async def brakes_lookup(
                 "product_name": cached.product_name or "",
                 "ingredients_text": cached.ingredients_text or "",
                 "contains_allergens": contains,
+                "suitable_for": dietary,
                 "suggested_flags": suggestions,
             }
 
@@ -1628,10 +1630,12 @@ async def brakes_lookup(
 
     # Store in cache
     contains_json = json.dumps(product.contains_allergens)
+    dietary_json = json.dumps(product.suitable_for)
     if cached:
         cached.product_name = product.product_name
         cached.ingredients_text = product.ingredients_text
         cached.contains_allergens = contains_json
+        cached.dietary_info = dietary_json
         cached.not_found = False
         cached.fetched_at = now
     else:
@@ -1640,6 +1644,7 @@ async def brakes_lookup(
             product_name=product.product_name,
             ingredients_text=product.ingredients_text,
             contains_allergens=contains_json,
+            dietary_info=dietary_json,
             not_found=False,
             fetched_at=now,
         ))
@@ -1647,7 +1652,7 @@ async def brakes_lookup(
 
     # Build suggestions
     suggestions = await _build_brakes_suggestions(
-        db, user.kitchen_id, product.contains_allergens, product.ingredients_text
+        db, user.kitchen_id, product.contains_allergens, product.ingredients_text, product.suitable_for
     )
 
     return {
@@ -1656,6 +1661,7 @@ async def brakes_lookup(
         "product_name": product.product_name,
         "ingredients_text": product.ingredients_text,
         "contains_allergens": product.contains_allergens,
+        "suitable_for": product.suitable_for,
         "suggested_flags": suggestions,
     }
 
@@ -1665,8 +1671,9 @@ async def _build_brakes_suggestions(
     kitchen_id: int,
     contains_allergens: list[str],
     ingredients_text: str,
+    suitable_for: list[str] | None = None,
 ) -> list[dict]:
-    """Build allergen flag suggestions from Brakes 'Contains' statement + keyword matching."""
+    """Build allergen flag suggestions from Brakes 'Contains' statement + keyword matching + dietary suitability."""
     # Get all flags for this kitchen
     flags_result = await db.execute(
         select(FoodFlag)
@@ -1706,6 +1713,20 @@ async def _build_brakes_suggestions(
                 "source": "contains",
                 "matched_keywords": [],
             }
+
+    # 1b. Dietary suitability — "Suitable for Vegetarians" / "Suitable for Vegans"
+    if suitable_for:
+        for diet in suitable_for:
+            flag = _find_flag(diet)
+            if flag and flag.id not in suggestions:
+                suggestions[flag.id] = {
+                    "flag_id": flag.id,
+                    "flag_name": flag.name,
+                    "flag_code": flag.code,
+                    "category_name": flag.category.name if flag.category else "",
+                    "source": "dietary",
+                    "matched_keywords": [],
+                }
 
     # 2. Keyword matching against full ingredients text (catches extras)
     if ingredients_text:

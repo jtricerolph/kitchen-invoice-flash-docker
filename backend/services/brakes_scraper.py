@@ -17,6 +17,7 @@ class BrakesProduct:
     ingredients_text: str = ""  # full ingredients list (HTML tags stripped)
     contains_allergens: list[str] = field(default_factory=list)  # ["Egg", "Milk"]
     raw_contains: str = ""  # "Egg and Milk" — original text from Contains field
+    suitable_for: list[str] = field(default_factory=list)  # ["Vegetarian", "Vegan"]
 
 
 def _strip_html_tags(html: str) -> str:
@@ -92,6 +93,13 @@ def parse_brakes_html(html: str) -> BrakesProduct:
         raw = _strip_html_tags(contains_match.group(1))
         product.raw_contains = raw
         product.contains_allergens = _parse_contains(raw)
+
+    # Dietary suitability — plain text "Suitable for Vegetarians" / "Suitable for Vegans"
+    page_text = _strip_html_tags(html)
+    if re.search(r"Suitable\s+for\s+Vegetarians", page_text, re.IGNORECASE):
+        product.suitable_for.append("Vegetarian")
+    if re.search(r"Suitable\s+for\s+Vegans", page_text, re.IGNORECASE):
+        product.suitable_for.append("Vegan")
 
     return product
 

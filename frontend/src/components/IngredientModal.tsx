@@ -187,15 +187,18 @@ export default function IngredientModal({
           } else if (ingText) {
             ingText += '\nContains: None of the 14 Food Allergens'
           }
+          if (data.suitable_for?.length > 0) {
+            ingText += `\nSuitable for: ${data.suitable_for.join(', ')}`
+          }
           setFormProductIngredients(ingText)
           setScanResult({
             raw_text: data.ingredients_text || '',
             suggested_flags: data.suggested_flags || [],
           })
-          const containsIds = (data.suggested_flags || [])
-            .filter((f: { source: string }) => f.source === 'contains')
+          const autoApplyIds = (data.suggested_flags || [])
+            .filter((f: { source: string }) => f.source === 'contains' || f.source === 'dietary')
             .map((f: { flag_id: number }) => f.flag_id)
-          if (containsIds.length > 0) setBrakesAutoApplyIds(containsIds)
+          if (autoApplyIds.length > 0) setBrakesAutoApplyIds(autoApplyIds)
         }
       }
     } catch { /* ignore */ }

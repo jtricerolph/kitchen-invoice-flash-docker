@@ -105,6 +105,7 @@ class BrakesProductCache(Base):
     product_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     ingredients_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     contains_allergens: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
+    dietary_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list e.g. ["Vegetarian", "Vegan"]
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     not_found: Mapped[bool] = mapped_column(Boolean, default=False)  # cache 404s too
 

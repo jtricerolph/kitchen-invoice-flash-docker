@@ -59,6 +59,7 @@ from migrations.add_recipe_ingredient_unit import migrate as run_recipe_ingredie
 from migrations.add_allergen_keywords import migrate as run_allergen_keywords_migration
 from migrations.add_brakes_cache import migrate as run_brakes_cache_migration
 from migrations.add_description_aliases import migrate as run_description_aliases_migration
+from migrations.add_brakes_dietary_info import migrate as run_brakes_dietary_info_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -399,6 +400,13 @@ async def lifespan(app: FastAPI):
         logger.info("Description aliases migration completed")
     except Exception as e:
         logger.warning(f"Description aliases migration warning (may be expected): {e}")
+
+    # Run brakes dietary info migration
+    try:
+        await run_brakes_dietary_info_migration()
+        logger.info("Brakes dietary info migration completed")
+    except Exception as e:
+        logger.warning(f"Brakes dietary info migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()
