@@ -6980,6 +6980,33 @@ export default function Settings() {
                   {rematchFuzzyMutation.isPending ? 'Clearing...' : 'Clear Matches'}
                 </button>
               </div>
+              <div style={styles.dataAction}>
+                <div>
+                  <strong>Clear Cache & Reload</strong>
+                  <p style={styles.actionDesc}>Clear all cached files, service worker data, and reload with fresh assets.</p>
+                </div>
+                <button
+                  onClick={async () => {
+                    try {
+                      // Clear all Cache Storage entries
+                      const keys = await caches.keys()
+                      await Promise.all(keys.map(k => caches.delete(k)))
+                      // Unregister service workers so they re-install fresh
+                      const regs = await navigator.serviceWorker?.getRegistrations()
+                      if (regs) await Promise.all(regs.map(r => r.unregister()))
+                      // Clear React Query cache
+                      queryClient.clear()
+                      // Hard reload (bypass HTTP cache)
+                      window.location.reload()
+                    } catch {
+                      window.location.reload()
+                    }
+                  }}
+                  style={styles.actionBtn}
+                >
+                  Clear & Reload
+                </button>
+              </div>
               </div>
             </div>
 
