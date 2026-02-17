@@ -21,6 +21,7 @@ from models.product_definition import ProductDefinition
 from models.settings import KitchenSettings
 from auth.jwt import get_current_user
 from ocr.extractor import process_invoice_image
+from ocr.azure_extractor import parse_pack_size
 from services.duplicate_detector import DuplicateDetector
 
 router = APIRouter()
@@ -32,6 +33,40 @@ def normalize_description(text: str | None) -> str:
     if not text:
         return ""
     return " ".join(text.lower().strip().split())
+
+
+# Reuse the unit normalization map from parse_pack_size for unit field detection
+from ocr.azure_extractor import _UNIT_NORMALIZE as UNIT_FIELD_MAP
+
+
+def detect_pack_size(item) -> tuple:
+    """
+    Auto-detect pack size from a line item using three tiers:
+    1. Text parsing of raw_content/description (e.g. "12x100g", "400ml")
+    2. Invoice unit field (e.g. unit="KG", qty=2.5 → 1x2.5kg)
+    Returns (pack_quantity, unit_size, unit_size_type) or the item's existing values.
+    """
+    pq, us, ust = item.pack_quantity, item.unit_size, item.unit_size_type
+    if pq is not None:
+        return pq, us, ust
+
+    # Tier 1: Parse from text
+    detected = parse_pack_size(item.raw_content or item.description or "")
+    if detected["pack_quantity"]:
+        pq = detected["pack_quantity"]
+        us = Decimal(str(detected["unit_size"])) if detected["unit_size"] else us
+        ust = detected["unit_size_type"] or ust
+        return pq, us, ust
+
+    # Tier 2: Infer from invoice unit field (KG, LTR, etc.) + quantity
+    unit_str = (item.unit or "").strip().lower()
+    std_unit = UNIT_FIELD_MAP.get(unit_str)
+    if std_unit and item.quantity:
+        pq = 1
+        us = item.quantity  # quantity IS the size when priced by weight/volume
+        ust = std_unit
+
+    return pq, us, ust
 
 
 def get_total_pages_from_ocr(invoice: Invoice) -> int:
@@ -120,6 +155,10 @@ class LineItemResponse(BaseModel):
     future_change_percent: float | None = None
     # Page number from OCR (for multi-page invoices)
     page_number: int | None = None
+    # Ingredient mapping
+    ingredient_id: int | None = None
+    ingredient_name: str | None = None
+    ingredient_unit: str | None = None
 
     class Config:
         from_attributes = True
@@ -165,6 +204,7 @@ class LineItemUpdate(BaseModel):
     portions_per_unit: Optional[int] = None
     cost_per_item: Optional[float] = None
     cost_per_portion: Optional[float] = None
+    ingredient_id: Optional[int] = None
 
 
 class DuplicateInfo(BaseModel):
@@ -723,19 +763,33 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
                 )
                 db.add(line_item)
 
+            # Auto-normalize: fill missing product codes + rename alias descriptions
+            if supplier_id:
+                try:
+                    from api.ingredients import auto_normalize_line_items
+                    norm_count = await auto_normalize_line_items(invoice_id, kitchen_id, supplier_id, db)
+                    if norm_count:
+                        logger.info(f"Auto-normalized {norm_count} line items on invoice {invoice_id}")
+                except Exception as e:
+                    logger.warning(f"Auto-normalize failed (non-critical): {e}")
+
             await db.commit()
             await db.refresh(invoice)
 
             # Auto-update ingredient source prices from matched line items
             try:
                 from api.ingredients import update_ingredient_prices_for_invoice
-                updated_ids = await update_ingredient_prices_for_invoice(invoice_id, kitchen_id, db)
-                if updated_ids:
+                updated_ingredients = await update_ingredient_prices_for_invoice(invoice_id, kitchen_id, db)
+                if updated_ingredients:
                     from api.recipes import snapshot_recipes_using_ingredient
-                    for ing_id in updated_ids:
-                        await snapshot_recipes_using_ingredient(ing_id, db, f"ingredient_price_update: invoice #{invoice_id}")
+                    for ing_id, price_info in updated_ingredients.items():
+                        await snapshot_recipes_using_ingredient(
+                            ing_id, db,
+                            trigger_source=f"ingredient_price_update: invoice #{invoice_id}",
+                            price_info=price_info,
+                        )
                     await db.commit()
-                    logger.info(f"Auto-updated ingredient prices for {len(updated_ids)} ingredients from invoice {invoice_id}")
+                    logger.info(f"Auto-updated ingredient prices for {len(updated_ingredients)} ingredients from invoice {invoice_id}")
             except Exception as e:
                 logger.warning(f"Ingredient price auto-update failed (non-critical): {e}")
 
@@ -1673,8 +1727,10 @@ async def get_line_items(
 
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
 
+    from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(LineItem)
+        .options(selectinload(LineItem.ingredient))
         .where(LineItem.invoice_id == invoice_id)
         .order_by(LineItem.line_number)
     )
@@ -1714,6 +1770,9 @@ async def get_line_items(
             except Exception as e:
                 logger.warning(f"Failed to get price status for line item {item.id}: {e}")
 
+        # Auto-detect pack size from description/raw_content/unit field
+        pq, us, ust = detect_pack_size(item)
+
         responses.append(LineItemResponse(
             id=item.id,
             product_code=item.product_code,
@@ -1729,9 +1788,9 @@ async def get_line_items(
             line_number=item.line_number,
             is_non_stock=item.is_non_stock or False,
             raw_content=item.raw_content,
-            pack_quantity=item.pack_quantity,
-            unit_size=float(item.unit_size) if item.unit_size else None,
-            unit_size_type=item.unit_size_type,
+            pack_quantity=pq,
+            unit_size=float(us) if us else None,
+            unit_size_type=ust,
             portions_per_unit=item.portions_per_unit,
             cost_per_item=float(item.cost_per_item) if item.cost_per_item else None,
             cost_per_portion=float(item.cost_per_portion) if item.cost_per_portion else None,
@@ -1741,7 +1800,10 @@ async def get_line_items(
             previous_price=previous_price,
             future_price=future_price,
             future_change_percent=future_change_percent,
-            page_number=page_numbers.get(item.line_number, 1)
+            page_number=page_numbers.get(item.line_number, 1),
+            ingredient_id=item.ingredient_id,
+            ingredient_name=item.ingredient.name if item.ingredient else None,
+            ingredient_unit=item.ingredient.standard_unit if item.ingredient else None,
         ))
 
     return responses
@@ -1797,6 +1859,9 @@ async def add_line_item(
     await db.commit()
     await db.refresh(line_item)
 
+    # Auto-detect pack size from description/raw_content/unit field
+    pq, us, ust = detect_pack_size(line_item)
+
     return LineItemResponse(
         id=line_item.id,
         product_code=line_item.product_code,
@@ -1812,9 +1877,9 @@ async def add_line_item(
         line_number=line_item.line_number,
         is_non_stock=line_item.is_non_stock or False,
         raw_content=line_item.raw_content,
-        pack_quantity=line_item.pack_quantity,
-        unit_size=float(line_item.unit_size) if line_item.unit_size else None,
-        unit_size_type=line_item.unit_size_type,
+        pack_quantity=pq,
+        unit_size=float(us) if us else None,
+        unit_size_type=ust,
         portions_per_unit=line_item.portions_per_unit,  # Return actual value (null if not defined)
         cost_per_item=float(line_item.cost_per_item) if line_item.cost_per_item else None,
         cost_per_portion=float(line_item.cost_per_portion) if line_item.cost_per_portion else None,
@@ -1879,10 +1944,14 @@ async def update_line_item(
         try:
             from api.ingredients import update_ingredient_prices_for_invoice
             from api.recipes import snapshot_recipes_using_ingredient
-            updated_ids = await update_ingredient_prices_for_invoice(invoice_id, current_user.kitchen_id, db)
-            if updated_ids:
-                for ing_id in updated_ids:
-                    await snapshot_recipes_using_ingredient(ing_id, db, f"line_item_update: #{item_id}")
+            updated_ingredients = await update_ingredient_prices_for_invoice(invoice_id, current_user.kitchen_id, db)
+            if updated_ingredients:
+                for ing_id, price_info in updated_ingredients.items():
+                    await snapshot_recipes_using_ingredient(
+                        ing_id, db,
+                        trigger_source=f"line_item_update: #{item_id}",
+                        price_info=price_info,
+                    )
                 await db.commit()
         except Exception as e:
             logger.warning(f"Ingredient price auto-update failed: {e}")
@@ -1937,6 +2006,9 @@ async def update_line_item(
         except Exception as e:
             logger.warning(f"Failed to auto-update PDF highlights: {e}")
 
+    # Auto-detect pack size from description/raw_content/unit field
+    pq, us, ust = detect_pack_size(line_item)
+
     return LineItemResponse(
         id=line_item.id,
         product_code=line_item.product_code,
@@ -1952,9 +2024,9 @@ async def update_line_item(
         line_number=line_item.line_number,
         is_non_stock=line_item.is_non_stock or False,
         raw_content=line_item.raw_content,
-        pack_quantity=line_item.pack_quantity,
-        unit_size=float(line_item.unit_size) if line_item.unit_size else None,
-        unit_size_type=line_item.unit_size_type,
+        pack_quantity=pq,
+        unit_size=float(us) if us else None,
+        unit_size_type=ust,
         portions_per_unit=line_item.portions_per_unit,  # Return actual value (null if not defined)
         cost_per_item=float(line_item.cost_per_item) if line_item.cost_per_item else None,
         cost_per_portion=float(line_item.cost_per_portion) if line_item.cost_per_portion else None,
@@ -2013,6 +2085,109 @@ async def get_invoice_ocr_data(
         "raw_json": raw_json,
         "confidence": float(invoice.ocr_confidence) if invoice.ocr_confidence else None
     }
+
+
+@router.get("/{invoice_id}/line-items/{line_number}/preview")
+async def get_line_item_preview(
+    invoice_id: int,
+    line_number: int,
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get a cropped image preview of a specific line item from the invoice OCR bounding box."""
+    import json as json_module
+    import io
+    from auth.jwt import get_current_user_from_token
+    from starlette.responses import Response
+    from services.file_archival_service import FileArchivalService
+
+    current_user = await get_current_user_from_token(token, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+
+    # Parse OCR JSON to get bounding box
+    if not invoice.ocr_raw_json:
+        raise HTTPException(status_code=404, detail="No OCR data")
+
+    try:
+        ocr_json = json_module.loads(invoice.ocr_raw_json)
+    except json_module.JSONDecodeError:
+        raise HTTPException(status_code=404, detail="Invalid OCR data")
+
+    # Navigate to line item bounding box
+    try:
+        items = ocr_json["documents"][0]["fields"]["Items"]["value"]
+        if line_number < 0 or line_number >= len(items):
+            raise HTTPException(status_code=404, detail="Line number out of range")
+        region = items[line_number].get("bounding_regions", [{}])[0]
+        polygon = region.get("polygon")
+        page_number = region.get("page_number", 1)
+        if not polygon or len(polygon) < 4:
+            raise HTTPException(status_code=404, detail="No bounding box")
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=404, detail="No bounding box data")
+
+    # Calculate bounding box from polygon
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    x0_inches, x1_inches = min(xs), max(xs)
+    y0_inches, y1_inches = min(ys), max(ys)
+
+    # Get page dimensions
+    pages = ocr_json.get("pages", [])
+    page_info = pages[page_number - 1] if page_number <= len(pages) else {}
+    page_w_inches = page_info.get("width", 8.5)
+    page_h_inches = page_info.get("height", 11)
+
+    # Padding in inches
+    pad = 0.15
+
+    # Get the file content
+    archival_service = FileArchivalService(db, current_user.kitchen_id)
+    success, file_bytes = await archival_service.get_file_content(invoice)
+    if not success:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ext = invoice.image_path.split(".")[-1].lower()
+
+    if ext == "pdf":
+        # PDF: use PyMuPDF to render page crop
+        import fitz
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        page = doc[page_number - 1]
+
+        # Convert inches to points (72 pts/inch)
+        rect = fitz.Rect(
+            (x0_inches - pad) * 72,
+            (y0_inches - pad) * 72,
+            (x1_inches + pad) * 72,
+            (y1_inches + pad) * 72,
+        )
+        rect = rect & page.rect  # clip to page bounds
+
+        pixmap = page.get_pixmap(clip=rect, dpi=200)
+        img_bytes = pixmap.tobytes("png")
+        doc.close()
+        return Response(content=img_bytes, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+    else:
+        # Image: use Pillow to crop
+        from PIL import Image
+        img = Image.open(io.BytesIO(file_bytes))
+        w, h = img.size
+
+        # Convert inch percentages to pixels
+        crop_box = (
+            max(0, int((x0_inches / page_w_inches - pad / page_w_inches) * w)),
+            max(0, int((y0_inches / page_h_inches - pad / page_h_inches) * h)),
+            min(w, int((x1_inches / page_w_inches + pad / page_w_inches) * w)),
+            min(h, int((y1_inches / page_h_inches + pad / page_h_inches) * h)),
+        )
+        cropped = img.crop(crop_box)
+        buf = io.BytesIO()
+        cropped.save(buf, format="PNG")
+        return Response(content=buf.getvalue(), media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
 
 @router.get("/{invoice_id}/parse-dates")
@@ -3241,6 +3416,16 @@ async def reprocess_invoice(
             db.add(line_item)
 
         await db.flush()
+
+        # Auto-normalize: fill missing product codes + rename alias descriptions
+        if supplier_id:
+            try:
+                from api.ingredients import auto_normalize_line_items
+                norm_count = await auto_normalize_line_items(invoice.id, current_user.kitchen_id, supplier_id, db)
+                if norm_count:
+                    logger.info(f"Auto-normalized {norm_count} line items on remapped invoice {invoice_id}")
+            except Exception as e:
+                logger.warning(f"Auto-normalize failed on remap (non-critical): {e}")
 
         # Re-run duplicate detection
         detector = DuplicateDetector(db, current_user.kitchen_id)

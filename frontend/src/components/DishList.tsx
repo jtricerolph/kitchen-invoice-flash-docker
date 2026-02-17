@@ -42,7 +42,7 @@ interface RecipeItem {
   updated_at: string
 }
 
-export default function RecipeList() {
+export default function DishList() {
   const { token } = useAuth()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -67,19 +67,15 @@ export default function RecipeList() {
   // Create form
   const [formName, setFormName] = useState('')
   const [formSection, setFormSection] = useState<string>('')
-  const [formBatch, setFormBatch] = useState('1')
-  const [formBatchType, setFormBatchType] = useState('portions')
-  const [formYieldQty, setFormYieldQty] = useState('')
-  const [formYieldUnit, setFormYieldUnit] = useState('ml')
   const [formDesc, setFormDesc] = useState('')
 
   // Section form
   const [sectionName, setSectionName] = useState('')
 
   const { data: sections } = useQuery<MenuSection[]>({
-    queryKey: ['recipe-sections'],
+    queryKey: ['dish-courses'],
     queryFn: async () => {
-      const res = await fetch('/api/recipes/menu-sections?section_type=recipe', {
+      const res = await fetch('/api/recipes/menu-sections?section_type=dish', {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch sections')
@@ -89,16 +85,16 @@ export default function RecipeList() {
   })
 
   const { data: recipes, isLoading } = useQuery<RecipeItem[]>({
-    queryKey: ['recipes', search, sectionFilter],
+    queryKey: ['dishes', search, sectionFilter],
     queryFn: async () => {
       const params = new URLSearchParams()
-      params.set('recipe_type', 'component')
       if (search) params.set('search', search)
+      params.set('recipe_type', 'dish')
       if (sectionFilter) params.set('menu_section_id', sectionFilter)
       const res = await fetch(`/api/recipes?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) throw new Error('Failed to fetch recipes')
+      if (!res.ok) throw new Error('Failed to fetch dishes')
       return res.json()
     },
     enabled: !!token,
@@ -111,13 +107,13 @@ export default function RecipeList() {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to create recipe')
+      if (!res.ok) throw new Error('Failed to create dish')
       return res.json()
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['recipes'] })
+      queryClient.invalidateQueries({ queryKey: ['dishes'] })
       setShowCreate(false)
-      navigate(`/recipes/${data.id}`)
+      navigate(`/dishes/${data.id}`)
     },
   })
 
@@ -131,8 +127,8 @@ export default function RecipeList() {
       return res.json()
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['recipes'] })
-      navigate(`/recipes/${data.id}`)
+      queryClient.invalidateQueries({ queryKey: ['dishes'] })
+      navigate(`/dishes/${data.id}`)
     },
   })
 
@@ -144,7 +140,7 @@ export default function RecipeList() {
       })
       if (!res.ok) throw new Error('Failed to archive')
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['recipes'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dishes'] }),
   })
 
   const createSectionMutation = useMutation({
@@ -152,13 +148,13 @@ export default function RecipeList() {
       const res = await fetch('/api/recipes/menu-sections', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, section_type: 'recipe' }),
+        body: JSON.stringify({ name, section_type: 'dish' }),
       })
-      if (!res.ok) throw new Error('Failed to create section')
+      if (!res.ok) throw new Error('Failed to create course')
       return res.json()
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recipe-sections'] })
+      queryClient.invalidateQueries({ queryKey: ['dish-courses'] })
       setSectionName('')
       setShowSectionModal(false)
     },
@@ -171,12 +167,12 @@ export default function RecipeList() {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       })
-      if (!res.ok) throw new Error('Failed to update section')
+      if (!res.ok) throw new Error('Failed to update course')
       return res.json()
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recipe-sections'] })
-      queryClient.invalidateQueries({ queryKey: ['recipes'] })
+      queryClient.invalidateQueries({ queryKey: ['dish-courses'] })
+      queryClient.invalidateQueries({ queryKey: ['dishes'] })
       setEditingSectionId(null)
       setEditingSectionName('')
     },
@@ -188,12 +184,12 @@ export default function RecipeList() {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) throw new Error('Failed to delete section')
+      if (!res.ok) throw new Error('Failed to delete course')
       return res.json()
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recipe-sections'] })
-      queryClient.invalidateQueries({ queryKey: ['recipes'] })
+      queryClient.invalidateQueries({ queryKey: ['dish-courses'] })
+      queryClient.invalidateQueries({ queryKey: ['dishes'] })
     },
   })
 
@@ -260,12 +256,9 @@ export default function RecipeList() {
   const handleCreate = () => {
     createMutation.mutate({
       name: formName,
-      recipe_type: 'component',
+      recipe_type: 'dish',
       menu_section_id: formSection ? parseInt(formSection) : null,
-      batch_portions: formBatchType === 'portions' ? (parseInt(formBatch) || 1) : 1,
-      batch_output_type: formBatchType,
-      batch_yield_qty: formBatchType === 'bulk' ? (parseFloat(formYieldQty) || null) : null,
-      batch_yield_unit: formBatchType === 'bulk' ? formYieldUnit : null,
+      batch_portions: 1,
       description: formDesc || null,
     })
   }
@@ -273,29 +266,29 @@ export default function RecipeList() {
   return (
     <div style={styles.page}>
       <div style={styles.header}>
-        <h2 style={{ margin: 0 }}>Recipes</h2>
+        <h2 style={{ margin: 0 }}>Dishes</h2>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button onClick={() => setShowSectionModal(true)} style={styles.secondaryBtn}>+ Section</button>
-          <button onClick={() => { setShowCreate(true); setFormName(''); setFormSection(''); setFormBatch('1'); setFormBatchType('portions'); setFormYieldQty(''); setFormYieldUnit('ml'); setFormDesc('') }} style={styles.primaryBtn}>+ New Recipe</button>
+          <button onClick={() => setShowSectionModal(true)} style={styles.secondaryBtn}>+ Course</button>
+          <button onClick={() => { setShowCreate(true); setFormName(''); setFormSection(''); setFormDesc('') }} style={styles.primaryBtn}>+ New Dish</button>
         </div>
       </div>
 
       {/* Stats */}
       <div style={styles.statsBar}>
-        <span>{filteredRecipes.length} recipes</span>
+        <span>{recipes?.length || 0} dishes</span>
       </div>
 
       {/* Filters */}
       <div style={styles.filterBar}>
         <input
           type="text"
-          placeholder="Search recipes..."
+          placeholder="Search dishes..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={styles.searchInput}
         />
         <select value={sectionFilter} onChange={(e) => setSectionFilter(e.target.value)} style={styles.select}>
-          <option value="">All Sections</option>
+          <option value="">All Courses</option>
           {sections?.map(s => (
             <option key={s.id} value={s.id}>{s.name} ({s.recipe_count})</option>
           ))}
@@ -402,24 +395,25 @@ export default function RecipeList() {
         </div>
       )}
 
-      {/* Recipes */}
+      {/* Dishes */}
       {isLoading ? (
-        <div style={styles.loading}>Loading recipes...</div>
+        <div style={styles.loading}>Loading dishes...</div>
       ) : viewMode === 'card' ? (
         <div style={styles.grid}>
           {filteredRecipes.map(r => (
-            <div key={r.id} style={styles.card} onClick={() => navigate(`/recipes/${r.id}`)}>
+            <div key={r.id} style={styles.card} onClick={() => navigate(`/dishes/${r.id}`)}>
               <div style={styles.cardHeader}>
                 <span style={{ fontWeight: 600, fontSize: '1rem' }}>{r.name}</span>
                 <span style={{
-                  background: '#8b5cf6',
+                  background: '#3b82f6',
                   color: 'white',
                   padding: '2px 8px',
                   borderRadius: '4px',
                   fontSize: '0.7rem',
                   fontWeight: 600,
+                  textTransform: 'uppercase' as const,
                 }}>
-                  RECIPE
+                  DISH
                 </span>
               </div>
 
@@ -427,19 +421,9 @@ export default function RecipeList() {
                 <div style={styles.sectionTag}>{r.menu_section_name}</div>
               )}
 
-              {(r.batch_output_type === 'bulk' || r.batch_portions > 1) && (
-                <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '4px' }}>
-                  {r.batch_output_type === 'bulk'
-                    ? `Yield: ${r.batch_yield_qty}${r.batch_yield_unit}`
-                    : `Batch: ${r.batch_portions} portions`}
-                </div>
-              )}
-
               <div style={styles.cardMeta}>
                 {r.cost_per_portion != null ? (
-                  <span style={styles.costBadge}>
-                    {'\u00A3'}{r.cost_per_portion.toFixed(r.batch_output_type === 'bulk' ? 4 : 2)}/{r.output_unit || 'portion'}
-                  </span>
+                  <span style={styles.costBadge}>{'\u00A3'}{r.cost_per_portion.toFixed(2)}/portion</span>
                 ) : (
                   <span style={{ color: '#aaa', fontSize: '0.8rem' }}>No costing</span>
                 )}
@@ -471,42 +455,35 @@ export default function RecipeList() {
             <tr>
               <th style={styles.listTh}>Name</th>
               <th style={styles.listTh}>Type</th>
-              <th style={styles.listTh}>Section</th>
-              <th style={styles.listTh}>Output</th>
-              <th style={styles.listTh}>Cost/Unit</th>
+              <th style={styles.listTh}>Course</th>
+              <th style={styles.listTh}>Cost/Portion</th>
               <th style={styles.listTh}>Flags</th>
               <th style={styles.listTh}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {filteredRecipes.map(r => (
-              <tr key={r.id} style={{ ...styles.listTr, cursor: 'pointer' }} onClick={() => navigate(`/recipes/${r.id}`)}>
+              <tr key={r.id} style={{ ...styles.listTr, cursor: 'pointer' }} onClick={() => navigate(`/dishes/${r.id}`)}>
                 <td style={styles.listTd}>
                   <span style={{ fontWeight: 500 }}>{r.name}</span>
                 </td>
                 <td style={styles.listTd}>
                   <span style={{
-                    background: '#8b5cf6',
+                    background: '#3b82f6',
                     color: 'white',
                     padding: '1px 6px',
                     borderRadius: '4px',
                     fontSize: '0.7rem',
                     fontWeight: 600,
+                    textTransform: 'uppercase' as const,
                   }}>
-                    RECIPE
+                    DISH
                   </span>
                 </td>
                 <td style={styles.listTd}>{r.menu_section_name || '-'}</td>
                 <td style={styles.listTd}>
-                  {r.batch_output_type === 'bulk'
-                    ? `${r.batch_yield_qty}${r.batch_yield_unit}`
-                    : r.batch_portions}
-                </td>
-                <td style={styles.listTd}>
                   {r.cost_per_portion != null ? (
-                    <span style={styles.costBadge}>
-                      {'\u00A3'}{r.cost_per_portion.toFixed(r.batch_output_type === 'bulk' ? 4 : 2)}/{r.output_unit || 'portion'}
-                    </span>
+                    <span style={styles.costBadge}>{'\u00A3'}{r.cost_per_portion.toFixed(2)}</span>
                   ) : (
                     <span style={{ color: '#aaa', fontSize: '0.8rem' }}>-</span>
                   )}
@@ -524,52 +501,23 @@ export default function RecipeList() {
         </table>
       )}
 
-      {/* Create Recipe Modal */}
+      {/* Create Dish Modal */}
       {showCreate && (
         <div style={styles.overlay}>
           <div style={styles.modal}>
             <div style={styles.modalHeader}>
-              <h3 style={{ margin: 0 }}>New Recipe</h3>
+              <h3 style={{ margin: 0 }}>New Dish</h3>
               <button onClick={() => setShowCreate(false)} style={styles.closeBtn}>✕</button>
             </div>
             <div style={styles.modalBody}>
               <label style={styles.label}>Name *</label>
-              <input value={formName} onChange={(e) => setFormName(e.target.value)} style={styles.input} placeholder="e.g. Hollandaise Sauce, Pastry Base" />
+              <input value={formName} onChange={(e) => setFormName(e.target.value)} style={styles.input} placeholder="e.g. Beef Burger, Caesar Salad" />
 
-              <label style={styles.label}>Section</label>
+              <label style={styles.label}>Course</label>
               <select value={formSection} onChange={(e) => setFormSection(e.target.value)} style={styles.input}>
                 <option value="">None</option>
                 {sections?.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-
-              <label style={styles.label}>Output Type</label>
-              <select value={formBatchType} onChange={(e) => setFormBatchType(e.target.value)} style={styles.input}>
-                <option value="portions">Portioned</option>
-                <option value="bulk">Bulk (volume/weight)</option>
-              </select>
-
-              {formBatchType === 'portions' ? (
-                <>
-                  <label style={styles.label}>Batch Portions</label>
-                  <input type="number" value={formBatch} onChange={(e) => setFormBatch(e.target.value)} style={styles.input} min="1" />
-                </>
-              ) : (
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <div style={{ flex: 1 }}>
-                    <label style={styles.label}>Yield Quantity</label>
-                    <input type="number" value={formYieldQty} onChange={(e) => setFormYieldQty(e.target.value)} style={styles.input} step="0.1" min="0.1" placeholder="e.g. 500" />
-                  </div>
-                  <div style={{ width: '90px' }}>
-                    <label style={styles.label}>Unit</label>
-                    <select value={formYieldUnit} onChange={(e) => setFormYieldUnit(e.target.value)} style={styles.input}>
-                      <option value="ml">ml</option>
-                      <option value="ltr">ltr</option>
-                      <option value="g">g</option>
-                      <option value="kg">kg</option>
-                    </select>
-                  </div>
-                </div>
-              )}
 
               <label style={styles.label}>Description</label>
               <textarea value={formDesc} onChange={(e) => setFormDesc(e.target.value)} style={{ ...styles.input, minHeight: '60px' }} placeholder="Brief description..." />
@@ -577,23 +525,23 @@ export default function RecipeList() {
             <div style={styles.modalFooter}>
               <button onClick={() => setShowCreate(false)} style={styles.cancelBtn}>Cancel</button>
               <button onClick={handleCreate} disabled={!formName || createMutation.isPending} style={styles.primaryBtn}>
-                {createMutation.isPending ? 'Creating...' : 'Create Recipe'}
+                {createMutation.isPending ? 'Creating...' : 'Create Dish'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Section Modal */}
+      {/* Course Modal */}
       {showSectionModal && (
         <div style={styles.overlay}>
           <div style={{ ...styles.modal, width: '450px' }}>
             <div style={styles.modalHeader}>
-              <h3 style={{ margin: 0 }}>Manage Recipe Sections</h3>
+              <h3 style={{ margin: 0 }}>Manage Courses</h3>
               <button onClick={() => { setShowSectionModal(false); setEditingSectionId(null) }} style={styles.closeBtn}>✕</button>
             </div>
             <div style={styles.modalBody}>
-              {/* Existing sections */}
+              {/* Existing courses */}
               {sections && sections.length > 0 && (
                 <div style={{ marginBottom: '1rem' }}>
                   {sections.map(s => (
@@ -626,7 +574,7 @@ export default function RecipeList() {
                           >Edit</button>
                           <button
                             onClick={() => {
-                              if (confirm(`Delete section "${s.name}"? Recipes in this section will be unassigned.`)) {
+                              if (confirm(`Delete course "${s.name}"? Dishes in this course will be unassigned.`)) {
                                 deleteSectionMutation.mutate(s.id)
                               }
                             }}
@@ -638,10 +586,10 @@ export default function RecipeList() {
                   ))}
                 </div>
               )}
-              {/* Add new section */}
-              <label style={styles.label}>Add New Section</label>
+              {/* Add new course */}
+              <label style={styles.label}>Add New Course</label>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input value={sectionName} onChange={(e) => setSectionName(e.target.value)} style={{ ...styles.input, flex: 1 }} placeholder="e.g. Protein, Garnish, Pastry, Baked" />
+                <input value={sectionName} onChange={(e) => setSectionName(e.target.value)} style={{ ...styles.input, flex: 1 }} placeholder="e.g. Starters, Mains, Desserts, Sides" />
                 <button onClick={() => createSectionMutation.mutate(sectionName)} disabled={!sectionName} style={styles.primaryBtn}>Add</button>
               </div>
             </div>

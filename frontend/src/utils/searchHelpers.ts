@@ -23,6 +23,7 @@ export const SEARCH_STORAGE_KEYS = {
     dateTo: 'search-line-items-to',
     groupBy: 'search-line-items-group',
     priceChangeFilter: 'search-line-items-price-change',
+    mappedFilter: 'search-line-items-mapped',
     sortColumn: 'search-line-items-sort-column',
     sortDirection: 'search-line-items-sort-direction',
   },

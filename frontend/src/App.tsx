@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, Link } from 'react-router-dom'
 import { useState, useEffect, createContext, useContext } from 'react'
 import Login from './pages/Login'
 import Settings from './pages/Settings'
@@ -16,7 +16,6 @@ import PurchasesReport from './components/PurchasesReport'
 import AllowancesReport from './components/AllowancesReport'
 import SearchInvoices from './components/SearchInvoices'
 import SearchLineItems from './components/SearchLineItems'
-import SearchDefinitions from './components/SearchDefinitions'
 import ResidentsTableChart from './pages/ResidentsTableChart'
 import BookingsStats from './pages/BookingsStats'
 import WastageLogbook from './pages/WastageLogbook'
@@ -27,6 +26,10 @@ import RecipeList from './components/RecipeList'
 import RecipeEditor from './components/RecipeEditor'
 import EventOrders from './components/EventOrders'
 import EventOrderEditor from './components/EventOrderEditor'
+import DishList from './components/DishList'
+import DishEditor from './components/DishEditor'
+import BulkAllergens from './components/BulkAllergens'
+import PriceImpact from './components/PriceImpact'
 import UploadApp from './pages/UploadApp'
 import SupportButton from './components/SupportButton'
 
@@ -228,19 +231,13 @@ function App() {
             <Route
               path="/search/invoices"
               element={
-                token ? (isPageAccessible('/search') ? <SearchInvoices /> : <Navigate to="/" />) : <Navigate to="/login" />
+                token ? (isPageAccessible('/invoices') ? <SearchInvoices /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
             />
             <Route
               path="/search/line-items"
               element={
-                token ? (isPageAccessible('/search') ? <SearchLineItems /> : <Navigate to="/" />) : <Navigate to="/login" />
-              }
-            />
-            <Route
-              path="/search/definitions"
-              element={
-                token ? (isPageAccessible('/search') ? <SearchDefinitions /> : <Navigate to="/" />) : <Navigate to="/login" />
+                token ? (isPageAccessible('/invoices') ? <SearchLineItems /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
             />
             <Route
@@ -280,6 +277,30 @@ function App() {
               }
             />
             <Route
+              path="/dishes"
+              element={
+                token ? (isPageAccessible('/recipes') ? <DishList /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/dishes/:id"
+              element={
+                token ? (isPageAccessible('/recipes') ? <DishEditor /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/allergens"
+              element={
+                token ? (isPageAccessible('/recipes') ? <BulkAllergens /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/price-impact"
+              element={
+                token ? (isPageAccessible('/recipes') ? <PriceImpact /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/event-orders"
               element={
                 token ? (isPageAccessible('/recipes') ? <EventOrders /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -305,7 +326,6 @@ function App() {
 
 function Header({ user, restrictedPages }: { user: User; restrictedPages: string[] }) {
   const [reportsOpen, setReportsOpen] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
   const [invoicesOpen, setInvoicesOpen] = useState(false)
   const [bookingsOpen, setBookingsOpen] = useState(false)
   const [recipesOpen, setRecipesOpen] = useState(false)
@@ -329,9 +349,6 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
   // Check if recipes dropdown should be shown
   const showRecipes = showNavItem('/recipes')
 
-  // Check if search dropdown should be shown
-  const showSearch = showNavItem('/search')
-
   return (
     <header style={styles.header}>
       <div style={styles.headerContent}>
@@ -347,8 +364,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
           className={mobileMenuOpen ? 'mobile-open' : 'mobile-closed'}
           style={styles.nav}
         >
-          <a href="/" style={styles.navLink}>Dashboard</a>
-          {showNavItem('/upload') && <a href="/upload" style={styles.navLink}>Upload</a>}
+          <Link to="/" style={styles.navLink}>Dashboard</Link>
+          {showNavItem('/upload') && <Link to="/upload" style={styles.navLink}>Upload</Link>}
           {showInvoices && (
             <div
               style={styles.dropdownContainer}
@@ -359,13 +376,14 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               {invoicesOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
-                    {showNavItem('/invoices') && <a href="/invoices" style={styles.dropdownLink}>Uploaded Invoices</a>}
-                    {showNavItem('/purchases') && <a href="/purchases" style={styles.dropdownLink}>Purchase Chart</a>}
-                    {showNavItem('/budget') && <a href="/budget" style={styles.dropdownLink}>Spend Budget</a>}
-                    {showNavItem('/search') && <a href="/search/invoices" style={styles.dropdownLink}>All Invoices</a>}
-                    {showNavItem('/invoices') && <a href="/disputes" style={styles.dropdownLink}>Disputes</a>}
-                    {showNavItem('/invoices') && <a href="/purchase-orders" style={styles.dropdownLink}>Purchase Orders</a>}
-                    {showNavItem('/logbook') && <a href="/logbook" style={styles.dropdownLink}>Allowance Logbook</a>}
+                    {showNavItem('/invoices') && <Link to="/invoices" style={styles.dropdownLink}>Uploaded Invoices</Link>}
+                    {showNavItem('/purchases') && <Link to="/purchases" style={styles.dropdownLink}>Purchase Chart</Link>}
+                    {showNavItem('/budget') && <Link to="/budget" style={styles.dropdownLink}>Spend Budget</Link>}
+                    {showNavItem('/invoices') && <Link to="/search/invoices" style={styles.dropdownLink}>All Invoices</Link>}
+                    {showNavItem('/invoices') && <Link to="/search/line-items" style={styles.dropdownLink}>Line Items</Link>}
+                    {showNavItem('/invoices') && <Link to="/disputes" style={styles.dropdownLink}>Disputes</Link>}
+                    {showNavItem('/invoices') && <Link to="/purchase-orders" style={styles.dropdownLink}>Purchase Orders</Link>}
+                    {showNavItem('/logbook') && <Link to="/logbook" style={styles.dropdownLink}>Allowance Logbook</Link>}
                   </div>
                 </div>
               )}
@@ -381,9 +399,9 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               {bookingsOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
-                    {showNavItem('/resos') && <a href="/resos" style={styles.dropdownLink}>Restaurant Calendar</a>}
-                    {showNavItem('/resos') && <a href="/resos-stats" style={styles.dropdownLink}>Restaurant Stats</a>}
-                    {showNavItem('/resos') && <a href="/residents-table-chart" style={styles.dropdownLink}>Residents Table Chart</a>}
+                    {showNavItem('/resos') && <Link to="/resos" style={styles.dropdownLink}>Restaurant Calendar</Link>}
+                    {showNavItem('/resos') && <Link to="/resos-stats" style={styles.dropdownLink}>Restaurant Stats</Link>}
+                    {showNavItem('/resos') && <Link to="/residents-table-chart" style={styles.dropdownLink}>Residents Table Chart</Link>}
                   </div>
                 </div>
               )}
@@ -399,27 +417,11 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               {recipesOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
-                    <a href="/recipes" style={styles.dropdownLink}>Recipes</a>
-                    <a href="/ingredients" style={styles.dropdownLink}>Ingredients</a>
-                    <a href="/event-orders" style={styles.dropdownLink}>Event Orders</a>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {showSearch && (
-            <div
-              style={styles.dropdownContainer}
-              onMouseEnter={() => setSearchOpen(true)}
-              onMouseLeave={() => setSearchOpen(false)}
-            >
-              <span style={styles.navLink}>Search ▾</span>
-              {searchOpen && (
-                <div style={styles.dropdown}>
-                  <div style={styles.dropdownContent}>
-                    <a href="/search/invoices" style={styles.dropdownLink}>Invoices</a>
-                    <a href="/search/line-items" style={styles.dropdownLink}>Line Items</a>
-                    <a href="/search/definitions" style={styles.dropdownLink}>Product Definitions</a>
+                    <Link to="/ingredients" style={styles.dropdownLink}>Ingredients</Link>
+                    <Link to="/recipes" style={styles.dropdownLink}>Recipes</Link>
+                    <Link to="/dishes" style={styles.dropdownLink}>Dishes</Link>
+                    <Link to="/allergens" style={styles.dropdownLink}>Allergens</Link>
+                    <Link to="/event-orders" style={styles.dropdownLink}>Event Orders</Link>
                   </div>
                 </div>
               )}
@@ -435,16 +437,16 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               {reportsOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
-                    {showNavItem('/gp-report') && <a href="/gp" style={styles.dropdownLink}>Kitchen Flash Report</a>}
-                    {showNavItem('/gp-report') && <a href="/purchases-report" style={styles.dropdownLink}>Purchases Report</a>}
-                    {showNavItem('/gp-report') && <a href="/allowances-report" style={styles.dropdownLink}>Allowances Report</a>}
+                    {showNavItem('/gp-report') && <Link to="/gp" style={styles.dropdownLink}>Kitchen Flash Report</Link>}
+                    {showNavItem('/gp-report') && <Link to="/purchases-report" style={styles.dropdownLink}>Purchases Report</Link>}
+                    {showNavItem('/gp-report') && <Link to="/allowances-report" style={styles.dropdownLink}>Allowances Report</Link>}
                   </div>
                 </div>
               )}
             </div>
           )}
-          {showNavItem('/kds') && <a href="/kds" style={styles.navLink}>KDS</a>}
-          {showNavItem('/settings') && <a href="/settings" style={styles.navLink}>Settings</a>}
+          {showNavItem('/kds') && <Link to="/kds" style={styles.navLink}>KDS</Link>}
+          {showNavItem('/settings') && <Link to="/settings" style={styles.navLink}>Settings</Link>}
         </nav>
       </div>
     </header>

@@ -18,12 +18,17 @@ interface FlagInfo {
   excludable_on_request?: boolean | null
 }
 
+interface FlagSourceTrace {
+  [flagName: string]: string[]
+}
+
 interface Props {
   flags: FlagInfo[]
   size?: 'small' | 'medium'
+  source_ingredients?: FlagSourceTrace
 }
 
-export default function FoodFlagBadges({ flags, size = 'small' }: Props) {
+export default function FoodFlagBadges({ flags, size = 'small', source_ingredients }: Props) {
   const activeFlags = flags.filter(f => (f.active ?? f.is_active) !== false)
   if (!activeFlags.length) return null
 
@@ -41,10 +46,20 @@ export default function FoodFlagBadges({ flags, size = 'small' }: Props) {
 
         const bg = propagation === 'contains' ? '#dc3545' : '#28a745'
 
+        // Build tooltip with optional source trace
+        const sourceList = source_ingredients?.[name]
+        let tooltipText = name
+        if (sourceList && sourceList.length > 0) {
+          tooltipText += ` \u2014 from: ${sourceList.join(', ')}`
+        }
+        if (excludable) {
+          tooltipText += ' (excludable on request)'
+        }
+
         return (
           <span
             key={i}
-            title={`${name}${excludable ? ' (excludable on request)' : ''}`}
+            title={tooltipText}
             style={{
               ...styles.badge,
               background: bg,

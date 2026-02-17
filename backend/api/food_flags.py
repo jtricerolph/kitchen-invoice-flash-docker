@@ -1,10 +1,14 @@
 """
-Food Flag API — categories, flags, line item flagging + latching, recipe flag propagation.
+Food Flag API — categories, flags, line item flagging + latching, recipe flag propagation,
+allergen keyword suggestions, and label OCR scanning.
 """
 import logging
+import os
+import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+import aiofiles
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
@@ -12,10 +16,11 @@ from pydantic import BaseModel
 
 from database import get_db
 from models.user import User
-from models.food_flag import FoodFlagCategory, FoodFlag, LineItemFlag, RecipeFlag, RecipeFlagOverride
-from models.ingredient import Ingredient, IngredientFlag
+from models.food_flag import FoodFlagCategory, FoodFlag, LineItemFlag, RecipeFlag, RecipeFlagOverride, AllergenKeyword, BrakesProductCache
+from models.ingredient import Ingredient, IngredientFlag, IngredientFlagNone
 from models.line_item import LineItem
 from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe
+from models.settings import KitchenSettings
 from auth.jwt import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -28,11 +33,13 @@ router = APIRouter()
 class CategoryCreate(BaseModel):
     name: str
     propagation_type: str = "contains"  # "contains" | "suitable_for"
+    required: bool = False
     sort_order: int = 0
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     propagation_type: Optional[str] = None
+    required: Optional[bool] = None
     sort_order: Optional[int] = None
 
 class FlagCreate(BaseModel):
@@ -62,6 +69,7 @@ class CategoryResponse(BaseModel):
     id: int
     name: str
     propagation_type: str
+    required: bool = False
     sort_order: int
     flags: list[FlagResponse] = []
 
@@ -109,6 +117,7 @@ class ExcludableToggle(BaseModel):
 class MatrixCell(BaseModel):
     has_flag: bool = False
     is_unassessed: bool = False
+    is_none: bool = False  # "None apply" set for this flag's category
 
 class MatrixIngredient(BaseModel):
     ingredient_id: int
@@ -137,6 +146,7 @@ async def list_categories(
             id=c.id,
             name=c.name,
             propagation_type=c.propagation_type,
+            required=c.required,
             sort_order=c.sort_order,
             flags=[
                 FlagResponse(
@@ -163,12 +173,13 @@ async def create_category(
         kitchen_id=user.kitchen_id,
         name=data.name,
         propagation_type=data.propagation_type,
+        required=data.required,
         sort_order=data.sort_order,
     )
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
-    return CategoryResponse(id=cat.id, name=cat.name, propagation_type=cat.propagation_type, sort_order=cat.sort_order)
+    return CategoryResponse(id=cat.id, name=cat.name, propagation_type=cat.propagation_type, required=cat.required, sort_order=cat.sort_order)
 
 
 @router.patch("/categories/{cat_id}")
@@ -193,6 +204,8 @@ async def update_category(
         if data.propagation_type not in ("contains", "suitable_for"):
             raise HTTPException(400, "propagation_type must be 'contains' or 'suitable_for'")
         cat.propagation_type = data.propagation_type
+    if data.required is not None:
+        cat.required = data.required
     if data.sort_order is not None:
         cat.sort_order = data.sort_order
     await db.commit()
@@ -214,8 +227,17 @@ async def delete_category(
     cat = result.scalar_one_or_none()
     if not cat:
         raise HTTPException(404, "Category not found")
-    await db.delete(cat)
-    await db.commit()
+    # Clean up IngredientFlagNone records for this category
+    await db.execute(
+        delete(IngredientFlagNone).where(IngredientFlagNone.category_id == cat_id)
+    )
+    try:
+        await db.delete(cat)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to delete category {cat_id}: {e}")
+        raise HTTPException(500, f"Failed to delete category: {str(e)}")
     return {"ok": True}
 
 
@@ -297,8 +319,18 @@ async def delete_flag(
     flag = result.scalar_one_or_none()
     if not flag:
         raise HTTPException(404, "Flag not found")
-    await db.delete(flag)
-    await db.commit()
+    # Explicitly clean up related records (belt + suspenders alongside CASCADE)
+    await db.execute(delete(IngredientFlag).where(IngredientFlag.food_flag_id == flag_id))
+    await db.execute(delete(RecipeFlag).where(RecipeFlag.food_flag_id == flag_id))
+    await db.execute(delete(RecipeFlagOverride).where(RecipeFlagOverride.food_flag_id == flag_id))
+    await db.execute(delete(LineItemFlag).where(LineItemFlag.food_flag_id == flag_id))
+    try:
+        await db.delete(flag)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Failed to delete flag {flag_id}: {e}")
+        raise HTTPException(500, f"Failed to delete flag: {str(e)}")
     return {"ok": True}
 
 
@@ -560,21 +592,61 @@ async def get_recipe_flags(
 
     flags = await compute_recipe_flags(recipe_id, user.kitchen_id, db)
 
-    # Find unassessed ingredients
+    # Find unassessed ingredients — per required category evaluation
     all_ing_ids = await _collect_recipe_ingredient_ids(recipe_id, db)
     unique_ids = list(set(all_ing_ids))
 
+    # Get required categories with their flag IDs
+    req_cat_result = await db.execute(
+        select(FoodFlagCategory.id, FoodFlagCategory.name).where(
+            FoodFlagCategory.kitchen_id == user.kitchen_id,
+            FoodFlagCategory.required == True,
+        )
+    )
+    required_cats = req_cat_result.all()
+
+    # Build map: category_id → set of flag_ids
+    cat_flag_map: dict[int, set[int]] = {}
+    for cat_id, _ in required_cats:
+        rf_result = await db.execute(
+            select(FoodFlag.id).where(FoodFlag.category_id == cat_id)
+        )
+        cat_flag_map[cat_id] = set(rf_result.scalars().all())
+
     unassessed = []
-    if unique_ids:
+    if unique_ids and required_cats:
         for ing_id in unique_ids:
-            flag_count = await db.execute(
-                select(func.count(IngredientFlag.id)).where(IngredientFlag.ingredient_id == ing_id)
+            ing_result = await db.execute(
+                select(Ingredient.name).where(Ingredient.id == ing_id)
             )
-            if flag_count.scalar() == 0:
-                name_result = await db.execute(select(Ingredient.name).where(Ingredient.id == ing_id))
-                name = name_result.scalar()
-                if name:
-                    unassessed.append({"id": ing_id, "name": name})
+            name = ing_result.scalar()
+            if not name:
+                continue
+
+            # Get "None" entries for this ingredient
+            none_result = await db.execute(
+                select(IngredientFlagNone.category_id).where(
+                    IngredientFlagNone.ingredient_id == ing_id,
+                )
+            )
+            none_cat_ids = set(none_result.scalars().all())
+
+            # Check each required category separately
+            for cat_id, cat_name in required_cats:
+                if cat_id in none_cat_ids:
+                    continue  # "None" selected for this category
+                flag_ids = cat_flag_map.get(cat_id, set())
+                if not flag_ids:
+                    continue
+                flag_count = await db.execute(
+                    select(func.count(IngredientFlag.id)).where(
+                        IngredientFlag.ingredient_id == ing_id,
+                        IngredientFlag.food_flag_id.in_(flag_ids),
+                    )
+                )
+                if flag_count.scalar() == 0:
+                    unassessed.append({"id": ing_id, "name": name, "category": cat_name})
+                    break  # One missing category is enough to flag the ingredient
 
     return {"flags": [f.model_dump() for f in flags], "unassessed_ingredients": unassessed}
 
@@ -639,7 +711,7 @@ async def toggle_excludable(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Toggle excludable_on_request for a plated recipe flag."""
+    """Toggle excludable_on_request for a dish recipe flag."""
     rf_result = await db.execute(
         select(RecipeFlag).where(RecipeFlag.recipe_id == recipe_id, RecipeFlag.food_flag_id == flag_id)
     )
@@ -744,12 +816,16 @@ async def get_flag_matrix(
     categories = cats.scalars().all()
 
     all_flags = []
+    required_cat_ids = set()
     for cat in categories:
+        if cat.required:
+            required_cat_ids.add(cat.id)
         for f in sorted(cat.flags, key=lambda x: x.sort_order):
             all_flags.append({
                 "id": f.id, "name": f.name, "code": f.code,
                 "category_id": cat.id, "category_name": cat.name,
                 "propagation_type": cat.propagation_type,
+                "required": cat.required,
             })
 
     matrix_rows = []
@@ -761,7 +837,55 @@ async def get_flag_matrix(
         .where(RecipeIngredient.recipe_id == recipe_id)
         .order_by(RecipeIngredient.sort_order)
     )
-    for ri in ri_result.scalars().all():
+    direct_ris = ri_result.scalars().all()
+
+    # Sub-recipe ingredients
+    sr_result = await db.execute(
+        select(RecipeSubRecipe)
+        .options(selectinload(RecipeSubRecipe.child_recipe))
+        .where(RecipeSubRecipe.parent_recipe_id == recipe_id)
+        .order_by(RecipeSubRecipe.sort_order)
+    )
+    sub_recipes = sr_result.scalars().all()
+
+    # Fetch child recipe ingredients for each sub-recipe
+    sub_recipe_ingredients = {}  # child_id -> (child_recipe, [RecipeIngredient...])
+    for sr in sub_recipes:
+        child = sr.child_recipe
+        if not child:
+            continue
+        cri_result = await db.execute(
+            select(RecipeIngredient)
+            .options(selectinload(RecipeIngredient.ingredient).selectinload(Ingredient.flags))
+            .where(RecipeIngredient.recipe_id == child.id)
+            .order_by(RecipeIngredient.sort_order)
+        )
+        sub_recipe_ingredients[child.id] = (child, cri_result.scalars().all())
+
+    # Collect all ingredient IDs from direct + sub-recipe ingredients
+    all_ingredient_ids = set()
+    for ri in direct_ris:
+        if ri.ingredient:
+            all_ingredient_ids.add(ri.ingredient.id)
+    for child_id, (child, cris) in sub_recipe_ingredients.items():
+        for cri in cris:
+            if cri.ingredient:
+                all_ingredient_ids.add(cri.ingredient.id)
+
+    # Batch-fetch all "None apply" records so they count as assessed
+    ingredient_nones = {}
+    if all_ingredient_ids:
+        none_result = await db.execute(
+            select(IngredientFlagNone.ingredient_id, IngredientFlagNone.category_id)
+            .where(IngredientFlagNone.ingredient_id.in_(list(all_ingredient_ids)))
+        )
+        for ing_id, cat_id in none_result.all():
+            if ing_id not in ingredient_nones:
+                ingredient_nones[ing_id] = set()
+            ingredient_nones[ing_id].add(cat_id)
+
+    # Build matrix rows for direct ingredients
+    for ri in direct_ris:
         ing = ri.ingredient
         if not ing:
             continue
@@ -772,14 +896,20 @@ async def get_flag_matrix(
             for cat in categories:
                 if f.food_flag_id in {cf.id for cf in cat.flags}:
                     assessed_cats.add(cat.id)
+        # Also count "None apply" categories as assessed
+        assessed_cats |= ingredient_nones.get(ing.id, set())
 
+        none_cats = ingredient_nones.get(ing.id, set())
         flags_map = {}
         for flag_info in all_flags:
             fid = flag_info["id"]
             cat_id = flag_info["category_id"]
+            # Non-required categories: never show as unassessed
+            is_unassessed = cat_id not in assessed_cats and cat_id in required_cat_ids
             flags_map[fid] = MatrixCell(
                 has_flag=fid in ing_flag_ids,
-                is_unassessed=cat_id not in assessed_cats,
+                is_unassessed=is_unassessed,
+                is_none=cat_id in none_cats,
             ).model_dump()
 
         matrix_rows.append(MatrixIngredient(
@@ -787,25 +917,13 @@ async def get_flag_matrix(
             flags=flags_map,
         ).model_dump())
 
-    # Sub-recipe ingredients
-    sr_result = await db.execute(
-        select(RecipeSubRecipe)
-        .options(selectinload(RecipeSubRecipe.child_recipe))
-        .where(RecipeSubRecipe.parent_recipe_id == recipe_id)
-        .order_by(RecipeSubRecipe.sort_order)
-    )
-    for sr in sr_result.scalars().all():
+    # Build matrix rows for sub-recipe ingredients
+    for sr in sub_recipes:
         child = sr.child_recipe
-        if not child:
+        if not child or child.id not in sub_recipe_ingredients:
             continue
-        # Get child recipe's ingredients
-        cri_result = await db.execute(
-            select(RecipeIngredient)
-            .options(selectinload(RecipeIngredient.ingredient).selectinload(Ingredient.flags))
-            .where(RecipeIngredient.recipe_id == child.id)
-            .order_by(RecipeIngredient.sort_order)
-        )
-        for cri in cri_result.scalars().all():
+        _, cris = sub_recipe_ingredients[child.id]
+        for cri in cris:
             cing = cri.ingredient
             if not cing:
                 continue
@@ -815,14 +933,19 @@ async def get_flag_matrix(
                 for cat in categories:
                     if f.food_flag_id in {cf.id for cf in cat.flags}:
                         assessed_cats.add(cat.id)
+            # Also count "None apply" categories as assessed
+            assessed_cats |= ingredient_nones.get(cing.id, set())
 
+            none_cats = ingredient_nones.get(cing.id, set())
             flags_map = {}
             for flag_info in all_flags:
                 fid = flag_info["id"]
                 cat_id = flag_info["category_id"]
+                is_unassessed = cat_id not in assessed_cats and cat_id in required_cat_ids
                 flags_map[fid] = MatrixCell(
                     has_flag=fid in ing_flag_ids,
-                    is_unassessed=cat_id not in assessed_cats,
+                    is_unassessed=is_unassessed,
+                    is_none=cat_id in none_cats,
                 ).model_dump()
 
             matrix_rows.append(MatrixIngredient(
@@ -832,3 +955,629 @@ async def get_flag_matrix(
             ).model_dump())
 
     return {"flags": all_flags, "ingredients": matrix_rows}
+
+
+class MatrixBulkItem(BaseModel):
+    ingredient_id: int
+    food_flag_id: int
+    has_flag: bool
+
+
+class MatrixBulkUpdate(BaseModel):
+    updates: list[MatrixBulkItem]
+
+
+@router.put("/recipes/{recipe_id}/flags/matrix")
+async def update_flag_matrix(
+    recipe_id: int,
+    data: MatrixBulkUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk update ingredient flags from the recipe flag matrix view."""
+    # Verify recipe belongs to kitchen
+    r_result = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.kitchen_id == user.kitchen_id)
+    )
+    if not r_result.scalar_one_or_none():
+        raise HTTPException(404, "Recipe not found")
+
+    updated = 0
+    for item in data.updates:
+        # Verify ingredient belongs to this kitchen
+        ing_result = await db.execute(
+            select(Ingredient).where(
+                Ingredient.id == item.ingredient_id,
+                Ingredient.kitchen_id == user.kitchen_id,
+            )
+        )
+        ingredient = ing_result.scalar_one_or_none()
+        if not ingredient:
+            continue
+
+        # Verify flag belongs to this kitchen
+        flag_result = await db.execute(
+            select(FoodFlag).where(
+                FoodFlag.id == item.food_flag_id,
+                FoodFlag.kitchen_id == user.kitchen_id,
+            )
+        )
+        if not flag_result.scalar_one_or_none():
+            continue
+
+        # Check if flag assignment exists
+        existing = await db.execute(
+            select(IngredientFlag).where(
+                IngredientFlag.ingredient_id == item.ingredient_id,
+                IngredientFlag.food_flag_id == item.food_flag_id,
+            )
+        )
+        flag_row = existing.scalar_one_or_none()
+
+        if item.has_flag and not flag_row:
+            # Add flag — also remove any "None apply" for this flag's category
+            flag_obj = flag_result.scalar_one_or_none() if not flag_result else None
+            # Re-fetch to get category_id
+            flag_detail = await db.execute(
+                select(FoodFlag).where(FoodFlag.id == item.food_flag_id)
+            )
+            flag_detail_obj = flag_detail.scalar_one_or_none()
+            if flag_detail_obj:
+                await db.execute(
+                    delete(IngredientFlagNone).where(
+                        IngredientFlagNone.ingredient_id == item.ingredient_id,
+                        IngredientFlagNone.category_id == flag_detail_obj.category_id,
+                    )
+                )
+            db.add(IngredientFlag(
+                ingredient_id=item.ingredient_id,
+                food_flag_id=item.food_flag_id,
+                flagged_by=user.id,
+                source="manual",
+            ))
+            updated += 1
+        elif not item.has_flag and flag_row:
+            # Remove flag (only manual ones; latched flags stay)
+            if flag_row.source == "manual":
+                await db.delete(flag_row)
+                updated += 1
+
+    await db.commit()
+    return {"ok": True, "updated": updated}
+
+
+class MatrixNoneToggle(BaseModel):
+    ingredient_id: int
+    category_id: int
+
+
+@router.post("/recipes/{recipe_id}/flags/matrix/none")
+async def toggle_matrix_none(
+    recipe_id: int,
+    data: MatrixNoneToggle,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle 'None apply' for a category on an ingredient, from the recipe matrix."""
+    # Verify recipe belongs to kitchen
+    r_result = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.kitchen_id == user.kitchen_id)
+    )
+    if not r_result.scalar_one_or_none():
+        raise HTTPException(404, "Recipe not found")
+
+    # Check if already set
+    existing = await db.execute(
+        select(IngredientFlagNone).where(
+            IngredientFlagNone.ingredient_id == data.ingredient_id,
+            IngredientFlagNone.category_id == data.category_id,
+        )
+    )
+    none_row = existing.scalar_one_or_none()
+
+    if none_row:
+        # Toggle OFF
+        await db.delete(none_row)
+        await db.commit()
+        return {"ok": True, "is_none": False}
+    else:
+        # Toggle ON — remove any flags in this category first
+        cat_flag_ids = await db.execute(
+            select(FoodFlag.id).where(
+                FoodFlag.category_id == data.category_id,
+                FoodFlag.kitchen_id == user.kitchen_id,
+            )
+        )
+        flag_ids = [r for r in cat_flag_ids.scalars().all()]
+        if flag_ids:
+            await db.execute(
+                delete(IngredientFlag).where(
+                    IngredientFlag.ingredient_id == data.ingredient_id,
+                    IngredientFlag.food_flag_id.in_(flag_ids),
+                )
+            )
+        db.add(IngredientFlagNone(
+            ingredient_id=data.ingredient_id,
+            category_id=data.category_id,
+        ))
+        await db.commit()
+        return {"ok": True, "is_none": True}
+
+
+# ── Shared allergen keyword matching ─────────────────────────────────────────
+
+def match_allergen_keywords(text: str, keywords: list) -> list[dict]:
+    """Match text against allergen keywords. Returns suggested flags with matched keywords."""
+    text_lower = text.lower()
+    matches: dict[int, dict] = {}
+    for kw in keywords:
+        if kw.keyword in text_lower:
+            fid = kw.food_flag_id
+            if fid not in matches:
+                flag = kw.food_flag
+                matches[fid] = {
+                    "flag_id": fid,
+                    "flag_name": flag.name if flag else "",
+                    "flag_code": flag.code if flag else None,
+                    "category_name": flag.category.name if flag and flag.category else "",
+                    "matched_keywords": [],
+                }
+            matches[fid]["matched_keywords"].append(kw.keyword)
+    return list(matches.values())
+
+
+# ── Allergen keyword suggestion ──────────────────────────────────────────────
+
+@router.get("/suggest")
+async def suggest_allergens(
+    name: str = Query("", description="Ingredient name to check"),
+    text: str = Query("", description="Product ingredients text to check"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Suggest allergen flags based on ingredient name and/or product ingredients text."""
+    combined = f"{name} {text}".strip()
+    if len(combined) < 2:
+        return []
+
+    result = await db.execute(
+        select(AllergenKeyword)
+        .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+        .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+    )
+    keywords = result.scalars().all()
+    return match_allergen_keywords(combined, keywords)
+
+
+# ── Allergen keyword CRUD (Settings) ────────────────────────────────────────
+
+class KeywordCreate(BaseModel):
+    food_flag_id: int
+    keyword: str
+
+@router.get("/keywords")
+async def list_keywords(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all allergen keywords grouped by flag."""
+    result = await db.execute(
+        select(AllergenKeyword)
+        .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+        .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+        .order_by(AllergenKeyword.food_flag_id, AllergenKeyword.keyword)
+    )
+    keywords = result.scalars().all()
+
+    groups: dict[int, dict] = {}
+    for kw in keywords:
+        fid = kw.food_flag_id
+        if fid not in groups:
+            flag = kw.food_flag
+            groups[fid] = {
+                "flag_id": fid,
+                "flag_name": flag.name if flag else "",
+                "flag_code": flag.code if flag else None,
+                "category_name": flag.category.name if flag and flag.category else "",
+                "keywords": [],
+            }
+        groups[fid]["keywords"].append({
+            "id": kw.id,
+            "keyword": kw.keyword,
+            "is_default": kw.is_default,
+        })
+    return list(groups.values())
+
+
+@router.post("/keywords")
+async def add_keyword(
+    data: KeywordCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a custom allergen keyword."""
+    # Verify flag belongs to this kitchen
+    flag = await db.get(FoodFlag, data.food_flag_id)
+    if not flag or flag.kitchen_id != user.kitchen_id:
+        raise HTTPException(404, "Flag not found")
+
+    kw = AllergenKeyword(
+        kitchen_id=user.kitchen_id,
+        food_flag_id=data.food_flag_id,
+        keyword=data.keyword.lower().strip(),
+        is_default=False,
+    )
+    db.add(kw)
+    try:
+        await db.commit()
+        await db.refresh(kw)
+    except Exception:
+        await db.rollback()
+        raise HTTPException(409, "Keyword already exists for this flag")
+    return {"id": kw.id, "keyword": kw.keyword, "is_default": False}
+
+
+@router.delete("/keywords/{keyword_id}")
+async def delete_keyword(
+    keyword_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an allergen keyword."""
+    kw = await db.get(AllergenKeyword, keyword_id)
+    if not kw or kw.kitchen_id != user.kitchen_id:
+        raise HTTPException(404, "Keyword not found")
+    await db.delete(kw)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/keywords/reset-defaults")
+async def reset_default_keywords(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete all default keywords and re-seed from built-in dictionary. Preserves user-added keywords."""
+    from migrations.add_allergen_keywords import ALLERGEN_KEYWORDS
+    from sqlalchemy import text as sql_text
+
+    # Delete existing defaults
+    await db.execute(
+        delete(AllergenKeyword).where(
+            AllergenKeyword.kitchen_id == user.kitchen_id,
+            AllergenKeyword.is_default == True,
+        )
+    )
+    await db.flush()
+
+    # Re-seed defaults
+    seeded = 0
+    for flag_name, keywords in ALLERGEN_KEYWORDS.items():
+        flag_result = await db.execute(
+            select(FoodFlag).where(
+                FoodFlag.kitchen_id == user.kitchen_id,
+                FoodFlag.name == flag_name,
+            )
+        )
+        flag = flag_result.scalar_one_or_none()
+        if not flag:
+            continue
+        for kw_str in keywords:
+            kw = AllergenKeyword(
+                kitchen_id=user.kitchen_id,
+                food_flag_id=flag.id,
+                keyword=kw_str.lower(),
+                is_default=True,
+            )
+            db.add(kw)
+            seeded += 1
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(500, "Failed to re-seed keywords")
+
+    return {"ok": True, "seeded": seeded}
+
+
+# ── Label OCR scanning ──────────────────────────────────────────────────────
+
+@router.post("/scan-label")
+async def scan_label(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """OCR a product ingredient label image and suggest allergen flags.
+    For create mode (ingredient doesn't exist yet) — returns raw text + suggestions.
+    """
+    # Validate file type
+    allowed = {"image/jpeg", "image/png", "image/webp", "image/heic"}
+    if file.content_type not in allowed:
+        raise HTTPException(400, f"Unsupported file type: {file.content_type}")
+
+    # Get Azure credentials
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == user.kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+    if not settings or not settings.azure_endpoint or not settings.azure_key:
+        raise HTTPException(400, "Azure Document Intelligence not configured. Set it up in Settings.")
+
+    # Read file content
+    image_bytes = await file.read()
+
+    # OCR with Azure prebuilt-read
+    try:
+        from azure.ai.formrecognizer import DocumentAnalysisClient
+        from azure.core.credentials import AzureKeyCredential
+
+        client = DocumentAnalysisClient(settings.azure_endpoint, AzureKeyCredential(settings.azure_key))
+        poller = client.begin_analyze_document("prebuilt-read", document=image_bytes)
+        result = poller.result()
+        raw_text = " ".join([line.content for page in result.pages for line in page.lines])
+    except Exception as e:
+        logger.error(f"Azure OCR failed: {e}")
+        raise HTTPException(500, f"OCR failed: {str(e)}")
+
+    # Match keywords
+    kw_result = await db.execute(
+        select(AllergenKeyword)
+        .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+        .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+    )
+    keywords = kw_result.scalars().all()
+    suggestions = match_allergen_keywords(raw_text, keywords)
+
+    return {
+        "raw_text": raw_text,
+        "suggested_flags": suggestions,
+    }
+
+
+@router.post("/scan-label/{ingredient_id}")
+async def scan_label_for_ingredient(
+    ingredient_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """OCR a product ingredient label, save the image, and suggest allergen flags.
+    For edit mode (ingredient exists) — saves label image to disk.
+    """
+    # Verify ingredient
+    ing = await db.get(Ingredient, ingredient_id)
+    if not ing or ing.kitchen_id != user.kitchen_id:
+        raise HTTPException(404, "Ingredient not found")
+
+    # Validate file type
+    allowed = {"image/jpeg", "image/png", "image/webp", "image/heic"}
+    if file.content_type not in allowed:
+        raise HTTPException(400, f"Unsupported file type: {file.content_type}")
+
+    # Get Azure credentials
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == user.kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+    if not settings or not settings.azure_endpoint or not settings.azure_key:
+        raise HTTPException(400, "Azure Document Intelligence not configured. Set it up in Settings.")
+
+    # Read file content
+    image_bytes = await file.read()
+
+    # Save label image
+    ext = file.filename.rsplit(".", 1)[-1] if file.filename and "." in file.filename else "jpg"
+    label_dir = f"/app/data/{user.kitchen_id}/labels"
+    os.makedirs(label_dir, exist_ok=True)
+    filename = f"{uuid.uuid4()}.{ext}"
+    filepath = os.path.join(label_dir, filename)
+    async with aiofiles.open(filepath, "wb") as f:
+        await f.write(image_bytes)
+
+    # Update ingredient
+    ing.label_image_path = filepath
+    await db.flush()
+
+    # OCR with Azure prebuilt-read
+    try:
+        from azure.ai.formrecognizer import DocumentAnalysisClient
+        from azure.core.credentials import AzureKeyCredential
+
+        client = DocumentAnalysisClient(settings.azure_endpoint, AzureKeyCredential(settings.azure_key))
+        poller = client.begin_analyze_document("prebuilt-read", document=image_bytes)
+        result = poller.result()
+        raw_text = " ".join([line.content for page in result.pages for line in page.lines])
+    except Exception as e:
+        logger.error(f"Azure OCR failed: {e}")
+        await db.commit()  # Still save the image even if OCR fails
+        raise HTTPException(500, f"OCR failed: {str(e)}")
+
+    # Update product_ingredients
+    ing.product_ingredients = raw_text
+    await db.commit()
+
+    # Match keywords
+    kw_result = await db.execute(
+        select(AllergenKeyword)
+        .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+        .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+    )
+    keywords = kw_result.scalars().all()
+    suggestions = match_allergen_keywords(raw_text, keywords)
+
+    return {
+        "raw_text": raw_text,
+        "suggested_flags": suggestions,
+        "label_saved": True,
+    }
+
+
+# ── Brakes product lookup ─────────────────────────────────────────────────
+
+@router.get("/brakes-lookup")
+async def brakes_lookup(
+    product_code: str = Query(..., description="Brakes product code"),
+    force: bool = Query(False, description="Bypass cache and re-fetch from website"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Look up a Brakes product by code, returning ingredients + allergen suggestions.
+    Uses a cache table to avoid repeated requests to brake.co.uk.
+    """
+    import json
+    from datetime import datetime, timedelta
+    from services.brakes_scraper import fetch_brakes_product
+
+    clean_code = product_code.lstrip("$").strip()
+    if not clean_code:
+        raise HTTPException(400, "Product code required")
+
+    # Check cache
+    cache_result = await db.execute(
+        select(BrakesProductCache).where(BrakesProductCache.product_code == clean_code)
+    )
+    cached = cache_result.scalar_one_or_none()
+
+    now = datetime.utcnow()
+    cache_ttl = timedelta(days=30)
+    not_found_ttl = timedelta(days=7)
+
+    if cached and not force:
+        age = now - cached.fetched_at
+        if cached.not_found and age < not_found_ttl:
+            return {"found": False, "product_code": clean_code, "suggested_flags": []}
+        if not cached.not_found and age < cache_ttl:
+            # Serve from cache — build suggestions
+            contains = json.loads(cached.contains_allergens) if cached.contains_allergens else []
+            suggestions = await _build_brakes_suggestions(
+                db, user.kitchen_id, contains, cached.ingredients_text or ""
+            )
+            return {
+                "found": True,
+                "product_code": clean_code,
+                "product_name": cached.product_name or "",
+                "ingredients_text": cached.ingredients_text or "",
+                "contains_allergens": contains,
+                "suggested_flags": suggestions,
+            }
+
+    # Cache miss or stale — fetch from website
+    product = await fetch_brakes_product(clean_code)
+
+    if product is None or (not product.ingredients_text and not product.product_name):
+        # 404 or empty page — cache as not_found
+        if cached:
+            cached.not_found = True
+            cached.fetched_at = now
+        else:
+            db.add(BrakesProductCache(
+                product_code=clean_code,
+                not_found=True,
+                fetched_at=now,
+            ))
+        await db.commit()
+        return {"found": False, "product_code": clean_code, "suggested_flags": []}
+
+    # Store in cache
+    contains_json = json.dumps(product.contains_allergens)
+    if cached:
+        cached.product_name = product.product_name
+        cached.ingredients_text = product.ingredients_text
+        cached.contains_allergens = contains_json
+        cached.not_found = False
+        cached.fetched_at = now
+    else:
+        db.add(BrakesProductCache(
+            product_code=clean_code,
+            product_name=product.product_name,
+            ingredients_text=product.ingredients_text,
+            contains_allergens=contains_json,
+            not_found=False,
+            fetched_at=now,
+        ))
+    await db.commit()
+
+    # Build suggestions
+    suggestions = await _build_brakes_suggestions(
+        db, user.kitchen_id, product.contains_allergens, product.ingredients_text
+    )
+
+    return {
+        "found": True,
+        "product_code": clean_code,
+        "product_name": product.product_name,
+        "ingredients_text": product.ingredients_text,
+        "contains_allergens": product.contains_allergens,
+        "suggested_flags": suggestions,
+    }
+
+
+async def _build_brakes_suggestions(
+    db: AsyncSession,
+    kitchen_id: int,
+    contains_allergens: list[str],
+    ingredients_text: str,
+) -> list[dict]:
+    """Build allergen flag suggestions from Brakes 'Contains' statement + keyword matching."""
+    # Get all flags for this kitchen
+    flags_result = await db.execute(
+        select(FoodFlag)
+        .options(selectinload(FoodFlag.category))
+        .where(FoodFlag.kitchen_id == kitchen_id)
+    )
+    all_flags = flags_result.scalars().all()
+    flag_by_name = {f.name.lower(): f for f in all_flags}
+
+    suggestions: dict[int, dict] = {}
+
+    def _find_flag(name: str):
+        """Match flag by exact name, then try singular/plural variants."""
+        n = name.lower().strip()
+        if n in flag_by_name:
+            return flag_by_name[n]
+        # Try removing trailing 's' (Eggs -> Egg, Crustaceans -> Crustacean)
+        if n.endswith("s") and n[:-1] in flag_by_name:
+            return flag_by_name[n[:-1]]
+        # Try adding 's' (Egg -> Eggs, Peanut -> Peanuts)
+        if f"{n}s" in flag_by_name:
+            return flag_by_name[f"{n}s"]
+        # Try 'es' removal (Mollusces -> Mollusc)
+        if n.endswith("es") and n[:-2] in flag_by_name:
+            return flag_by_name[n[:-2]]
+        return None
+
+    # 1. Direct match from "Contains" statement (high confidence)
+    for allergen_name in contains_allergens:
+        flag = _find_flag(allergen_name)
+        if flag:
+            suggestions[flag.id] = {
+                "flag_id": flag.id,
+                "flag_name": flag.name,
+                "flag_code": flag.code,
+                "category_name": flag.category.name if flag.category else "",
+                "source": "contains",
+                "matched_keywords": [],
+            }
+
+    # 2. Keyword matching against full ingredients text (catches extras)
+    if ingredients_text:
+        kw_result = await db.execute(
+            select(AllergenKeyword)
+            .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+            .where(AllergenKeyword.kitchen_id == kitchen_id)
+        )
+        keywords = kw_result.scalars().all()
+        keyword_matches = match_allergen_keywords(ingredients_text, keywords)
+
+        for km in keyword_matches:
+            fid = km["flag_id"]
+            if fid not in suggestions:
+                km["source"] = "keyword"
+                suggestions[fid] = km
+            else:
+                # Already matched via "contains" — append keyword info
+                suggestions[fid]["matched_keywords"] = km.get("matched_keywords", [])
+
+    return list(suggestions.values())

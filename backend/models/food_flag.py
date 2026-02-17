@@ -14,6 +14,7 @@ class FoodFlagCategory(Base):
     kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     propagation_type: Mapped[str] = mapped_column(String(20), nullable=False)  # "contains" | "suitable_for"
+    required: Mapped[bool] = mapped_column(Boolean, default=False)  # Must be assessed on ingredients
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -93,6 +94,36 @@ class RecipeFlagOverride(Base):
     recipe: Mapped["Recipe"] = relationship("Recipe")
     food_flag: Mapped["FoodFlag"] = relationship("FoodFlag")
     user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[user_id])
+
+
+class BrakesProductCache(Base):
+    """Cache for Brakes product page scraping (ingredients + allergens)"""
+    __tablename__ = "brakes_product_cache"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    product_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    ingredients_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    contains_allergens: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    not_found: Mapped[bool] = mapped_column(Boolean, default=False)  # cache 404s too
+
+
+class AllergenKeyword(Base):
+    """Keyword-to-flag mappings for allergen suggestion (seeded from OFF taxonomy, admin-editable)"""
+    __tablename__ = "allergen_keywords"
+    __table_args__ = (UniqueConstraint("kitchen_id", "food_flag_id", "keyword", name="uq_allergen_keywords_kit_flag_kw"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kitchen_id: Mapped[int] = mapped_column(ForeignKey("kitchens.id"), nullable=False, index=True)
+    food_flag_id: Mapped[int] = mapped_column(ForeignKey("food_flags.id", ondelete="CASCADE"), nullable=False, index=True)
+    keyword: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    kitchen: Mapped["Kitchen"] = relationship("Kitchen")
+    food_flag: Mapped["FoodFlag"] = relationship("FoodFlag")
 
 
 # Forward references

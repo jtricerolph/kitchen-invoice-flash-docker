@@ -65,12 +65,23 @@ class LineItemSearchItem(BaseModel):
     price_change_status: str
     total_quantity: Optional[Decimal]
     occurrence_count: int
-    most_recent_invoice_id: int
+    most_recent_invoice_id: Optional[int]
     most_recent_invoice_number: Optional[str]
     most_recent_date: Optional[date]
     has_definition: bool
     portions_per_unit: Optional[int]
     pack_quantity: Optional[int]
+    most_recent_line_item_id: Optional[int] = None
+    most_recent_line_number: Optional[int] = None
+    most_recent_raw_content: Optional[str] = None
+    most_recent_pack_quantity: Optional[int] = None
+    most_recent_unit_size: Optional[Decimal] = None
+    most_recent_unit_size_type: Optional[str] = None
+    # Ingredient mapping info
+    ingredient_id: Optional[int] = None
+    ingredient_name: Optional[str] = None
+    ingredient_standard_unit: Optional[str] = None
+    price_per_std_unit: Optional[Decimal] = None
 
     class Config:
         from_attributes = True
@@ -299,6 +310,7 @@ async def search_line_items(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     group_by: Optional[str] = None,
+    mapped: Optional[str] = Query(default=None, description="Filter by ingredient mapping: 'yes', 'no'"),
     limit: int = Query(default=100, le=500),
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -322,6 +334,14 @@ async def search_line_items(
     )
 
     items = [LineItemSearchItem(**item) for item in items_data]
+
+    # Filter by ingredient mapping status
+    if mapped == 'yes':
+        items = [i for i in items if i.ingredient_id is not None]
+        total_count = len(items)
+    elif mapped == 'no':
+        items = [i for i in items if i.ingredient_id is None]
+        total_count = len(items)
 
     # Handle grouping (for UI display)
     groups = None

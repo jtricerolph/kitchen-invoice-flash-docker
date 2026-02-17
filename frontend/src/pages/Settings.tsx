@@ -104,7 +104,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'food_flags' | 'allergen_keywords' | 'ingredient_categories' | 'api_access' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -203,6 +203,29 @@ interface BackupHistoryEntry {
   completed_at: string | null
   error_message: string | null
   triggered_by_username: string | null
+}
+
+interface FoodFlagData {
+  id: number
+  name: string
+  code: string | null
+  icon: string | null
+  sort_order: number
+  category_id: number
+}
+
+interface FoodFlagCategoryData {
+  id: number
+  name: string
+  propagation_type: string
+  required: boolean
+  sort_order: number
+  flags: FoodFlagData[]
+}
+
+interface ApiAccessData {
+  api_key: string | null
+  api_key_enabled: boolean
 }
 
 interface SearchSettingsData {
@@ -439,6 +462,43 @@ export default function Settings() {
   const [imapTestStatus, setImapTestStatus] = useState<string | null>(null)
   const [imapSaveMessage, setImapSaveMessage] = useState<string | null>(null)
   const [imapSyncMessage, setImapSyncMessage] = useState<string | null>(null)
+
+  // Food Flags state
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null)
+  const [editingCategoryName, setEditingCategoryName] = useState('')
+  const [editingCategoryType, setEditingCategoryType] = useState('contains')
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryType, setNewCategoryType] = useState('contains')
+  const [showAddCategory, setShowAddCategory] = useState(false)
+  const [editingFlagId, setEditingFlagId] = useState<number | null>(null)
+  const [editingFlagName, setEditingFlagName] = useState('')
+  const [editingFlagCode, setEditingFlagCode] = useState('')
+  const [editingFlagIcon, setEditingFlagIcon] = useState('')
+  const [addingFlagCategoryId, setAddingFlagCategoryId] = useState<number | null>(null)
+  const [newFlagName, setNewFlagName] = useState('')
+  const [newFlagCode, setNewFlagCode] = useState('')
+  const [newFlagIcon, setNewFlagIcon] = useState('')
+  const [foodFlagMessage, setFoodFlagMessage] = useState<string | null>(null)
+
+  // Allergen keywords state
+  const [newKeyword, setNewKeyword] = useState('')
+  const [addingKeywordFlagId, setAddingKeywordFlagId] = useState<number | null>(null)
+  const [allergenKeywordMessage, setAllergenKeywordMessage] = useState('')
+
+  // Ingredient Categories state
+  const [ingCatEditId, setIngCatEditId] = useState<number | null>(null)
+  const [ingCatEditName, setIngCatEditName] = useState('')
+  const [ingCatEditOrder, setIngCatEditOrder] = useState(0)
+  const [ingCatNewName, setIngCatNewName] = useState('')
+  const [ingCatNewOrder, setIngCatNewOrder] = useState(0)
+  const [ingCatShowAdd, setIngCatShowAdd] = useState(false)
+  const [ingCatMessage, setIngCatMessage] = useState<string | null>(null)
+
+  // API Access state
+  const [apiKeyEnabled, setApiKeyEnabled] = useState(false)
+  const [apiKeyValue, setApiKeyValue] = useState<string | null>(null)
+  const [apiKeyRevealed, setApiKeyRevealed] = useState(false)
+  const [apiAccessMessage, setApiAccessMessage] = useState<string | null>(null)
 
   // Fetch settings
   const { data: settings, isLoading } = useQuery<SettingsData>({
@@ -992,6 +1052,360 @@ export default function Settings() {
       }
     }
   }, [resosSettings])
+
+  // Fetch Food Flag categories
+  const { data: foodFlagCategories, refetch: refetchFoodFlags } = useQuery<FoodFlagCategoryData[]>({
+    queryKey: ['food-flag-categories'],
+    queryFn: async () => {
+      const res = await fetch('/api/food-flags/categories', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+  })
+
+  // Fetch API Access settings
+  const { data: apiAccessSettings } = useQuery<ApiAccessData>({
+    queryKey: ['api-access-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/api-access', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return { api_key: null, api_key_enabled: false }
+      return res.json()
+    },
+  })
+
+  // Populate API access state from fetched data
+  useEffect(() => {
+    if (apiAccessSettings) {
+      setApiKeyEnabled(apiAccessSettings.api_key_enabled)
+      setApiKeyValue(apiAccessSettings.api_key)
+    }
+  }, [apiAccessSettings])
+
+  // Food Flag mutations
+  const createCategoryMutation = useMutation({
+    mutationFn: async (data: { name: string; propagation_type: string }) => {
+      const res = await fetch('/api/food-flags/categories', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to create category')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchFoodFlags()
+      setNewCategoryName('')
+      setNewCategoryType('contains')
+      setShowAddCategory(false)
+      setFoodFlagMessage('Category created')
+      setTimeout(() => setFoodFlagMessage(null), 3000)
+    },
+    onError: () => setFoodFlagMessage('Error creating category'),
+  })
+
+  const updateCategoryMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { name?: string; propagation_type?: string; required?: boolean } }) => {
+      const res = await fetch(`/api/food-flags/categories/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to update category')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchFoodFlags()
+      setEditingCategoryId(null)
+      setFoodFlagMessage('Category updated')
+      setTimeout(() => setFoodFlagMessage(null), 3000)
+    },
+    onError: () => setFoodFlagMessage('Error updating category'),
+  })
+
+  const deleteCategoryMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/food-flags/categories/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to delete category')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchFoodFlags()
+      setFoodFlagMessage('Category deleted')
+      setTimeout(() => setFoodFlagMessage(null), 3000)
+    },
+    onError: () => setFoodFlagMessage('Error deleting category'),
+  })
+
+  const createFlagMutation = useMutation({
+    mutationFn: async (data: { category_id: number; name: string; code?: string; icon?: string }) => {
+      const res = await fetch('/api/food-flags/flags', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to create flag')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchFoodFlags()
+      setAddingFlagCategoryId(null)
+      setNewFlagName('')
+      setNewFlagCode('')
+      setNewFlagIcon('')
+      setFoodFlagMessage('Flag created')
+      setTimeout(() => setFoodFlagMessage(null), 3000)
+    },
+    onError: () => setFoodFlagMessage('Error creating flag'),
+  })
+
+  const updateFlagMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { name?: string; code?: string; icon?: string } }) => {
+      const res = await fetch(`/api/food-flags/flags/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to update flag')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchFoodFlags()
+      setEditingFlagId(null)
+      setFoodFlagMessage('Flag updated')
+      setTimeout(() => setFoodFlagMessage(null), 3000)
+    },
+    onError: () => setFoodFlagMessage('Error updating flag'),
+  })
+
+  const deleteFlagMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/food-flags/flags/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to delete flag')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchFoodFlags()
+      setFoodFlagMessage('Flag deleted')
+      setTimeout(() => setFoodFlagMessage(null), 3000)
+    },
+    onError: () => setFoodFlagMessage('Error deleting flag'),
+  })
+
+  // Allergen keywords queries
+  interface AllergenKeywordItem {
+    id: number
+    keyword: string
+    is_default: boolean
+  }
+  interface AllergenKeywordGroup {
+    flag_id: number
+    flag_name: string
+    flag_code: string | null
+    category_name: string
+    keywords: AllergenKeywordItem[]
+  }
+
+  const { data: allergenKeywords, refetch: refetchAllergenKeywords } = useQuery<AllergenKeywordGroup[]>({
+    queryKey: ['allergen-keywords'],
+    queryFn: async () => {
+      const res = await fetch('/api/food-flags/keywords', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && activeSection === 'allergen_keywords',
+  })
+
+  const addKeywordMutation = useMutation({
+    mutationFn: async ({ food_flag_id, keyword }: { food_flag_id: number; keyword: string }) => {
+      const res = await fetch('/api/food-flags/keywords', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ food_flag_id, keyword }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.detail || 'Failed to add keyword')
+      }
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchAllergenKeywords()
+      setNewKeyword('')
+      setAddingKeywordFlagId(null)
+      setAllergenKeywordMessage('Keyword added')
+      setTimeout(() => setAllergenKeywordMessage(''), 2000)
+    },
+    onError: (err: Error) => {
+      setAllergenKeywordMessage(`Error: ${err.message}`)
+    },
+  })
+
+  const deleteKeywordMutation = useMutation({
+    mutationFn: async (keywordId: number) => {
+      const res = await fetch(`/api/food-flags/keywords/${keywordId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to delete keyword')
+    },
+    onSuccess: () => {
+      refetchAllergenKeywords()
+    },
+  })
+
+  const resetKeywordsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/food-flags/keywords/reset-defaults', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to reset keywords')
+    },
+    onSuccess: () => {
+      refetchAllergenKeywords()
+      setAllergenKeywordMessage('Default keywords restored (custom keywords preserved)')
+      setTimeout(() => setAllergenKeywordMessage(''), 3000)
+    },
+  })
+
+  // Ingredient Categories queries & mutations
+  interface IngredientCategoryItem {
+    id: number
+    name: string
+    sort_order: number
+    ingredient_count: number
+  }
+
+  const { data: ingCategories, refetch: refetchIngCategories } = useQuery<IngredientCategoryItem[]>({
+    queryKey: ['ingredient-categories-settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/ingredients/categories', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && activeSection === 'ingredient_categories',
+  })
+
+  const createIngCatMutation = useMutation({
+    mutationFn: async (data: { name: string; sort_order: number }) => {
+      const res = await fetch('/api/ingredients/categories', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) { const err = await res.json().catch(() => null); throw new Error(err?.detail || 'Failed to create category') }
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchIngCategories()
+      setIngCatNewName('')
+      setIngCatNewOrder(ingCategories?.length || 0)
+      setIngCatShowAdd(false)
+      setIngCatMessage('Category created')
+      setTimeout(() => setIngCatMessage(null), 3000)
+    },
+    onError: (err: Error) => { setIngCatMessage(`Error: ${err.message}`); setTimeout(() => setIngCatMessage(null), 5000) },
+  })
+
+  const updateIngCatMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { name?: string; sort_order?: number } }) => {
+      const res = await fetch(`/api/ingredients/categories/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) { const err = await res.json().catch(() => null); throw new Error(err?.detail || 'Failed to update category') }
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchIngCategories()
+      setIngCatEditId(null)
+      setIngCatMessage('Category updated')
+      setTimeout(() => setIngCatMessage(null), 3000)
+    },
+    onError: (err: Error) => { setIngCatMessage(`Error: ${err.message}`); setTimeout(() => setIngCatMessage(null), 5000) },
+  })
+
+  const deleteIngCatMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/ingredients/categories/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to delete category')
+      return res.json()
+    },
+    onSuccess: () => {
+      refetchIngCategories()
+      setIngCatMessage('Category deleted')
+      setTimeout(() => setIngCatMessage(null), 3000)
+    },
+    onError: () => { setIngCatMessage('Error deleting category'); setTimeout(() => setIngCatMessage(null), 5000) },
+  })
+
+  const moveIngCat = (id: number, direction: 'up' | 'down') => {
+    if (!ingCategories) return
+    const idx = ingCategories.findIndex(c => c.id === id)
+    if (idx < 0) return
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (swapIdx < 0 || swapIdx >= ingCategories.length) return
+    const thisOrder = ingCategories[idx].sort_order
+    const otherOrder = ingCategories[swapIdx].sort_order
+    updateIngCatMutation.mutate({ id: ingCategories[idx].id, data: { sort_order: otherOrder } })
+    updateIngCatMutation.mutate({ id: ingCategories[swapIdx].id, data: { sort_order: thisOrder } })
+  }
+
+  // API Access mutations
+  const saveApiAccessMutation = useMutation({
+    mutationFn: async (data: { api_key_enabled: boolean }) => {
+      const res = await fetch('/api/settings/api-access', {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to save API access settings')
+      return res.json()
+    },
+    onSuccess: (data) => {
+      if (data.api_key) setApiKeyValue(data.api_key)
+      setApiKeyEnabled(data.api_key_enabled)
+      setApiAccessMessage('Settings saved')
+      setTimeout(() => setApiAccessMessage(null), 3000)
+    },
+    onError: () => setApiAccessMessage('Error saving settings'),
+  })
+
+  const regenerateApiKeyMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/settings/api-access/regenerate', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to regenerate API key')
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setApiKeyValue(data.api_key)
+      setApiKeyRevealed(true)
+      setApiAccessMessage('API key regenerated. Copy it now - it will be masked next time you visit.')
+      setTimeout(() => setApiAccessMessage(null), 8000)
+    },
+    onError: () => setApiAccessMessage('Error regenerating API key'),
+  })
 
   // Mutations
   const updateMutation = useMutation({
@@ -2135,6 +2549,10 @@ export default function Settings() {
     { id: 'search', label: 'Search & Pricing', restrictPath: '/settings-search' },
     { id: 'nextcloud', label: 'Nextcloud Storage', restrictPath: '/settings-nextcloud' },
     { id: 'backup', label: 'Backup & Restore', restrictPath: '/settings-backup' },
+    { id: 'food_flags', label: 'Food Flags', restrictPath: '/settings-food-flags' },
+    { id: 'allergen_keywords', label: 'Allergen Keywords', restrictPath: '/settings-food-flags' },
+    { id: 'ingredient_categories', label: 'Ingredient Categories', restrictPath: '/settings-ingredient-categories' },
+    { id: 'api_access', label: 'API Access', restrictPath: '/settings-api-access' },
     { id: 'data', label: 'Data Management', restrictPath: '/settings-data' },
   ]
 
@@ -5825,6 +6243,661 @@ export default function Settings() {
             ) : (
               <p style={styles.hint}>No backups yet. Create your first backup above.</p>
             )}
+            </div>
+          </div>
+        )}
+
+        {/* Food Flags Section */}
+        {activeSection === 'food_flags' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Food Flags</h2>
+            <p style={styles.hint}>
+              Manage allergen and dietary flag categories and their individual flags. These are used to tag ingredients, line items, and recipes.
+            </p>
+
+            {foodFlagMessage && (
+              <div style={{ ...styles.statusMessage, background: foodFlagMessage.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {foodFlagMessage}
+              </div>
+            )}
+
+            {/* Existing Categories */}
+            {foodFlagCategories && foodFlagCategories.map((cat) => (
+              <div key={cat.id} style={styles.settingsBlock}>
+                {editingCategoryId === cat.id ? (
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                    <label style={{ ...styles.label, flex: 1, minWidth: '200px' }}>
+                      Category Name
+                      <input
+                        type="text"
+                        value={editingCategoryName}
+                        onChange={(e) => setEditingCategoryName(e.target.value)}
+                        style={styles.input}
+                      />
+                    </label>
+                    <label style={{ ...styles.label, minWidth: '160px' }}>
+                      Propagation Type
+                      <select
+                        value={editingCategoryType}
+                        onChange={(e) => setEditingCategoryType(e.target.value)}
+                        style={styles.input}
+                      >
+                        <option value="contains">Contains (allergens)</option>
+                        <option value="suitable_for">Suitable For (dietary)</option>
+                      </select>
+                    </label>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        onClick={() => updateCategoryMutation.mutate({ id: cat.id, data: { name: editingCategoryName, propagation_type: editingCategoryType } })}
+                        style={styles.saveBtn}
+                        disabled={updateCategoryMutation.isPending}
+                      >
+                        Save
+                      </button>
+                      <button onClick={() => setEditingCategoryId(null)} style={styles.actionBtn}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <div>
+                      <h3 style={{ ...styles.blockTitle, marginBottom: '0.25rem' }}>{cat.name}</h3>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.8rem', color: '#666', background: cat.propagation_type === 'contains' ? '#fff3cd' : '#d4edda', padding: '0.15rem 0.5rem', borderRadius: '4px' }}>
+                          {cat.propagation_type === 'contains' ? 'Contains (allergen)' : 'Suitable For (dietary)'}
+                        </span>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={cat.required}
+                            onChange={() => updateCategoryMutation.mutate({ id: cat.id, data: { required: !cat.required } })}
+                            style={{ margin: 0 }}
+                          />
+                          Required
+                        </label>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        onClick={() => {
+                          setEditingCategoryId(cat.id)
+                          setEditingCategoryName(cat.name)
+                          setEditingCategoryType(cat.propagation_type)
+                        }}
+                        style={styles.smallBtn}
+                        title="Edit category"
+                      >
+                        &#9998;
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Delete category "${cat.name}" and all its flags?`)) {
+                            deleteCategoryMutation.mutate(cat.id)
+                          }
+                        }}
+                        style={{ ...styles.smallBtn, color: '#dc3545' }}
+                        title="Delete category"
+                      >
+                        &#10005;
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Flags within this category */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {cat.flags.map((flag) => (
+                    <div key={flag.id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.75rem', background: 'white', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                      {editingFlagId === flag.id ? (
+                        <>
+                          <input
+                            type="text"
+                            value={editingFlagName}
+                            onChange={(e) => setEditingFlagName(e.target.value)}
+                            style={{ ...styles.input, flex: 2 }}
+                            placeholder="Name"
+                          />
+                          <input
+                            type="text"
+                            value={editingFlagCode}
+                            onChange={(e) => setEditingFlagCode(e.target.value)}
+                            style={{ ...styles.input, flex: 1 }}
+                            placeholder="Code"
+                          />
+                          <input
+                            type="text"
+                            value={editingFlagIcon}
+                            onChange={(e) => setEditingFlagIcon(e.target.value)}
+                            style={{ ...styles.input, flex: 1 }}
+                            placeholder="Icon"
+                          />
+                          <button
+                            onClick={() => updateFlagMutation.mutate({ id: flag.id, data: { name: editingFlagName, code: editingFlagCode || undefined, icon: editingFlagIcon || undefined } })}
+                            style={styles.saveBtn}
+                            disabled={updateFlagMutation.isPending}
+                          >
+                            Save
+                          </button>
+                          <button onClick={() => setEditingFlagId(null)} style={styles.actionBtn}>Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          {flag.icon && <span style={{ fontSize: '1.2rem' }}>{flag.icon}</span>}
+                          <span style={{ flex: 2, fontWeight: '500' }}>{flag.name}</span>
+                          <span style={{ flex: 1, color: '#666', fontSize: '0.85rem' }}>{flag.code || '-'}</span>
+                          <div style={{ display: 'flex', gap: '0.25rem' }}>
+                            <button
+                              onClick={() => {
+                                setEditingFlagId(flag.id)
+                                setEditingFlagName(flag.name)
+                                setEditingFlagCode(flag.code || '')
+                                setEditingFlagIcon(flag.icon || '')
+                              }}
+                              style={styles.smallBtn}
+                              title="Edit flag"
+                            >
+                              &#9998;
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm(`Delete flag "${flag.name}"?`)) {
+                                  deleteFlagMutation.mutate(flag.id)
+                                }
+                              }}
+                              style={{ ...styles.smallBtn, color: '#dc3545' }}
+                              title="Delete flag"
+                            >
+                              &#10005;
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Add Flag Form */}
+                  {addingFlagCategoryId === cat.id ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0.75rem', background: 'white', borderRadius: '6px', border: '1px dashed #ccc' }}>
+                      <input
+                        type="text"
+                        value={newFlagName}
+                        onChange={(e) => setNewFlagName(e.target.value)}
+                        style={{ ...styles.input, flex: 2 }}
+                        placeholder="Flag name"
+                      />
+                      <input
+                        type="text"
+                        value={newFlagCode}
+                        onChange={(e) => setNewFlagCode(e.target.value)}
+                        style={{ ...styles.input, flex: 1 }}
+                        placeholder="Code (e.g. GF)"
+                      />
+                      <input
+                        type="text"
+                        value={newFlagIcon}
+                        onChange={(e) => setNewFlagIcon(e.target.value)}
+                        style={{ ...styles.input, flex: 1 }}
+                        placeholder="Icon (emoji)"
+                      />
+                      <button
+                        onClick={() => {
+                          if (!newFlagName.trim()) return
+                          createFlagMutation.mutate({
+                            category_id: cat.id,
+                            name: newFlagName.trim(),
+                            code: newFlagCode.trim() || undefined,
+                            icon: newFlagIcon.trim() || undefined,
+                          })
+                        }}
+                        style={styles.saveBtn}
+                        disabled={createFlagMutation.isPending || !newFlagName.trim()}
+                      >
+                        Add
+                      </button>
+                      <button onClick={() => { setAddingFlagCategoryId(null); setNewFlagName(''); setNewFlagCode(''); setNewFlagIcon('') }} style={styles.actionBtn}>Cancel</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setAddingFlagCategoryId(cat.id)}
+                      style={{ ...styles.secondaryButton, alignSelf: 'flex-start', marginTop: '0.25rem' }}
+                    >
+                      + Add Flag
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {/* Add Category */}
+            {showAddCategory ? (
+              <div style={styles.settingsBlock}>
+                <h3 style={styles.blockTitle}>New Category</h3>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <label style={{ ...styles.label, flex: 1, minWidth: '200px' }}>
+                    Category Name
+                    <input
+                      type="text"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      style={styles.input}
+                      placeholder="e.g., Allergens, Dietary Preferences"
+                    />
+                  </label>
+                  <label style={{ ...styles.label, minWidth: '160px' }}>
+                    Propagation Type
+                    <select
+                      value={newCategoryType}
+                      onChange={(e) => setNewCategoryType(e.target.value)}
+                      style={styles.input}
+                    >
+                      <option value="contains">Contains (allergens)</option>
+                      <option value="suitable_for">Suitable For (dietary)</option>
+                    </select>
+                  </label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      onClick={() => {
+                        if (!newCategoryName.trim()) return
+                        createCategoryMutation.mutate({ name: newCategoryName.trim(), propagation_type: newCategoryType })
+                      }}
+                      style={styles.saveBtn}
+                      disabled={createCategoryMutation.isPending || !newCategoryName.trim()}
+                    >
+                      {createCategoryMutation.isPending ? 'Creating...' : 'Create Category'}
+                    </button>
+                    <button onClick={() => { setShowAddCategory(false); setNewCategoryName(''); setNewCategoryType('contains') }} style={styles.actionBtn}>Cancel</button>
+                  </div>
+                </div>
+                <p style={{ ...styles.hint, marginTop: '0.5rem', marginBottom: 0 }}>
+                  <strong>Contains</strong>: Flag propagates if ANY ingredient has it (e.g., "Contains Nuts").
+                  <br />
+                  <strong>Suitable For</strong>: Flag propagates only if ALL ingredients have it (e.g., "Vegan").
+                </p>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowAddCategory(true)}
+                style={{ ...styles.button, marginTop: '0.5rem' }}
+              >
+                + Add Category
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Allergen Keywords Section */}
+        {activeSection === 'allergen_keywords' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Allergen Keywords</h2>
+            <p style={styles.hint}>
+              Manage ingredient name keywords that trigger allergen flag suggestions. When creating or editing ingredients,
+              names and product ingredient lists are matched against these keywords to suggest relevant flags.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '1rem' }}>
+              <button
+                onClick={() => {
+                  if (confirm('Reset all default keywords to their original values? Your custom-added keywords will be preserved.')) {
+                    resetKeywordsMutation.mutate()
+                  }
+                }}
+                style={styles.actionBtn}
+                disabled={resetKeywordsMutation.isPending}
+              >
+                {resetKeywordsMutation.isPending ? 'Resetting...' : 'Reset to Defaults'}
+              </button>
+            </div>
+
+            {allergenKeywordMessage && (
+              <div style={{ ...styles.statusMessage, background: allergenKeywordMessage.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {allergenKeywordMessage}
+              </div>
+            )}
+
+            {allergenKeywords && allergenKeywords.length > 0 ? (
+              allergenKeywords.map(group => (
+                <div key={group.flag_id} style={styles.settingsBlock}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <h3 style={{ ...styles.blockTitle, marginBottom: 0 }}>
+                      {group.flag_name}
+                      {group.flag_code && <span style={{ color: '#888', fontWeight: 400, marginLeft: '0.5rem' }}>({group.flag_code})</span>}
+                      <span style={{ color: '#aaa', fontWeight: 400, fontSize: '0.8rem', marginLeft: '0.5rem' }}>{group.category_name}</span>
+                    </h3>
+                    {addingKeywordFlagId === group.flag_id ? (
+                      <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          value={newKeyword}
+                          onChange={(e) => setNewKeyword(e.target.value)}
+                          style={{ ...styles.input, width: '150px', padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}
+                          placeholder="New keyword..."
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && newKeyword.trim()) {
+                              addKeywordMutation.mutate({ food_flag_id: group.flag_id, keyword: newKeyword.trim().toLowerCase() })
+                            }
+                          }}
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => {
+                            if (newKeyword.trim()) {
+                              addKeywordMutation.mutate({ food_flag_id: group.flag_id, keyword: newKeyword.trim().toLowerCase() })
+                            }
+                          }}
+                          style={styles.saveBtn}
+                          disabled={!newKeyword.trim() || addKeywordMutation.isPending}
+                        >
+                          Add
+                        </button>
+                        <button onClick={() => { setAddingKeywordFlagId(null); setNewKeyword('') }} style={styles.actionBtn}>Cancel</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setAddingKeywordFlagId(group.flag_id)}
+                        style={styles.secondaryButton}
+                      >
+                        + Add
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                    {group.keywords.map(kw => (
+                      <span
+                        key={kw.id}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.25rem',
+                          padding: '0.2rem 0.5rem',
+                          background: kw.is_default ? '#f0f0f0' : '#e8f0fe',
+                          border: `1px solid ${kw.is_default ? '#ddd' : '#90caf9'}`,
+                          borderRadius: '12px',
+                          fontSize: '0.78rem',
+                          color: '#555',
+                        }}
+                      >
+                        {kw.keyword}
+                        <button
+                          onClick={() => deleteKeywordMutation.mutate(kw.id)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: '#999',
+                            fontSize: '0.7rem',
+                            padding: '0 0.15rem',
+                            lineHeight: 1,
+                          }}
+                          title="Remove keyword"
+                        >
+                          {'\u2715'}
+                        </button>
+                      </span>
+                    ))}
+                    {group.keywords.length === 0 && (
+                      <span style={{ fontSize: '0.8rem', color: '#aaa', fontStyle: 'italic' }}>No keywords</span>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p style={styles.hint}>No allergen keywords configured. Keywords are seeded automatically when food flags are created.</p>
+            )}
+          </div>
+        )}
+
+        {/* Ingredient Categories Section */}
+        {activeSection === 'ingredient_categories' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>Ingredient Categories</h2>
+            <p style={styles.hint}>
+              Manage ingredient groupings (e.g. Dairy, Meat, Produce). Categories help organise your ingredient library and can be used to filter the ingredients list.
+            </p>
+
+            {ingCatMessage && (
+              <div style={{ ...styles.statusMessage, background: ingCatMessage.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {ingCatMessage}
+              </div>
+            )}
+
+            {ingCategories && ingCategories.length > 0 ? (
+              <div style={styles.settingsBlock}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Order</th>
+                      <th style={{ textAlign: 'left', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Name</th>
+                      <th style={{ textAlign: 'center', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Ingredients</th>
+                      <th style={{ textAlign: 'right', padding: '0.5rem 0.75rem', borderBottom: '2px solid #dee2e6', fontSize: '0.85rem', color: '#666' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ingCategories.map((cat, idx) => (
+                      <tr key={cat.id} style={{ borderBottom: '1px solid #eee' }}>
+                        {ingCatEditId === cat.id ? (
+                          <>
+                            <td style={{ padding: '0.5rem 0.75rem' }}>
+                              <input type="number" value={ingCatEditOrder} onChange={(e) => setIngCatEditOrder(parseInt(e.target.value) || 0)} style={{ ...styles.input, width: '60px', marginBottom: 0 }} />
+                            </td>
+                            <td style={{ padding: '0.5rem 0.75rem' }}>
+                              <input type="text" value={ingCatEditName} onChange={(e) => setIngCatEditName(e.target.value)} style={{ ...styles.input, marginBottom: 0 }} />
+                            </td>
+                            <td style={{ padding: '0.5rem 0.75rem', textAlign: 'center', color: '#666', fontSize: '0.85rem' }}>{cat.ingredient_count}</td>
+                            <td style={{ padding: '0.5rem 0.75rem', textAlign: 'right' }}>
+                              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                                <button
+                                  onClick={() => updateIngCatMutation.mutate({ id: cat.id, data: { name: ingCatEditName, sort_order: ingCatEditOrder } })}
+                                  style={styles.saveBtn}
+                                  disabled={updateIngCatMutation.isPending}
+                                >Save</button>
+                                <button onClick={() => setIngCatEditId(null)} style={styles.actionBtn}>Cancel</button>
+                              </div>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td style={{ padding: '0.5rem 0.75rem' }}>
+                              <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                                <button
+                                  onClick={() => moveIngCat(cat.id, 'up')}
+                                  disabled={idx === 0}
+                                  style={{ background: 'none', border: 'none', cursor: idx === 0 ? 'default' : 'pointer', opacity: idx === 0 ? 0.3 : 1, fontSize: '1rem', padding: '0 2px' }}
+                                  title="Move up"
+                                >{'\u25B2'}</button>
+                                <button
+                                  onClick={() => moveIngCat(cat.id, 'down')}
+                                  disabled={idx === ingCategories.length - 1}
+                                  style={{ background: 'none', border: 'none', cursor: idx === ingCategories.length - 1 ? 'default' : 'pointer', opacity: idx === ingCategories.length - 1 ? 0.3 : 1, fontSize: '1rem', padding: '0 2px' }}
+                                  title="Move down"
+                                >{'\u25BC'}</button>
+                              </div>
+                            </td>
+                            <td style={{ padding: '0.5rem 0.75rem', fontWeight: 500 }}>{cat.name}</td>
+                            <td style={{ padding: '0.5rem 0.75rem', textAlign: 'center', color: '#666', fontSize: '0.85rem' }}>{cat.ingredient_count}</td>
+                            <td style={{ padding: '0.5rem 0.75rem', textAlign: 'right' }}>
+                              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                                <button
+                                  onClick={() => { setIngCatEditId(cat.id); setIngCatEditName(cat.name); setIngCatEditOrder(cat.sort_order) }}
+                                  style={styles.smallBtn}
+                                  title="Edit"
+                                >&#9998;</button>
+                                <button
+                                  onClick={() => {
+                                    if (confirm(`Delete "${cat.name}"?${cat.ingredient_count > 0 ? ` ${cat.ingredient_count} ingredient(s) will become uncategorised.` : ''}`)) {
+                                      deleteIngCatMutation.mutate(cat.id)
+                                    }
+                                  }}
+                                  style={{ ...styles.smallBtn, color: '#dc3545' }}
+                                  title="Delete"
+                                >&#10005;</button>
+                              </div>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p style={styles.hint}>No ingredient categories yet. Create your first category below.</p>
+            )}
+
+            {ingCatShowAdd ? (
+              <div style={{ ...styles.settingsBlock, marginTop: '1rem' }}>
+                <h3 style={styles.blockTitle}>New Category</h3>
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <label style={{ ...styles.label, flex: 1, minWidth: '200px' }}>
+                    Name
+                    <input
+                      type="text"
+                      value={ingCatNewName}
+                      onChange={(e) => setIngCatNewName(e.target.value)}
+                      placeholder="e.g. Dairy, Produce, Proteins..."
+                      style={styles.input}
+                    />
+                  </label>
+                  <label style={{ ...styles.label, minWidth: '80px' }}>
+                    Sort Order
+                    <input
+                      type="number"
+                      value={ingCatNewOrder}
+                      onChange={(e) => setIngCatNewOrder(parseInt(e.target.value) || 0)}
+                      style={{ ...styles.input, width: '80px' }}
+                    />
+                  </label>
+                  <button
+                    onClick={() => createIngCatMutation.mutate({ name: ingCatNewName.trim(), sort_order: ingCatNewOrder })}
+                    style={styles.saveBtn}
+                    disabled={!ingCatNewName.trim() || createIngCatMutation.isPending}
+                  >
+                    {createIngCatMutation.isPending ? 'Creating...' : 'Create'}
+                  </button>
+                  <button onClick={() => { setIngCatShowAdd(false); setIngCatNewName(''); setIngCatNewOrder(0) }} style={styles.actionBtn}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setIngCatShowAdd(true); setIngCatNewOrder(ingCategories?.length || 0) }}
+                style={{ ...styles.button, marginTop: '0.5rem' }}
+              >
+                + Add Category
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* API Access Section */}
+        {activeSection === 'api_access' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>API Access</h2>
+            <p style={styles.hint}>
+              Manage API key access for external applications such as menu display plugins. External apps authenticate using the <code>X-API-Key</code> header.
+            </p>
+
+            {apiAccessMessage && (
+              <div style={{ ...styles.statusMessage, background: apiAccessMessage.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {apiAccessMessage}
+              </div>
+            )}
+
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>API Key Settings</h3>
+
+              {/* Enable/Disable Toggle */}
+              <label style={{ ...styles.checkboxLabel, marginTop: 0, marginBottom: '1.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={apiKeyEnabled}
+                  onChange={(e) => {
+                    setApiKeyEnabled(e.target.checked)
+                    saveApiAccessMutation.mutate({ api_key_enabled: e.target.checked })
+                  }}
+                />
+                <span>Enable API Access</span>
+              </label>
+
+              {/* API Key Display */}
+              <label style={styles.label}>
+                Current API Key
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      !apiKeyValue
+                        ? 'No API key generated'
+                        : apiKeyRevealed
+                          ? apiKeyValue
+                          : apiKeyValue.substring(0, 8) + '...' + apiKeyValue.substring(apiKeyValue.length - 4)
+                    }
+                    style={{ ...styles.input, flex: 1, fontFamily: 'monospace', background: '#f8f9fa', color: apiKeyValue ? '#333' : '#999' }}
+                  />
+                  {apiKeyValue && (
+                    <>
+                      <button
+                        onClick={() => setApiKeyRevealed(!apiKeyRevealed)}
+                        style={styles.smallBtn}
+                        title={apiKeyRevealed ? 'Hide key' : 'Reveal key'}
+                      >
+                        {apiKeyRevealed ? '&#128065;' : '&#128274;'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (apiKeyValue) {
+                            navigator.clipboard.writeText(apiKeyValue)
+                            setApiAccessMessage('API key copied to clipboard')
+                            setTimeout(() => setApiAccessMessage(null), 3000)
+                          }
+                        }}
+                        style={styles.smallBtn}
+                        title="Copy to clipboard"
+                      >
+                        &#128203;
+                      </button>
+                    </>
+                  )}
+                </div>
+                <span style={styles.fieldHint}>
+                  {apiKeyEnabled
+                    ? 'API access is enabled. External apps can use this key to access recipe and food flag data.'
+                    : 'API access is disabled. Enable it above to allow external apps to connect.'}
+                </span>
+              </label>
+
+              {/* Regenerate Button */}
+              <div style={{ ...styles.buttonRow, marginTop: '1rem' }}>
+                <button
+                  onClick={() => {
+                    if (apiKeyValue) {
+                      if (confirm('Regenerate API key? The old key will stop working immediately.')) {
+                        regenerateApiKeyMutation.mutate()
+                      }
+                    } else {
+                      regenerateApiKeyMutation.mutate()
+                    }
+                  }}
+                  style={styles.saveBtn}
+                  disabled={regenerateApiKeyMutation.isPending}
+                >
+                  {regenerateApiKeyMutation.isPending ? 'Generating...' : apiKeyValue ? 'Regenerate API Key' : 'Generate API Key'}
+                </button>
+              </div>
+            </div>
+
+            {/* Usage Info */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Usage</h3>
+              <p style={{ ...styles.hint, marginBottom: '0.5rem' }}>
+                External applications can access the following endpoints using the API key:
+              </p>
+              <div style={{ fontFamily: 'monospace', fontSize: '0.85rem', background: 'white', padding: '0.75rem', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                <div style={{ marginBottom: '0.25rem' }}><strong>GET</strong> /api/external/recipes/dishes</div>
+                <div style={{ marginBottom: '0.25rem' }}><strong>GET</strong> /api/external/recipes/:id</div>
+                <div><strong>GET</strong> /api/external/food-flags</div>
+              </div>
+              <p style={{ ...styles.hint, marginTop: '0.75rem', marginBottom: 0 }}>
+                Include the header <code style={{ background: '#f0f0f5', padding: '0.1rem 0.3rem', borderRadius: '3px' }}>X-API-Key: your-key-here</code> with every request.
+              </p>
             </div>
           </div>
         )}

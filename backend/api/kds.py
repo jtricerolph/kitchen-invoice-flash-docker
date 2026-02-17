@@ -1378,7 +1378,7 @@ async def test_connection(
 
 
 # =============================================================================
-# Recipe Link (links KDS menu items to plated recipes)
+# Recipe Link (links KDS menu items to dish recipes)
 # =============================================================================
 
 @router.get("/recipe-link/{menu_item_name}")

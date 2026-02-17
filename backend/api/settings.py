@@ -618,3 +618,94 @@ async def archive_single_invoice(
         raise HTTPException(status_code=500, detail=message)
 
     return {"status": "success", "message": message, "nextcloud_path": invoice.nextcloud_path}
+
+
+# ============ API Access Endpoints ============
+
+class ApiAccessResponse(BaseModel):
+    api_key: str | None
+    api_key_enabled: bool
+
+
+class ApiAccessUpdate(BaseModel):
+    api_key_enabled: bool
+
+
+@router.get("/api-access", response_model=ApiAccessResponse)
+async def get_api_access(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get API access settings"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        return ApiAccessResponse(api_key=None, api_key_enabled=False)
+
+    return ApiAccessResponse(
+        api_key=settings.api_key,
+        api_key_enabled=settings.api_key_enabled,
+    )
+
+
+@router.patch("/api-access", response_model=ApiAccessResponse)
+async def update_api_access(
+    update: ApiAccessUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update API access settings (enable/disable)"""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        settings = KitchenSettings(kitchen_id=current_user.kitchen_id)
+        db.add(settings)
+
+    settings.api_key_enabled = update.api_key_enabled
+
+    await db.commit()
+    await db.refresh(settings)
+
+    return ApiAccessResponse(
+        api_key=settings.api_key,
+        api_key_enabled=settings.api_key_enabled,
+    )
+
+
+@router.post("/api-access/regenerate")
+async def regenerate_api_key(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate or regenerate the API key"""
+    import secrets
+
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        settings = KitchenSettings(kitchen_id=current_user.kitchen_id)
+        db.add(settings)
+
+    new_key = secrets.token_urlsafe(32)
+    settings.api_key = new_key
+    settings.api_key_enabled = True
+
+    await db.commit()
+    await db.refresh(settings)
+
+    return {"api_key": new_key, "api_key_enabled": True}

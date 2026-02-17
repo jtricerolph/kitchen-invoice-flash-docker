@@ -1,14 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import FoodFlagBadges from './FoodFlagBadges'
-
-interface IngredientCategory {
-  id: number
-  name: string
-  sort_order: number
-  ingredient_count: number
-}
+import IngredientModal from './IngredientModal'
+import { IngredientCategory, EditingIngredient } from '../utils/ingredientHelpers'
 
 interface FlagInfo {
   id: number
@@ -16,6 +11,7 @@ interface FlagInfo {
   flag_name: string
   flag_code: string | null
   category_name: string
+  propagation_type: string
   source: string
 }
 
@@ -29,9 +25,13 @@ interface IngredientItem {
   manual_price: number | null
   notes: string | null
   is_archived: boolean
+  is_prepackaged: boolean
+  product_ingredients: string | null
+  has_label_image: boolean
   source_count: number
   effective_price: number | null
   flags: FlagInfo[]
+  none_categories: string[]
   created_at: string
 }
 
@@ -49,12 +49,6 @@ interface SourceItem {
   price_per_std_unit: number | null
 }
 
-interface SimilarIngredient {
-  id: number
-  name: string
-  similarity: number
-}
-
 export default function Ingredients() {
   const { token } = useAuth()
   const queryClient = useQueryClient()
@@ -62,20 +56,12 @@ export default function Ingredients() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string>('')
   const [showUnmapped, setShowUnmapped] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  const [showCreateModal, setShowCreateModal] = useState(false)
-  const [editingId, setEditingId] = useState<number | null>(null)
+  const [showModal, setShowModal] = useState(false)
+  const [editingIngredient, setEditingIngredient] = useState<EditingIngredient | null>(null)
 
-  // Create/edit form
-  const [formName, setFormName] = useState('')
-  const [formCategory, setFormCategory] = useState<string>('')
-  const [formUnit, setFormUnit] = useState('g')
-  const [formYield, setFormYield] = useState('100')
-  const [formPrice, setFormPrice] = useState('')
-  const [formNotes, setFormNotes] = useState('')
-  const [duplicateWarnings, setDuplicateWarnings] = useState<SimilarIngredient[]>([])
-
-  // Categories
+  // Categories (for filter dropdown)
   const { data: categories } = useQuery<IngredientCategory[]>({
     queryKey: ['ingredient-categories'],
     queryFn: async () => {
@@ -88,14 +74,15 @@ export default function Ingredients() {
     enabled: !!token,
   })
 
-  // Ingredients
+  // Ingredients list
   const { data: ingredients, isLoading } = useQuery<IngredientItem[]>({
-    queryKey: ['ingredients', search, categoryFilter, showUnmapped],
+    queryKey: ['ingredients', search, categoryFilter, showUnmapped, showArchived],
     queryFn: async () => {
       const params = new URLSearchParams()
       if (search) params.set('search', search)
       if (categoryFilter) params.set('category_id', categoryFilter)
       if (showUnmapped) params.set('unmapped', 'true')
+      if (showArchived) params.set('archived', 'true')
       const res = await fetch(`/api/ingredients?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -118,64 +105,6 @@ export default function Ingredients() {
     enabled: !!token && !!expandedId,
   })
 
-  // Duplicate check
-  useEffect(() => {
-    if (!formName || formName.length < 3 || !token) {
-      setDuplicateWarnings([])
-      return
-    }
-    const timer = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/ingredients/check-duplicate?name=${encodeURIComponent(formName)}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (res.ok) {
-          const data = await res.json()
-          setDuplicateWarnings(data.filter((d: SimilarIngredient) => editingId ? d.id !== editingId : true))
-        }
-      } catch { /* ignore */ }
-    }, 500)
-    return () => clearTimeout(timer)
-  }, [formName, token, editingId])
-
-  // Create mutation
-  const createMutation = useMutation({
-    mutationFn: async (data: Record<string, unknown>) => {
-      const res = await fetch('/api/ingredients', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || 'Failed to create')
-      }
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ingredients'] })
-      resetForm()
-    },
-  })
-
-  // Update mutation
-  const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: number; data: Record<string, unknown> }) => {
-      const res = await fetch(`/api/ingredients/${id}`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      })
-      if (!res.ok) throw new Error('Failed to update')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ingredients'] })
-      resetForm()
-    },
-  })
-
-  // Archive mutation
   const archiveMutation = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/ingredients/${id}`, {
@@ -187,50 +116,39 @@ export default function Ingredients() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ingredients'] }),
   })
 
-  const resetForm = () => {
-    setShowCreateModal(false)
-    setEditingId(null)
-    setFormName('')
-    setFormCategory('')
-    setFormUnit('g')
-    setFormYield('100')
-    setFormPrice('')
-    setFormNotes('')
-    setDuplicateWarnings([])
-  }
+  const unarchiveMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/ingredients/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_archived: false }),
+      })
+      if (!res.ok) throw new Error('Failed to unarchive')
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ingredients'] }),
+  })
 
   const startEdit = (ing: IngredientItem) => {
-    setEditingId(ing.id)
-    setFormName(ing.name)
-    setFormCategory(ing.category_id?.toString() || '')
-    setFormUnit(ing.standard_unit)
-    setFormYield(ing.yield_percent.toString())
-    setFormPrice(ing.manual_price?.toString() || '')
-    setFormNotes(ing.notes || '')
-    setShowCreateModal(true)
-  }
-
-  const handleSave = () => {
-    const data: Record<string, unknown> = {
-      name: formName,
-      category_id: formCategory ? parseInt(formCategory) : null,
-      standard_unit: formUnit,
-      yield_percent: parseFloat(formYield),
-      manual_price: formPrice ? parseFloat(formPrice) : null,
-      notes: formNotes || null,
-    }
-    if (editingId) {
-      updateMutation.mutate({ id: editingId, data })
-    } else {
-      createMutation.mutate(data)
-    }
+    setEditingIngredient({
+      id: ing.id,
+      name: ing.name,
+      category_id: ing.category_id,
+      standard_unit: ing.standard_unit,
+      yield_percent: ing.yield_percent,
+      manual_price: ing.manual_price,
+      notes: ing.notes,
+      is_prepackaged: ing.is_prepackaged,
+      product_ingredients: ing.product_ingredients,
+      has_label_image: ing.has_label_image,
+    })
+    setShowModal(true)
   }
 
   return (
     <div style={styles.page}>
       <div style={styles.header}>
         <h2 style={{ margin: 0 }}>Ingredient Library</h2>
-        <button onClick={() => { resetForm(); setShowCreateModal(true) }} style={styles.primaryBtn}>
+        <button onClick={() => { setEditingIngredient(null); setShowModal(true) }} style={styles.primaryBtn}>
           + Create Ingredient
         </button>
       </div>
@@ -258,11 +176,19 @@ export default function Ingredients() {
           />
           Unmapped only
         </label>
+        <label style={styles.checkLabel}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show Archived
+        </label>
       </div>
 
       {/* Stats */}
       <div style={styles.statsBar}>
-        <span>{ingredients?.length || 0} ingredients</span>
+        <span>{ingredients?.length || 0} {showArchived ? 'archived' : ''} ingredients</span>
         <span style={{ color: '#888' }}>|</span>
         <span>{ingredients?.filter(i => i.source_count === 0).length || 0} unmapped</span>
       </div>
@@ -289,11 +215,12 @@ export default function Ingredients() {
               <>
                 <tr
                   key={ing.id}
-                  style={{ ...styles.tr, cursor: 'pointer' }}
+                  style={{ ...styles.tr, cursor: 'pointer', ...(ing.is_archived ? { opacity: 0.5 } : {}) }}
                   onClick={() => setExpandedId(expandedId === ing.id ? null : ing.id)}
                 >
                   <td style={styles.td}>
-                    <span style={{ fontWeight: 500 }}>{ing.name}</span>
+                    <span style={{ fontWeight: 500, ...(ing.is_archived ? { textDecoration: 'line-through' } : {}) }}>{ing.name}</span>
+                    {ing.is_archived && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: '#999', fontStyle: 'italic' }}>archived</span>}
                   </td>
                   <td style={styles.td}>{ing.category_name || '-'}</td>
                   <td style={styles.td}>{ing.standard_unit}</td>
@@ -316,20 +243,52 @@ export default function Ingredients() {
                   </td>
                   <td style={styles.td}>
                     {ing.effective_price != null
-                      ? `£${ing.effective_price.toFixed(4)}/${ing.standard_unit}`
+                      ? (() => {
+                          const p = ing.effective_price!
+                          const u = ing.standard_unit
+                          if (u === 'g' && p < 1) return `£${(p * 1000).toFixed(2)}/kg`
+                          if (u === 'ml' && p < 1) return `£${(p * 1000).toFixed(2)}/ltr`
+                          return `£${p >= 1 ? p.toFixed(2) : p.toFixed(4)}/${u}`
+                        })()
                       : <span style={{ color: '#aaa' }}>-</span>
                     }
                   </td>
                   <td style={styles.td}>
-                    <FoodFlagBadges flags={ing.flags.map(f => ({
-                      name: f.flag_name,
-                      code: f.flag_code || undefined,
-                      category_name: f.category_name,
-                    }))} />
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px', alignItems: 'center' }}>
+                      <FoodFlagBadges flags={ing.flags.map(f => ({
+                        name: f.flag_name,
+                        code: f.flag_code || undefined,
+                        category_name: f.category_name,
+                        propagation: f.propagation_type,
+                      }))} />
+                      {ing.none_categories?.map(cat => (
+                        <span
+                          key={cat}
+                          title={`${cat}: None apply`}
+                          style={{
+                            display: 'inline-block',
+                            borderRadius: '10px',
+                            color: 'white',
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap',
+                            lineHeight: 1.4,
+                            fontSize: '0.7rem',
+                            padding: '1px 5px',
+                            background: '#999',
+                          }}
+                        >
+                          {cat.substring(0, 3)}: None
+                        </span>
+                      ))}
+                    </div>
                   </td>
                   <td style={styles.td}>
                     <button onClick={(e) => { e.stopPropagation(); startEdit(ing) }} style={styles.smallBtn}>Edit</button>
-                    <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(ing.id) }} style={{ ...styles.smallBtn, color: '#e94560' }}>Archive</button>
+                    {ing.is_archived ? (
+                      <button onClick={(e) => { e.stopPropagation(); unarchiveMutation.mutate(ing.id) }} style={{ ...styles.smallBtn, color: '#22c55e' }}>Unarchive</button>
+                    ) : (
+                      <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(ing.id) }} style={{ ...styles.smallBtn, color: '#e94560' }}>Archive</button>
+                    )}
                   </td>
                 </tr>
                 {expandedId === ing.id && (
@@ -353,7 +312,21 @@ export default function Ingredients() {
                               {sources.map(s => (
                                 <tr key={s.id}>
                                   <td style={styles.tdSmall}>{s.supplier_name}</td>
-                                  <td style={styles.tdSmall}>{s.product_code || s.description_pattern || '-'}</td>
+                                  <td style={styles.tdSmall}>
+                                    {s.product_code && s.supplier_name?.toLowerCase().includes('brakes') ? (
+                                      <a
+                                        href={`https://www.brake.co.uk/p/${s.product_code}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{ color: '#2563eb', textDecoration: 'underline' }}
+                                        title="View on Brakes website"
+                                      >
+                                        {s.product_code}
+                                      </a>
+                                    ) : (
+                                      s.product_code || s.description_pattern || '-'
+                                    )}
+                                  </td>
                                   <td style={styles.tdSmall}>
                                     {s.pack_quantity && s.unit_size
                                       ? `${s.pack_quantity}×${s.unit_size}${s.unit_size_type || ''}`
@@ -364,7 +337,13 @@ export default function Ingredients() {
                                     {s.latest_unit_price != null ? `£${s.latest_unit_price.toFixed(2)}` : '-'}
                                   </td>
                                   <td style={styles.tdSmall}>
-                                    {s.price_per_std_unit != null ? `£${s.price_per_std_unit.toFixed(4)}` : '-'}
+                                    {s.price_per_std_unit != null ? (() => {
+                                      const p = typeof s.price_per_std_unit === 'string' ? parseFloat(s.price_per_std_unit) : s.price_per_std_unit
+                                      const u = ing.standard_unit
+                                      if (u === 'g' && p < 1) return `£${(p * 1000).toFixed(2)}/kg`
+                                      if (u === 'ml' && p < 1) return `£${(p * 1000).toFixed(2)}/ltr`
+                                      return `£${p >= 1 ? p.toFixed(2) : p.toFixed(4)}/${u}`
+                                    })() : '-'}
                                   </td>
                                   <td style={styles.tdSmall}>{s.latest_invoice_date || '-'}</td>
                                 </tr>
@@ -384,68 +363,11 @@ export default function Ingredients() {
         </table>
       )}
 
-      {/* Create/Edit Modal */}
-      {showCreateModal && (
-        <div style={styles.overlay}>
-          <div style={styles.modal}>
-            <div style={styles.modalHeader}>
-              <h3 style={{ margin: 0 }}>{editingId ? 'Edit Ingredient' : 'Create Ingredient'}</h3>
-              <button onClick={resetForm} style={styles.closeBtn}>✕</button>
-            </div>
-            <div style={styles.modalBody}>
-              <label style={styles.label}>Name *</label>
-              <input value={formName} onChange={(e) => setFormName(e.target.value)} style={styles.input} placeholder="e.g. Butter, Minced Beef 80/20" />
-              {duplicateWarnings.length > 0 && (
-                <div style={styles.warning}>
-                  Similar ingredients exist: {duplicateWarnings.map(d => `${d.name} (${Math.round(d.similarity * 100)}%)`).join(', ')}
-                </div>
-              )}
-
-              <label style={styles.label}>Category</label>
-              <select value={formCategory} onChange={(e) => setFormCategory(e.target.value)} style={styles.input}>
-                <option value="">None</option>
-                {categories?.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-
-              <div style={styles.row}>
-                <div style={{ flex: 1 }}>
-                  <label style={styles.label}>Standard Unit</label>
-                  <select value={formUnit} onChange={(e) => setFormUnit(e.target.value)} style={styles.input}>
-                    <option value="g">g (grams)</option>
-                    <option value="kg">kg (kilograms)</option>
-                    <option value="ml">ml (millilitres)</option>
-                    <option value="ltr">ltr (litres)</option>
-                    <option value="each">each</option>
-                  </select>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={styles.label}>Yield %</label>
-                  <input type="number" value={formYield} onChange={(e) => setFormYield(e.target.value)} style={styles.input} min="1" max="100" step="0.5" />
-                </div>
-              </div>
-
-              <label style={styles.label}>Manual Price (per {formUnit}, if no sources)</label>
-              <input type="number" value={formPrice} onChange={(e) => setFormPrice(e.target.value)} style={styles.input} step="0.0001" placeholder="Optional" />
-
-              <label style={styles.label}>Notes</label>
-              <textarea value={formNotes} onChange={(e) => setFormNotes(e.target.value)} style={{ ...styles.input, minHeight: '60px' }} placeholder="Optional notes..." />
-            </div>
-            <div style={styles.modalFooter}>
-              <button onClick={resetForm} style={styles.cancelBtn}>Cancel</button>
-              <button
-                onClick={handleSave}
-                disabled={!formName || createMutation.isPending || updateMutation.isPending}
-                style={styles.primaryBtn}
-              >
-                {createMutation.isPending || updateMutation.isPending ? 'Saving...' : 'Save'}
-              </button>
-            </div>
-            {(createMutation.error || updateMutation.error) && (
-              <div style={styles.errorMsg}>{(createMutation.error || updateMutation.error)?.message}</div>
-            )}
-          </div>
-        </div>
-      )}
+      <IngredientModal
+        open={showModal}
+        onClose={() => { setShowModal(false); setEditingIngredient(null) }}
+        editingIngredient={editingIngredient}
+      />
     </div>
   )
 }
@@ -468,17 +390,5 @@ const styles: Record<string, React.CSSProperties> = {
   sourcesSection: { padding: '0.5rem' },
   smallBtn: { padding: '0.25rem 0.5rem', border: '1px solid #ddd', borderRadius: '4px', background: 'white', cursor: 'pointer', fontSize: '0.75rem', marginRight: '0.25rem' },
   primaryBtn: { padding: '0.6rem 1.25rem', background: '#e94560', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '0.9rem' },
-  cancelBtn: { padding: '0.6rem 1.25rem', background: '#f0f0f0', color: '#333', border: 'none', borderRadius: '6px', cursor: 'pointer' },
   loading: { padding: '2rem', textAlign: 'center' as const, color: '#888' },
-  overlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
-  modal: { background: 'white', borderRadius: '10px', width: '500px', maxWidth: '95vw', maxHeight: '90vh', overflow: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', borderBottom: '1px solid #eee' },
-  modalBody: { padding: '1.25rem' },
-  modalFooter: { display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', padding: '1rem 1.25rem', borderTop: '1px solid #eee' },
-  closeBtn: { background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer', color: '#888' },
-  label: { display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#555', marginTop: '0.75rem', marginBottom: '0.25rem' },
-  input: { width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem', boxSizing: 'border-box' as const },
-  row: { display: 'flex', gap: '0.75rem' },
-  warning: { background: '#fff3cd', color: '#856404', padding: '0.5rem 0.75rem', borderRadius: '6px', fontSize: '0.8rem', marginTop: '0.35rem' },
-  errorMsg: { padding: '0.75rem 1.25rem', color: '#dc3545', fontSize: '0.85rem' },
 }

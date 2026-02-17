@@ -151,7 +151,7 @@ export default function EventOrderEditor() {
 
   const totalCost = order.items.reduce((sum, i) => sum + (i.subtotal || 0), 0)
   const totalServings = order.items.reduce((sum, i) => {
-    if (i.recipe_type === 'plated') return sum + i.quantity
+    if (i.recipe_type === 'dish') return sum + i.quantity
     return sum + (i.quantity * i.batch_portions)
   }, 0)
 
@@ -264,8 +264,7 @@ export default function EventOrderEditor() {
                 <tr>
                   <th style={styles.th}>Ingredient</th>
                   <th style={styles.th}>Category</th>
-                  <th style={styles.th}>Qty Needed</th>
-                  <th style={styles.th}>Adjusted (yield)</th>
+                  <th style={styles.th}>Quantity</th>
                   <th style={styles.th}>Source</th>
                   <th style={styles.th}>Packs</th>
                   <th style={styles.th}>Est. Cost</th>
@@ -276,13 +275,7 @@ export default function EventOrderEditor() {
                   <tr key={item.ingredient_id}>
                     <td style={styles.td}>{item.ingredient_name}</td>
                     <td style={styles.td}><span style={{ fontSize: '0.75rem', color: '#888' }}>{item.category}</span></td>
-                    <td style={styles.td}>{item.total_quantity}{item.unit}</td>
-                    <td style={styles.td}>
-                      {item.adjusted_quantity !== item.total_quantity
-                        ? <span style={{ color: '#e94560' }}>{item.adjusted_quantity}{item.unit}</span>
-                        : `${item.adjusted_quantity}${item.unit}`
-                      }
-                    </td>
+                    <td style={styles.td}>{item.adjusted_quantity}{item.unit}</td>
                     <td style={styles.td}>
                       {item.sources.length > 0
                         ? item.sources[0].supplier_name

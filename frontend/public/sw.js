@@ -1,6 +1,5 @@
-const CACHE_NAME = 'invoice-upload-v1'
+const CACHE_NAME = 'invoice-upload-v2'
 const SHELL_URLS = [
-  '/upload-app',
   '/manifest.json',
 ]
 
@@ -28,10 +27,24 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
+  // Navigation requests (HTML pages): always network-first
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const clone = response.clone()
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
+          return response
+        })
+        .catch(() => caches.match(event.request).then((c) => c || caches.match('/')))
+    )
+    return
+  }
+
+  // Static assets (JS/CSS with content hashes): cache-first
   event.respondWith(
     caches.match(event.request).then((cached) => {
       return cached || fetch(event.request).then((response) => {
-        // Cache successful GET responses for static assets
         if (event.request.method === 'GET' && response.status === 200) {
           const clone = response.clone()
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
@@ -39,9 +52,8 @@ self.addEventListener('fetch', (event) => {
         return response
       })
     }).catch(() => {
-      // Offline fallback: serve the app shell
       if (event.request.mode === 'navigate') {
-        return caches.match('/upload-app')
+        return caches.match('/')
       }
     })
   )

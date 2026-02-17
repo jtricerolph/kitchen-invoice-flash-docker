@@ -7,18 +7,21 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text, and_, or_, delete
+from sqlalchemy import select, func, text, and_, or_, delete, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel
 
 from database import get_db
 from models.user import User
-from models.ingredient import Ingredient, IngredientCategory, IngredientSource, IngredientFlag
-from models.food_flag import FoodFlag
+from models.ingredient import Ingredient, IngredientCategory, IngredientSource, IngredientFlag, IngredientFlagNone
+from models.food_flag import FoodFlag, FoodFlagCategory
 from models.line_item import LineItem
 from models.invoice import Invoice
 from models.supplier import Supplier
+from models.recipe import Recipe, RecipeIngredient
 from auth.jwt import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -101,6 +104,8 @@ class IngredientCreate(BaseModel):
     yield_percent: float = 100.0
     manual_price: Optional[float] = None
     notes: Optional[str] = None
+    is_prepackaged: bool = False
+    product_ingredients: Optional[str] = None
 
 class IngredientUpdate(BaseModel):
     name: Optional[str] = None
@@ -110,6 +115,8 @@ class IngredientUpdate(BaseModel):
     manual_price: Optional[float] = None
     notes: Optional[str] = None
     is_archived: Optional[bool] = None
+    is_prepackaged: Optional[bool] = None
+    product_ingredients: Optional[str] = None
 
 class SourceCreate(BaseModel):
     supplier_id: int
@@ -118,6 +125,9 @@ class SourceCreate(BaseModel):
     pack_quantity: Optional[int] = None
     unit_size: Optional[float] = None
     unit_size_type: Optional[str] = None
+    latest_unit_price: Optional[float] = None
+    invoice_id: Optional[int] = None
+    apply_to_existing: bool = False  # Bulk-set ingredient_id on matching line items
 
 class SourceUpdate(BaseModel):
     product_code: Optional[str] = None
@@ -132,16 +142,15 @@ class SourceResponse(BaseModel):
     supplier_name: str = ""
     product_code: Optional[str] = None
     description_pattern: Optional[str] = None
+    description_aliases: list[str] = []
     pack_quantity: Optional[int] = None
     unit_size: Optional[float] = None
     unit_size_type: Optional[str] = None
     latest_unit_price: Optional[float] = None
-    latest_invoice_date: Optional[str] = None
+    latest_invoice_date: Optional[date] = None
     price_per_std_unit: Optional[float] = None
-
-    @field_serializer('latest_invoice_date')
-    def ser_date(self, v):
-        return str(v) if v else None
+    matched_line_items: Optional[int] = None  # Count of line items bulk-updated
+    backfilled_count: Optional[int] = None  # Count of line items with product codes backfilled
 
     class Config:
         from_attributes = True
@@ -152,6 +161,7 @@ class FlagResponse(BaseModel):
     flag_name: str = ""
     flag_code: Optional[str] = None
     category_name: str = ""
+    propagation_type: str = "contains"
     source: str = "manual"
 
 class IngredientResponse(BaseModel):
@@ -164,9 +174,14 @@ class IngredientResponse(BaseModel):
     manual_price: Optional[float] = None
     notes: Optional[str] = None
     is_archived: bool = False
+    flags_assessed: bool = False
+    is_prepackaged: bool = False
+    product_ingredients: Optional[str] = None
+    has_label_image: bool = False
     source_count: int = 0
     effective_price: Optional[float] = None
     flags: list[FlagResponse] = []
+    none_categories: list[str] = []
     created_at: str = ""
 
     class Config:
@@ -278,18 +293,15 @@ async def delete_category(
 def _build_ingredient_response(ing: Ingredient, source_count: int = 0, flags: list = None) -> IngredientResponse:
     """Build a response dict from an Ingredient model instance."""
     # Calculate effective price from most recent source or manual_price
+    # (yield is now per recipe-ingredient use, not per raw ingredient)
     effective_price = None
     if ing.sources:
-        # Find source with most recent price
         priced_sources = [s for s in ing.sources if s.price_per_std_unit is not None]
         if priced_sources:
             latest = max(priced_sources, key=lambda s: s.latest_invoice_date or date.min)
-            raw_price = float(latest.price_per_std_unit)
-            yield_pct = float(ing.yield_percent) if ing.yield_percent else 100.0
-            effective_price = raw_price / (yield_pct / 100) if yield_pct > 0 else raw_price
+            effective_price = float(latest.price_per_std_unit)
     if effective_price is None and ing.manual_price:
-        yield_pct = float(ing.yield_percent) if ing.yield_percent else 100.0
-        effective_price = float(ing.manual_price) / (yield_pct / 100) if yield_pct > 0 else float(ing.manual_price)
+        effective_price = float(ing.manual_price)
 
     flag_list = []
     if flags:
@@ -302,6 +314,7 @@ def _build_ingredient_response(ing: Ingredient, source_count: int = 0, flags: li
                 flag_name=f.food_flag.name if f.food_flag else "",
                 flag_code=f.food_flag.code if f.food_flag else None,
                 category_name=f.food_flag.category.name if f.food_flag and f.food_flag.category else "",
+                propagation_type=f.food_flag.category.propagation_type if f.food_flag and f.food_flag.category else "contains",
                 source=f.source,
             )
             for f in ing.flags
@@ -317,9 +330,16 @@ def _build_ingredient_response(ing: Ingredient, source_count: int = 0, flags: li
         manual_price=float(ing.manual_price) if ing.manual_price else None,
         notes=ing.notes,
         is_archived=ing.is_archived,
+        flags_assessed=ing.flags_assessed if hasattr(ing, 'flags_assessed') else False,
+        is_prepackaged=ing.is_prepackaged if hasattr(ing, 'is_prepackaged') else False,
+        product_ingredients=ing.product_ingredients if hasattr(ing, 'product_ingredients') else None,
+        has_label_image=bool(ing.label_image_path) if hasattr(ing, 'label_image_path') else False,
         source_count=source_count or (len(ing.sources) if ing.sources else 0),
         effective_price=round(effective_price, 6) if effective_price else None,
         flags=flag_list,
+        none_categories=[
+            fn.category.name for fn in ing.flag_nones if fn.category
+        ] if hasattr(ing, 'flag_nones') and ing.flag_nones else [],
         created_at=str(ing.created_at) if ing.created_at else "",
     )
 
@@ -339,10 +359,13 @@ async def list_ingredients(
             selectinload(Ingredient.category),
             selectinload(Ingredient.sources),
             selectinload(Ingredient.flags).selectinload(IngredientFlag.food_flag).selectinload(FoodFlag.category),
+            selectinload(Ingredient.flag_nones).selectinload(IngredientFlagNone.category),
         )
         .where(Ingredient.kitchen_id == user.kitchen_id)
     )
-    if not archived:
+    if archived:
+        query = query.where(Ingredient.is_archived == True)
+    else:
         query = query.where(Ingredient.is_archived == False)
     if category_id:
         query = query.where(Ingredient.category_id == category_id)
@@ -360,6 +383,7 @@ async def list_ingredients(
     return responses
 
 
+@router.post("/")
 @router.post("")
 async def create_ingredient(
     data: IngredientCreate,
@@ -384,11 +408,24 @@ async def create_ingredient(
         yield_percent=Decimal(str(data.yield_percent)),
         manual_price=Decimal(str(data.manual_price)) if data.manual_price else None,
         notes=data.notes,
+        is_prepackaged=data.is_prepackaged,
+        product_ingredients=data.product_ingredients,
         created_by=user.id,
     )
     db.add(ing)
     await db.commit()
-    await db.refresh(ing, ["category", "sources", "flags"])
+    # Re-query with full eager loading to avoid lazy-load in async context
+    result2 = await db.execute(
+        select(Ingredient)
+        .options(
+            selectinload(Ingredient.category),
+            selectinload(Ingredient.sources),
+            selectinload(Ingredient.flags).selectinload(IngredientFlag.food_flag).selectinload(FoodFlag.category),
+            selectinload(Ingredient.flag_nones).selectinload(IngredientFlagNone.category),
+        )
+        .where(Ingredient.id == ing.id)
+    )
+    ing = result2.scalar_one()
     return _build_ingredient_response(ing)
 
 
@@ -398,24 +435,34 @@ async def suggest_ingredients(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Suggest existing ingredient matches for a line item description using pg_trgm."""
+    """Suggest existing ingredient matches for a line item description using pg_trgm + ILIKE fallback."""
     result = await db.execute(
         text("""
-            SELECT id, name, similarity(name, :desc) AS sim
-            FROM ingredients
-            WHERE kitchen_id = :kid AND similarity(name, :desc) > 0.2
+            SELECT i.id, i.name, i.standard_unit, i.yield_percent,
+                   ic.name AS category_name,
+                   similarity(i.name, :desc) AS sim
+            FROM ingredients i
+            LEFT JOIN ingredient_categories ic ON ic.id = i.category_id
+            WHERE i.kitchen_id = :kid
+              AND i.is_archived = false
+              AND (similarity(i.name, :desc) > 0.15 OR i.name ILIKE :like)
             ORDER BY sim DESC
             LIMIT 8
         """),
-        {"desc": description, "kid": user.kitchen_id},
+        {"desc": description, "kid": user.kitchen_id, "like": f"%{description}%"},
     )
     rows = result.fetchall()
-    return SuggestResponse(
-        suggestions=[
-            SimilarIngredient(id=r.id, name=r.name, similarity=round(r.sim, 3))
-            for r in rows
-        ]
-    )
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "standard_unit": r.standard_unit,
+            "yield_percent": float(r.yield_percent),
+            "category_name": r.category_name,
+            "similarity": round(r.sim, 3),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/check-duplicate")
@@ -442,6 +489,25 @@ async def check_duplicate(
     ]
 
 
+@router.get("/bulk-nones")
+async def get_bulk_nones(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all 'None' category entries for all ingredients in the kitchen (for bulk allergen grid)."""
+    result = await db.execute(
+        select(IngredientFlagNone.ingredient_id, IngredientFlagNone.category_id)
+        .join(Ingredient, Ingredient.id == IngredientFlagNone.ingredient_id)
+        .where(Ingredient.kitchen_id == user.kitchen_id)
+    )
+    nones = {}
+    for ing_id, cat_id in result.all():
+        if ing_id not in nones:
+            nones[ing_id] = []
+        nones[ing_id].append(cat_id)
+    return nones
+
+
 @router.get("/{ingredient_id}")
 async def get_ingredient(
     ingredient_id: int,
@@ -454,6 +520,7 @@ async def get_ingredient(
             selectinload(Ingredient.category),
             selectinload(Ingredient.sources).selectinload(IngredientSource.supplier),
             selectinload(Ingredient.flags).selectinload(IngredientFlag.food_flag).selectinload(FoodFlag.category),
+            selectinload(Ingredient.flag_nones).selectinload(IngredientFlagNone.category),
         )
         .where(Ingredient.id == ingredient_id, Ingredient.kitchen_id == user.kitchen_id)
     )
@@ -461,6 +528,31 @@ async def get_ingredient(
     if not ing:
         raise HTTPException(404, "Ingredient not found")
     return _build_ingredient_response(ing)
+
+
+@router.get("/{ingredient_id}/label-image")
+async def get_label_image(
+    ingredient_id: int,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the stored label image for a prepackaged ingredient.
+    Uses token query param for auth (allows window.open / img src usage)."""
+    import os
+    from auth.jwt import get_current_user_from_token
+    user = await get_current_user_from_token(token, db)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    result = await db.execute(
+        select(Ingredient.label_image_path).where(
+            Ingredient.id == ingredient_id,
+            Ingredient.kitchen_id == user.kitchen_id,
+        )
+    )
+    label_path = result.scalar_one_or_none()
+    if not label_path or not os.path.exists(label_path):
+        raise HTTPException(404, "Label image not found")
+    return FileResponse(label_path)
 
 
 @router.patch("/{ingredient_id}")
@@ -493,9 +585,24 @@ async def update_ingredient(
         ing.notes = data.notes
     if data.is_archived is not None:
         ing.is_archived = data.is_archived
+    if data.is_prepackaged is not None:
+        ing.is_prepackaged = data.is_prepackaged
+    if data.product_ingredients is not None:
+        ing.product_ingredients = data.product_ingredients
 
     await db.commit()
-    await db.refresh(ing, ["category", "sources", "flags"])
+    # Re-query with full eager loading to avoid lazy-load in async context
+    result2 = await db.execute(
+        select(Ingredient)
+        .options(
+            selectinload(Ingredient.category),
+            selectinload(Ingredient.sources),
+            selectinload(Ingredient.flags).selectinload(IngredientFlag.food_flag).selectinload(FoodFlag.category),
+            selectinload(Ingredient.flag_nones).selectinload(IngredientFlagNone.category),
+        )
+        .where(Ingredient.id == ing.id)
+    )
+    ing = result2.scalar_one()
     return _build_ingredient_response(ing)
 
 
@@ -517,6 +624,53 @@ async def archive_ingredient(
     ing.is_archived = True
     await db.commit()
     return {"ok": True}
+
+
+# ── Backfill helper ───────────────────────────────────────────────────────────
+
+async def backfill_product_codes_for_source(
+    source: IngredientSource,
+    kitchen_id: int,
+    db: AsyncSession,
+) -> int:
+    """
+    For a source that has both product_code and description_pattern,
+    find line items from same supplier where product_code IS NULL and
+    first line of description matches, then set their product_code and ingredient_id.
+    Returns count of updated line items.
+    """
+    if not source.product_code or not source.description_pattern:
+        return 0
+
+    norm_pattern = normalize_description(source.description_pattern)
+    if not norm_pattern:
+        return 0
+
+    # Find line items from same supplier with no product_code where first-line description matches
+    result = await db.execute(
+        text("""
+            UPDATE line_items li
+            SET product_code = :code,
+                ingredient_id = COALESCE(li.ingredient_id, :ing_id)
+            FROM invoices inv
+            WHERE li.invoice_id = inv.id
+              AND inv.kitchen_id = :kid
+              AND inv.supplier_id = :sid
+              AND (li.product_code IS NULL OR li.product_code = '')
+              AND LOWER(TRIM(split_part(li.description, E'\\n', 1))) = LOWER(:pattern)
+        """),
+        {
+            "code": source.product_code,
+            "ing_id": source.ingredient_id,
+            "kid": kitchen_id,
+            "sid": source.supplier_id,
+            "pattern": norm_pattern,
+        },
+    )
+    count = result.rowcount
+    if count > 0:
+        logger.info(f"Backfilled product_code '{source.product_code}' on {count} line items for source {source.id}")
+    return count
 
 
 # ── Source endpoints ──────────────────────────────────────────────────────────
@@ -544,6 +698,7 @@ async def list_sources(
             supplier_name=s.supplier.name if s.supplier else "",
             product_code=s.product_code,
             description_pattern=s.description_pattern,
+            description_aliases=s.description_aliases or [],
             pack_quantity=s.pack_quantity,
             unit_size=float(s.unit_size) if s.unit_size else None,
             unit_size_type=s.unit_size_type,
@@ -576,9 +731,31 @@ async def create_source(
     if not data.product_code and not data.description_pattern:
         raise HTTPException(400, "Either product_code or description_pattern is required")
 
-    # Calculate price_per_std_unit if pack data provided
+    # Calculate price_per_std_unit if pack data and price provided
     price_per_std = None
-    # We'll set price when line items match
+    unit_conversions = {
+        'g': {'g': 1, 'kg': 0.001}, 'kg': {'g': 1000, 'kg': 1}, 'oz': {'g': 28.3495, 'kg': 0.0283495},
+        'ml': {'ml': 1, 'ltr': 0.001}, 'cl': {'ml': 10, 'ltr': 0.01}, 'ltr': {'ml': 1000, 'ltr': 1},
+        'each': {'each': 1},
+    }
+    # Re-fetch ingredient for standard_unit
+    ing_obj = await db.execute(
+        select(Ingredient).where(Ingredient.id == ingredient_id, Ingredient.kitchen_id == user.kitchen_id)
+    )
+    ingredient = ing_obj.scalar_one_or_none()
+    if data.latest_unit_price and data.unit_size and data.unit_size_type and ingredient:
+        pq = data.pack_quantity or 1
+        conv_factor = unit_conversions.get(data.unit_size_type, {}).get(ingredient.standard_unit, 0)
+        if conv_factor:
+            total_std = pq * data.unit_size * conv_factor
+            price_per_std = Decimal(str(data.latest_unit_price)) / Decimal(str(total_std))
+
+    # Get invoice date if invoice_id provided
+    invoice_date = None
+    if data.invoice_id:
+        from models.invoice import Invoice
+        inv_result = await db.execute(select(Invoice.invoice_date).where(Invoice.id == data.invoice_id))
+        invoice_date = inv_result.scalar_one_or_none()
 
     source = IngredientSource(
         kitchen_id=user.kitchen_id,
@@ -586,13 +763,51 @@ async def create_source(
         supplier_id=data.supplier_id,
         product_code=data.product_code,
         description_pattern=data.description_pattern,
-        pack_quantity=data.pack_quantity,
+        pack_quantity=data.pack_quantity or 1,
         unit_size=Decimal(str(data.unit_size)) if data.unit_size else None,
         unit_size_type=data.unit_size_type,
+        latest_unit_price=Decimal(str(data.latest_unit_price)) if data.latest_unit_price else None,
+        latest_invoice_id=data.invoice_id,
+        latest_invoice_date=invoice_date,
+        price_per_std_unit=price_per_std,
     )
     db.add(source)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "This supplier product is already mapped to this ingredient")
     await db.refresh(source)
+
+    # Bulk-set ingredient_id on matching line items if requested
+    matched_count = None
+    if data.apply_to_existing:
+        match_conditions = [
+            Invoice.kitchen_id == user.kitchen_id,
+            Invoice.supplier_id == data.supplier_id,
+            LineItem.invoice_id == Invoice.id,
+            LineItem.ingredient_id.is_(None),
+        ]
+        if data.product_code:
+            match_conditions.append(LineItem.product_code == data.product_code)
+        elif data.description_pattern:
+            match_conditions.append(
+                func.lower(LineItem.description).contains(data.description_pattern.lower())
+            )
+
+        result = await db.execute(
+            update(LineItem)
+            .where(*match_conditions)
+            .values(ingredient_id=ingredient_id)
+        )
+        matched_count = result.rowcount
+        await db.commit()
+        logger.info(f"Bulk-mapped {matched_count} line items to ingredient {ingredient_id}")
+
+    # Auto-backfill product codes on line items with matching description but missing code
+    backfilled = await backfill_product_codes_for_source(source, user.kitchen_id, db)
+    if backfilled > 0:
+        await db.commit()
 
     # Load supplier name
     sup = await db.execute(select(Supplier).where(Supplier.id == data.supplier_id))
@@ -604,12 +819,15 @@ async def create_source(
         supplier_name=supplier.name if supplier else "",
         product_code=source.product_code,
         description_pattern=source.description_pattern,
+        description_aliases=source.description_aliases or [],
         pack_quantity=source.pack_quantity,
         unit_size=float(source.unit_size) if source.unit_size else None,
         unit_size_type=source.unit_size_type,
-        latest_unit_price=None,
-        latest_invoice_date=None,
-        price_per_std_unit=None,
+        latest_unit_price=float(source.latest_unit_price) if source.latest_unit_price else None,
+        latest_invoice_date=source.latest_invoice_date,
+        price_per_std_unit=float(source.price_per_std_unit) if source.price_per_std_unit else None,
+        matched_line_items=matched_count,
+        backfilled_count=backfilled if backfilled > 0 else None,
     )
 
 
@@ -654,8 +872,11 @@ async def update_source(
                 ingredient.standard_unit,
             )
 
+    # Auto-backfill product codes if source has both code and description
+    backfilled = await backfill_product_codes_for_source(source, user.kitchen_id, db)
+
     await db.commit()
-    return {"ok": True}
+    return {"ok": True, "backfilled_count": backfilled}
 
 
 @router.delete("/sources/{source_id}")
@@ -676,6 +897,216 @@ async def delete_source(
     await db.delete(source)
     await db.commit()
     return {"ok": True}
+
+
+# ── Description alias endpoints ───────────────────────────────────────────────
+
+class AddAliasRequest(BaseModel):
+    alias: str
+
+class AliasSuggestionItem(BaseModel):
+    description: str
+    price: Optional[float] = None
+
+class AliasSuggestionsRequest(BaseModel):
+    supplier_id: int
+    items: list[AliasSuggestionItem]
+
+class BackfillCodesRequest(BaseModel):
+    source_id: Optional[int] = None
+    supplier_id: Optional[int] = None
+
+
+@router.post("/sources/{source_id}/aliases")
+async def add_description_alias(
+    source_id: int,
+    data: AddAliasRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a description alias to an ingredient source and normalize matching line items."""
+    result = await db.execute(
+        select(IngredientSource).where(
+            IngredientSource.id == source_id,
+            IngredientSource.kitchen_id == user.kitchen_id,
+        )
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(404, "Source not found")
+    if not source.description_pattern:
+        raise HTTPException(400, "Source has no description_pattern to normalize to")
+
+    alias = data.alias.strip()
+    if not alias:
+        raise HTTPException(400, "Alias cannot be empty")
+
+    # Add alias (case-insensitive dedup) — create new list for SQLAlchemy change detection
+    current_aliases = list(source.description_aliases or [])
+    if alias.lower() not in [a.lower() for a in current_aliases]:
+        current_aliases.append(alias)
+        source.description_aliases = current_aliases
+
+    # Bulk-rename line items: same supplier, first line matches alias (case-insensitive)
+    # 1. Save original description into description_alt (only if not already saved)
+    # 2. Replace first line of description with master description_pattern
+    # 3. Set ingredient_id
+    # Also backfill product_code if source has one
+    master = source.description_pattern
+    code_clause = ", product_code = :code" if source.product_code else ""
+    code_params = {"code": source.product_code} if source.product_code else {}
+
+    rename_result = await db.execute(
+        text(f"""
+            UPDATE line_items li
+            SET description = :master || CASE
+                    WHEN position(E'\\n' IN li.description) > 0
+                    THEN substring(li.description FROM position(E'\\n' IN li.description))
+                    ELSE ''
+                END,
+                description_alt = CASE
+                    WHEN li.description_alt IS NULL THEN li.description
+                    ELSE li.description_alt
+                END,
+                ingredient_id = COALESCE(li.ingredient_id, :ing_id)
+                {code_clause}
+            FROM invoices inv
+            WHERE li.invoice_id = inv.id
+              AND inv.kitchen_id = :kid
+              AND inv.supplier_id = :sid
+              AND LOWER(TRIM(split_part(li.description, E'\\n', 1))) = LOWER(:alias)
+        """),
+        {
+            "master": master,
+            "ing_id": source.ingredient_id,
+            "kid": user.kitchen_id,
+            "sid": source.supplier_id,
+            "alias": alias,
+            **code_params,
+        },
+    )
+    renamed_count = rename_result.rowcount
+
+    await db.commit()
+    logger.info(f"Added alias '{alias}' to source {source_id}, renamed {renamed_count} line items")
+
+    return {"ok": True, "alias": alias, "renamed_count": renamed_count}
+
+
+@router.post("/sources/alias-suggestions")
+async def get_alias_suggestions(
+    data: AliasSuggestionsRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Find close description matches for unmapped line items from a supplier."""
+    # Load all ingredient sources for this supplier + kitchen
+    src_result = await db.execute(
+        select(IngredientSource)
+        .options(selectinload(IngredientSource.ingredient))
+        .where(
+            IngredientSource.kitchen_id == user.kitchen_id,
+            IngredientSource.supplier_id == data.supplier_id,
+        )
+    )
+    sources = src_result.scalars().all()
+    if not sources:
+        return []
+
+    # Build candidate list: (canonical_description, source)
+    candidates = []
+    known_patterns = set()  # All known patterns + aliases (lowered) for exact-match skip
+    for s in sources:
+        if s.description_pattern:
+            norm = s.description_pattern.lower().strip()
+            candidates.append((s.description_pattern, s))
+            known_patterns.add(norm)
+            for alias in (s.description_aliases or []):
+                known_patterns.add(alias.lower().strip())
+
+    if not candidates:
+        return []
+
+    suggestions = []
+    for item in data.items:
+        desc = item.description.strip()
+        first_line = desc.split('\n')[0].strip()
+        if not first_line:
+            continue
+        # Skip if already an exact match to a known pattern or alias
+        if first_line.lower() in known_patterns:
+            continue
+
+        # Find best match using pg_trgm similarity
+        best_match = None
+        best_sim = 0.0
+        for pattern, source in candidates:
+            sim_result = await db.execute(
+                text("SELECT similarity(:a, :b) AS sim"),
+                {"a": first_line, "b": pattern},
+            )
+            sim = float(sim_result.scalar())
+            if sim > best_sim and sim >= 0.3:
+                best_sim = sim
+                best_match = (pattern, source)
+
+        if best_match:
+            pattern, source = best_match
+            # Calculate price difference if available
+            price_diff = None
+            if item.price and source.latest_unit_price:
+                price_diff = round(
+                    abs(item.price - float(source.latest_unit_price)) / float(source.latest_unit_price) * 100, 1
+                )
+
+            suggestions.append({
+                "description": first_line,
+                "source_id": source.id,
+                "ingredient_id": source.ingredient_id,
+                "ingredient_name": source.ingredient.name if source.ingredient else None,
+                "canonical_description": pattern,
+                "product_code": source.product_code,
+                "similarity": round(best_sim, 3),
+                "price_difference": price_diff,
+            })
+
+    # Sort by similarity descending
+    suggestions.sort(key=lambda x: x["similarity"], reverse=True)
+    return suggestions
+
+
+@router.post("/sources/backfill-codes")
+async def backfill_codes(
+    data: BackfillCodesRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retroactively fill in missing product codes on line items that match by description."""
+    if not data.source_id and not data.supplier_id:
+        raise HTTPException(400, "Provide either source_id or supplier_id")
+
+    query = select(IngredientSource).where(
+        IngredientSource.kitchen_id == user.kitchen_id,
+        IngredientSource.product_code.isnot(None),
+        IngredientSource.description_pattern.isnot(None),
+    )
+    if data.source_id:
+        query = query.where(IngredientSource.id == data.source_id)
+    if data.supplier_id:
+        query = query.where(IngredientSource.supplier_id == data.supplier_id)
+
+    result = await db.execute(query)
+    sources = result.scalars().all()
+
+    total_updated = 0
+    for source in sources:
+        count = await backfill_product_codes_for_source(source, user.kitchen_id, db)
+        total_updated += count
+
+    if total_updated > 0:
+        await db.commit()
+
+    return {"ok": True, "updated_count": total_updated}
 
 
 # ── Flag endpoints (on ingredients) ──────────────────────────────────────────
@@ -752,8 +1183,243 @@ async def set_ingredient_flags(
                 source="manual",
             ))
 
+    # When flags are set for a category, remove any "None" entries for that category
+    if data.food_flag_ids:
+        # Get category IDs for the flags being set
+        cat_result = await db.execute(
+            select(FoodFlag.category_id).where(FoodFlag.id.in_(data.food_flag_ids)).distinct()
+        )
+        cat_ids = [r for r in cat_result.scalars().all()]
+        if cat_ids:
+            await db.execute(
+                delete(IngredientFlagNone).where(
+                    IngredientFlagNone.ingredient_id == ingredient_id,
+                    IngredientFlagNone.category_id.in_(cat_ids),
+                )
+            )
+
     await db.commit()
     return {"ok": True}
+
+
+class FlagNoneRequest(BaseModel):
+    category_id: int
+
+
+@router.post("/{ingredient_id}/flags/none")
+async def toggle_flag_none(
+    ingredient_id: int,
+    data: FlagNoneRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle 'None apply' for a specific flag category on an ingredient."""
+    # Verify ingredient
+    result = await db.execute(
+        select(Ingredient).where(
+            Ingredient.id == ingredient_id,
+            Ingredient.kitchen_id == user.kitchen_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(404, "Ingredient not found")
+
+    # Check if "None" already exists for this category
+    existing = await db.execute(
+        select(IngredientFlagNone).where(
+            IngredientFlagNone.ingredient_id == ingredient_id,
+            IngredientFlagNone.category_id == data.category_id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        # Remove "None" (toggle off)
+        await db.execute(
+            delete(IngredientFlagNone).where(
+                IngredientFlagNone.ingredient_id == ingredient_id,
+                IngredientFlagNone.category_id == data.category_id,
+            )
+        )
+    else:
+        # Set "None" — also remove any actual flags from this category
+        flag_ids_result = await db.execute(
+            select(FoodFlag.id).where(FoodFlag.category_id == data.category_id)
+        )
+        flag_ids = [r for r in flag_ids_result.scalars().all()]
+        if flag_ids:
+            await db.execute(
+                delete(IngredientFlag).where(
+                    IngredientFlag.ingredient_id == ingredient_id,
+                    IngredientFlag.food_flag_id.in_(flag_ids),
+                )
+            )
+        db.add(IngredientFlagNone(
+            ingredient_id=ingredient_id,
+            category_id=data.category_id,
+        ))
+
+    await db.commit()
+    return {"ok": True}
+
+
+@router.get("/{ingredient_id}/flags/nones")
+async def get_flag_nones(
+    ingredient_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get category IDs where 'None' is set for an ingredient."""
+    result = await db.execute(
+        select(IngredientFlagNone.category_id).where(
+            IngredientFlagNone.ingredient_id == ingredient_id,
+        )
+    )
+    return {"none_category_ids": [r for r in result.scalars().all()]}
+
+
+@router.get("/{ingredient_id}/recipes")
+async def get_ingredient_recipes(
+    ingredient_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get recipes that use this ingredient."""
+    result = await db.execute(
+        select(Recipe.id, Recipe.name, Recipe.recipe_type)
+        .join(RecipeIngredient, RecipeIngredient.recipe_id == Recipe.id)
+        .where(
+            RecipeIngredient.ingredient_id == ingredient_id,
+            Recipe.kitchen_id == user.kitchen_id,
+            Recipe.is_archived == False,
+        )
+        .order_by(Recipe.name)
+    )
+    return [
+        {"id": r.id, "name": r.name, "recipe_type": r.recipe_type}
+        for r in result.all()
+    ]
+
+
+
+# ── Auto-normalize hook (called from invoices.py) ────────────────────────────
+
+async def auto_normalize_line_items(
+    invoice_id: int,
+    kitchen_id: int,
+    supplier_id: int,
+    db: AsyncSession,
+) -> int:
+    """
+    Auto-normalize line items on a new invoice:
+    1. Fill missing product codes from sources with matching descriptions
+    2. Rename descriptions that match known aliases to the master description
+    Returns total count of line items modified.
+    """
+    # Load all sources for this supplier
+    src_result = await db.execute(
+        select(IngredientSource).where(
+            IngredientSource.kitchen_id == kitchen_id,
+            IngredientSource.supplier_id == supplier_id,
+        )
+    )
+    sources = src_result.scalars().all()
+    if not sources:
+        return 0
+
+    total_updated = 0
+
+    # Pass 1: Fill missing product codes
+    for source in sources:
+        if source.product_code and source.description_pattern:
+            norm_pattern = normalize_description(source.description_pattern)
+            if not norm_pattern:
+                continue
+            result = await db.execute(
+                text("""
+                    UPDATE line_items li
+                    SET product_code = :code,
+                        ingredient_id = COALESCE(li.ingredient_id, :ing_id)
+                    FROM invoices inv
+                    WHERE li.invoice_id = :inv_id
+                      AND li.invoice_id = inv.id
+                      AND (li.product_code IS NULL OR li.product_code = '')
+                      AND LOWER(TRIM(split_part(li.description, E'\\n', 1))) = LOWER(:pattern)
+                """),
+                {
+                    "code": source.product_code,
+                    "ing_id": source.ingredient_id,
+                    "inv_id": invoice_id,
+                    "pattern": norm_pattern,
+                },
+            )
+            total_updated += result.rowcount
+
+    # Pass 2: Rename alias descriptions to master
+    for source in sources:
+        if not source.description_pattern or not source.description_aliases:
+            continue
+        master = source.description_pattern
+        code_clause = ", product_code = :code" if source.product_code else ""
+        code_params = {"code": source.product_code} if source.product_code else {}
+
+        for alias in source.description_aliases:
+            result = await db.execute(
+                text(f"""
+                    UPDATE line_items li
+                    SET description = :master || CASE
+                            WHEN position(E'\\n' IN li.description) > 0
+                            THEN substring(li.description FROM position(E'\\n' IN li.description))
+                            ELSE ''
+                        END,
+                        description_alt = CASE
+                            WHEN li.description_alt IS NULL THEN li.description
+                            ELSE li.description_alt
+                        END,
+                        ingredient_id = COALESCE(li.ingredient_id, :ing_id)
+                        {code_clause}
+                    WHERE li.invoice_id = :inv_id
+                      AND LOWER(TRIM(split_part(li.description, E'\\n', 1))) = LOWER(:alias)
+                """),
+                {
+                    "master": master,
+                    "ing_id": source.ingredient_id,
+                    "inv_id": invoice_id,
+                    "alias": alias,
+                    **code_params,
+                },
+            )
+            total_updated += result.rowcount
+
+    # Pass 3: Fill missing product codes from sibling line items (same supplier + description)
+    # This catches cases where no ingredient source exists yet but another invoice
+    # from the same supplier has the product code for the same description.
+    result = await db.execute(
+        text("""
+            UPDATE line_items li
+            SET product_code = known.code
+            FROM (
+                SELECT DISTINCT ON (LOWER(TRIM(split_part(li2.description, E'\\n', 1))))
+                    LOWER(TRIM(split_part(li2.description, E'\\n', 1))) AS norm_desc,
+                    li2.product_code AS code
+                FROM line_items li2
+                JOIN invoices inv ON inv.id = li2.invoice_id
+                WHERE inv.supplier_id = :sid
+                  AND li2.product_code IS NOT NULL
+                  AND li2.product_code != ''
+                ORDER BY LOWER(TRIM(split_part(li2.description, E'\\n', 1))),
+                         li2.id DESC
+            ) known
+            WHERE li.invoice_id = :inv_id
+              AND (li.product_code IS NULL OR li.product_code = '')
+              AND LOWER(TRIM(split_part(li.description, E'\\n', 1))) = known.norm_desc
+        """),
+        {"sid": supplier_id, "inv_id": invoice_id},
+    )
+    total_updated += result.rowcount
+
+    if total_updated > 0:
+        logger.info(f"Auto-normalized {total_updated} line items on invoice {invoice_id}")
+
+    return total_updated
 
 
 # ── Auto-price hook (called from invoices.py) ────────────────────────────────
@@ -811,7 +1477,7 @@ async def update_ingredient_prices_for_invoice(
     # Sort description patterns by length descending (longer = more specific)
     desc_sources.sort(key=lambda x: len(x[0]), reverse=True)
 
-    updated_ingredient_ids = set()
+    updated_ingredients = {}  # {ingredient_id: {"name": str, "old_price": float|None, "new_price": float}}
 
     for li in line_items:
         matched_source = None
@@ -841,6 +1507,7 @@ async def update_ingredient_prices_for_invoice(
             ingredient = ing_result.scalar_one_or_none()
 
             if ingredient and matched_source.pack_quantity and matched_source.unit_size and matched_source.unit_size_type:
+                old_price = float(matched_source.price_per_std_unit) if matched_source.price_per_std_unit else None
                 matched_source.price_per_std_unit = calc_price_per_std_unit(
                     li.unit_price,
                     matched_source.pack_quantity,
@@ -848,10 +1515,17 @@ async def update_ingredient_prices_for_invoice(
                     matched_source.unit_size_type,
                     ingredient.standard_unit,
                 )
-                updated_ingredient_ids.add(ingredient.id)
+                new_price = float(matched_source.price_per_std_unit) if matched_source.price_per_std_unit else None
+                if new_price is not None:
+                    updated_ingredients[ingredient.id] = {
+                        "name": ingredient.name,
+                        "unit": ingredient.standard_unit or "",
+                        "old_price": old_price,
+                        "new_price": new_price,
+                    }
 
             # Set line_item.ingredient_id
             if not li.ingredient_id:
                 li.ingredient_id = matched_source.ingredient_id
 
-    return updated_ingredient_ids
+    return updated_ingredients

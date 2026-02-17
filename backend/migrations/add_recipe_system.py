@@ -566,7 +566,7 @@ async def migrate():
             ]
 
             for kid in kitchen_ids:
-                # Create Allergy category
+                # Create Allergy category (only seed flags if category is new)
                 result = await conn.execute(text("""
                     INSERT INTO food_flag_categories (kitchen_id, name, propagation_type, sort_order, created_at)
                     VALUES (:kid, 'Allergy', 'contains', 0, NOW())
@@ -574,6 +574,7 @@ async def migrate():
                     RETURNING id
                 """), {"kid": kid})
                 row = result.fetchone()
+                allergy_is_new = row is not None
                 if row:
                     allergy_cat_id = row[0]
                 else:
@@ -582,7 +583,7 @@ async def migrate():
                     ), {"kid": kid})
                     allergy_cat_id = r.fetchone()[0]
 
-                # Create Dietary category
+                # Create Dietary category (only seed flags if category is new)
                 result = await conn.execute(text("""
                     INSERT INTO food_flag_categories (kitchen_id, name, propagation_type, sort_order, created_at)
                     VALUES (:kid, 'Dietary', 'suitable_for', 1, NOW())
@@ -590,6 +591,7 @@ async def migrate():
                     RETURNING id
                 """), {"kid": kid})
                 row = result.fetchone()
+                dietary_is_new = row is not None
                 if row:
                     dietary_cat_id = row[0]
                 else:
@@ -598,21 +600,22 @@ async def migrate():
                     ), {"kid": kid})
                     dietary_cat_id = r.fetchone()[0]
 
-                # Seed allergy flags
-                for i, (name, code, icon) in enumerate(allergy_flags):
-                    await conn.execute(text("""
-                        INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order, created_at)
-                        VALUES (:cat_id, :kid, :name, :code, :icon, :sort, NOW())
-                        ON CONFLICT (kitchen_id, name) DO NOTHING
-                    """), {"cat_id": allergy_cat_id, "kid": kid, "name": name, "code": code, "icon": icon, "sort": i})
+                # Only seed flags for newly created categories (don't re-insert user-deleted flags)
+                if allergy_is_new:
+                    for i, (name, code, icon) in enumerate(allergy_flags):
+                        await conn.execute(text("""
+                            INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order, created_at)
+                            VALUES (:cat_id, :kid, :name, :code, :icon, :sort, NOW())
+                            ON CONFLICT (kitchen_id, name) DO NOTHING
+                        """), {"cat_id": allergy_cat_id, "kid": kid, "name": name, "code": code, "icon": icon, "sort": i})
 
-                # Seed dietary flags
-                for i, (name, code, icon) in enumerate(dietary_flags):
-                    await conn.execute(text("""
-                        INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order, created_at)
-                        VALUES (:cat_id, :kid, :name, :code, :icon, :sort, NOW())
-                        ON CONFLICT (kitchen_id, name) DO NOTHING
-                    """), {"cat_id": dietary_cat_id, "kid": kid, "name": name, "code": code, "icon": icon, "sort": i})
+                if dietary_is_new:
+                    for i, (name, code, icon) in enumerate(dietary_flags):
+                        await conn.execute(text("""
+                            INSERT INTO food_flags (category_id, kitchen_id, name, code, icon, sort_order, created_at)
+                            VALUES (:cat_id, :kid, :name, :code, :icon, :sort, NOW())
+                            ON CONFLICT (kitchen_id, name) DO NOTHING
+                        """), {"cat_id": dietary_cat_id, "kid": kid, "name": name, "code": code, "icon": icon, "sort": i})
 
             print(f"+ Pre-seeded food flag categories and flags for {len(kitchen_ids)} kitchen(s)")
         except Exception as e:

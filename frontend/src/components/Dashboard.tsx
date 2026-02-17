@@ -205,9 +205,13 @@ export default function Dashboard() {
 
   const { data: recipeStats } = useQuery<{
     total_recipes: number
-    plated_recipes: number
+    dish_count: number
     component_recipes: number
     unmapped_ingredients: number
+    recipes_without_costing: number
+    dishes_missing_allergens: number
+    dishes_missing_allergens_list: Array<{ id: number; name: string }>
+    recipes_with_price_changes: number
   }>({
     queryKey: ['recipe-dashboard-stats'],
     queryFn: async () => {
@@ -508,25 +512,54 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ===== Recipes Section ===== */}
+      {/* ===== Recipes & Dishes Section ===== */}
       {recipeStats && (recipeStats.total_recipes > 0 || recipeStats.unmapped_ingredients > 0) && (
         <>
-          <h3 style={styles.sectionTitle}>Recipes</h3>
+          <h3 style={styles.sectionTitle}>Recipes & Dishes</h3>
           <div style={styles.fourGrid}>
             <div
               style={{ ...styles.card, ...styles.cardFlex, cursor: 'pointer' }}
               onClick={() => navigate('/recipes')}
             >
               <h3 style={styles.cardTitle}>Recipes</h3>
-              <div style={styles.statValue}>{recipeStats.total_recipes}</div>
-              <div style={styles.details}>
-                <span>{recipeStats.plated_recipes} plated</span>
-                <span>{recipeStats.component_recipes} components</span>
-              </div>
+              <div style={styles.statValue}>{recipeStats.component_recipes}</div>
+              <p style={styles.statLabel}>Component recipes</p>
               <div style={styles.cardLinkArea}>
-                <span style={styles.linkText}>View all →</span>
+                <span style={styles.linkText}>View recipes →</span>
               </div>
             </div>
+
+            <div
+              style={{ ...styles.card, ...styles.cardFlex, cursor: 'pointer' }}
+              onClick={() => navigate('/dishes')}
+            >
+              <h3 style={styles.cardTitle}>Dishes</h3>
+              <div style={styles.statValue}>{recipeStats.dish_count}</div>
+              <p style={styles.statLabel}>Plated dishes</p>
+              <div style={styles.cardLinkArea}>
+                <span style={styles.linkText}>View dishes →</span>
+              </div>
+            </div>
+
+            {recipeStats.dishes_missing_allergens > 0 && (
+              <div
+                style={{ ...styles.card, ...styles.cardFlex, ...styles.alertCard, cursor: 'pointer' }}
+                onClick={() => navigate('/allergens')}
+              >
+                <h3 style={styles.cardTitle}>Missing Allergens</h3>
+                <div style={{ ...styles.statValue, color: '#e94560' }}>{recipeStats.dishes_missing_allergens}</div>
+                <p style={styles.statLabel}>Dishes with unassessed ingredients</p>
+                {recipeStats.dishes_missing_allergens_list.length > 0 && (
+                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                    {recipeStats.dishes_missing_allergens_list.slice(0, 3).map(d => d.name).join(', ')}
+                    {recipeStats.dishes_missing_allergens_list.length > 3 && ` +${recipeStats.dishes_missing_allergens_list.length - 3} more`}
+                  </div>
+                )}
+                <div style={styles.cardLinkArea}>
+                  <span style={styles.linkText}>Review allergens →</span>
+                </div>
+              </div>
+            )}
 
             {recipeStats.unmapped_ingredients > 0 && (
               <div
@@ -538,6 +571,34 @@ export default function Dashboard() {
                 <p style={styles.statLabel}>Without supplier source</p>
                 <div style={styles.cardLinkArea}>
                   <span style={styles.linkText}>Map now →</span>
+                </div>
+              </div>
+            )}
+
+            {recipeStats.recipes_without_costing > 0 && (
+              <div
+                style={{ ...styles.card, ...styles.cardFlex, ...styles.alertCard, cursor: 'pointer' }}
+                onClick={() => navigate('/recipes')}
+              >
+                <h3 style={styles.cardTitle}>Without Costing</h3>
+                <div style={{ ...styles.statValue, color: '#f59e0b' }}>{recipeStats.recipes_without_costing}</div>
+                <p style={styles.statLabel}>Recipes with no cost snapshot</p>
+                <div style={styles.cardLinkArea}>
+                  <span style={styles.linkText}>View recipes →</span>
+                </div>
+              </div>
+            )}
+
+            {recipeStats.recipes_with_price_changes > 0 && (
+              <div
+                style={{ ...styles.card, ...styles.cardFlex, cursor: 'pointer', borderLeft: '3px solid #f59e0b' }}
+                onClick={() => navigate('/price-impact')}
+              >
+                <h3 style={styles.cardTitle}>Price Changes</h3>
+                <div style={{ ...styles.statValue, color: '#f59e0b' }}>{recipeStats.recipes_with_price_changes}</div>
+                <p style={styles.statLabel}>Recipes affected by ingredient price changes (14 days)</p>
+                <div style={styles.cardLinkArea}>
+                  <span style={styles.linkText}>View report →</span>
                 </div>
               </div>
             )}

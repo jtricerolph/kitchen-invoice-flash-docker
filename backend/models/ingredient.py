@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
-from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean, Date, UniqueConstraint
+from sqlalchemy import String, DateTime, ForeignKey, Numeric, Integer, Text, Boolean, Date, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
@@ -36,6 +36,10 @@ class Ingredient(Base):
     manual_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    flags_assessed: Mapped[bool] = mapped_column(Boolean, default=False)  # True when user has reviewed flags (even if none apply)
+    is_prepackaged: Mapped[bool] = mapped_column(Boolean, default=False)  # manufactured/pre-made product
+    product_ingredients: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # ingredients list from product label (OCR or manual)
+    label_image_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # stored label photo path
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -46,6 +50,7 @@ class Ingredient(Base):
     created_by_user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[created_by])
     sources: Mapped[List["IngredientSource"]] = relationship("IngredientSource", back_populates="ingredient", cascade="all, delete-orphan")
     flags: Mapped[List["IngredientFlag"]] = relationship("IngredientFlag", back_populates="ingredient", cascade="all, delete-orphan")
+    flag_nones: Mapped[List["IngredientFlagNone"]] = relationship("IngredientFlagNone", cascade="all, delete-orphan")
 
 
 class IngredientSource(Base):
@@ -59,6 +64,7 @@ class IngredientSource(Base):
     supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id"), nullable=False, index=True)
     product_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     description_pattern: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    description_aliases: Mapped[Optional[list]] = mapped_column(JSON, default=list)
 
     # Pack/conversion data
     pack_quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -97,6 +103,21 @@ class IngredientFlag(Base):
     ingredient: Mapped["Ingredient"] = relationship("Ingredient", back_populates="flags")
     food_flag: Mapped["FoodFlag"] = relationship("FoodFlag")
     flagged_by_user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[flagged_by])
+
+
+class IngredientFlagNone(Base):
+    """Tracks 'None apply' per ingredient per flag category (for required categories)"""
+    __tablename__ = "ingredient_flag_nones"
+    __table_args__ = (UniqueConstraint("ingredient_id", "category_id", name="uq_ingredient_flag_nones_ing_cat"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ingredient_id: Mapped[int] = mapped_column(ForeignKey("ingredients.id", ondelete="CASCADE"), nullable=False, index=True)
+    category_id: Mapped[int] = mapped_column(ForeignKey("food_flag_categories.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    ingredient: Mapped["Ingredient"] = relationship("Ingredient")
+    category: Mapped["FoodFlagCategory"] = relationship("FoodFlagCategory")
 
 
 # Forward references

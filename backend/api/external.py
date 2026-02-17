@@ -1,5 +1,5 @@
 """
-Internal API for in-house apps — API key authentication, plated recipe data,
+Internal API for in-house apps — API key authentication, dish recipe data,
 food flag listings. Prefix: /api/external/
 """
 import logging
@@ -42,15 +42,15 @@ async def get_kitchen_from_api_key(
     return settings
 
 
-@router.get("/recipes/plated")
-async def list_plated_recipes(
+@router.get("/recipes/dishes")
+async def list_dish_recipes(
     include_ingredients: str = Query("none", regex="^(none|flat|nested)$"),
     include_costs: bool = Query(False),
     exclude_flags: Optional[str] = Query(None, description="Comma-separated flag IDs to exclude"),
     kitchen: KitchenSettings = Depends(get_kitchen_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """List non-archived plated recipes for external consumption."""
+    """List non-archived dish recipes for external consumption."""
     query = (
         select(Recipe)
         .options(
@@ -59,7 +59,7 @@ async def list_plated_recipes(
         )
         .where(
             Recipe.kitchen_id == kitchen.kitchen_id,
-            Recipe.recipe_type == "plated",
+            Recipe.recipe_type == "dish",
             Recipe.is_archived == False,
         )
         .order_by(Recipe.name)
@@ -126,22 +126,34 @@ async def list_plated_recipes(
     return items
 
 
+@router.get("/recipes/plated")
+async def list_plated_recipes_compat(
+    include_ingredients: str = Query("none", regex="^(none|flat|nested)$"),
+    include_costs: bool = Query(False),
+    exclude_flags: Optional[str] = Query(None, description="Comma-separated flag IDs to exclude"),
+    kitchen: KitchenSettings = Depends(get_kitchen_from_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backward-compatible alias for /recipes/dishes."""
+    return await list_dish_recipes(include_ingredients, include_costs, exclude_flags, kitchen, db)
+
+
 @router.get("/recipes/{recipe_id}")
-async def get_plated_recipe(
+async def get_dish_recipe(
     recipe_id: int,
     include_ingredients: str = Query("none", regex="^(none|flat|nested)$"),
     include_costs: bool = Query(False),
     kitchen: KitchenSettings = Depends(get_kitchen_from_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single plated recipe for external consumption."""
+    """Get a single dish recipe for external consumption."""
     result = await db.execute(
         select(Recipe)
         .options(selectinload(Recipe.menu_section), selectinload(Recipe.images))
         .where(
             Recipe.id == recipe_id,
             Recipe.kitchen_id == kitchen.kitchen_id,
-            Recipe.recipe_type == "plated",
+            Recipe.recipe_type == "dish",
             Recipe.is_archived == False,
         )
     )
@@ -274,8 +286,17 @@ async def _get_recipe_ingredients(recipe_id: int, kitchen_id: int, db: AsyncSess
                 .options(selectinload(RecipeIngredient.ingredient))
                 .where(RecipeIngredient.recipe_id == child.id)
             )
-            child_batch = child.batch_portions or 1
-            scale = float(sr.portions_needed) / child_batch
+            # Use unified output qty for bulk/portioned child recipes
+            child_output_qty = float(child.batch_yield_qty) if child.batch_output_type == "bulk" and child.batch_yield_qty else (child.batch_portions or 1)
+            child_output_unit = child.batch_yield_unit if child.batch_output_type == "bulk" and child.batch_yield_unit else "portion"
+            # Convert portions_needed to child output unit if different unit was used
+            needed = float(sr.portions_needed)
+            needed_unit = sr.portions_needed_unit or child_output_unit
+            if needed_unit != child_output_unit:
+                _bases = {"g": 1.0, "kg": 1000.0, "ml": 1.0, "ltr": 1000.0}
+                if needed_unit in _bases and child_output_unit in _bases:
+                    needed = needed * _bases[needed_unit] / _bases[child_output_unit]
+            scale = needed / child_output_qty
             for cri in cri_result.scalars().all():
                 sub_recipe_ings.append({
                     "ingredient_id": cri.ingredient_id,

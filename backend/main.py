@@ -48,6 +48,17 @@ from migrations.add_supplier_po_fields import migrate as run_supplier_po_fields_
 from migrations.add_kitchen_details import migrate as run_kitchen_details_migration
 from migrations.add_cost_distributions import migrate as run_cost_distributions_migration
 from migrations.add_recipe_system import migrate as run_recipe_system_migration
+from migrations.add_flag_assessment import migrate as run_flag_assessment_migration
+from migrations.add_dish_separation import migrate as run_dish_separation_migration
+from migrations.add_step_title import migrate as run_step_title_migration
+from migrations.add_gross_sell_price import migrate as run_gross_sell_price_migration
+from migrations.add_recipe_ingredient_yield import migrate as run_recipe_ingredient_yield_migration
+from migrations.add_recipe_batch_type import migrate as run_recipe_batch_type_migration
+from migrations.add_sub_recipe_unit import migrate as run_sub_recipe_unit_migration
+from migrations.add_recipe_ingredient_unit import migrate as run_recipe_ingredient_unit_migration
+from migrations.add_allergen_keywords import migrate as run_allergen_keywords_migration
+from migrations.add_brakes_cache import migrate as run_brakes_cache_migration
+from migrations.add_description_aliases import migrate as run_description_aliases_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -311,6 +322,83 @@ async def lifespan(app: FastAPI):
         logger.info("Recipe system migration completed")
     except Exception as e:
         logger.warning(f"Recipe system migration warning (may be expected): {e}")
+
+    # Run flag assessment migration
+    try:
+        await run_flag_assessment_migration()
+        logger.info("Flag assessment migration completed")
+    except Exception as e:
+        logger.warning(f"Flag assessment migration warning (may be expected): {e}")
+
+    # Run dish separation migration
+    try:
+        await run_dish_separation_migration()
+        logger.info("Dish separation migration completed")
+    except Exception as e:
+        logger.warning(f"Dish separation migration warning (may be expected): {e}")
+
+    # Run step title migration
+    try:
+        await run_step_title_migration()
+        logger.info("Step title migration completed")
+    except Exception as e:
+        logger.warning(f"Step title migration warning (may be expected): {e}")
+
+    # Run gross sell price migration
+    try:
+        await run_gross_sell_price_migration()
+        logger.info("Gross sell price migration completed")
+    except Exception as e:
+        logger.warning(f"Gross sell price migration warning (may be expected): {e}")
+
+    # Run recipe ingredient yield migration
+    try:
+        await run_recipe_ingredient_yield_migration()
+        logger.info("Recipe ingredient yield migration completed")
+    except Exception as e:
+        logger.warning(f"Recipe ingredient yield migration warning (may be expected): {e}")
+
+    # Run recipe batch type migration
+    try:
+        await run_recipe_batch_type_migration()
+        logger.info("Recipe batch type migration completed")
+    except Exception as e:
+        logger.warning(f"Recipe batch type migration warning (may be expected): {e}")
+
+    # Run sub-recipe unit migration
+    try:
+        await run_sub_recipe_unit_migration()
+        logger.info("Sub-recipe unit migration completed")
+    except Exception as e:
+        logger.warning(f"Sub-recipe unit migration warning (may be expected): {e}")
+
+    # Run recipe ingredient unit migration
+    try:
+        await run_recipe_ingredient_unit_migration()
+        logger.info("Recipe ingredient unit migration completed")
+    except Exception as e:
+        logger.warning(f"Recipe ingredient unit migration warning (may be expected): {e}")
+
+    # Run allergen keywords migration
+    try:
+        await run_allergen_keywords_migration()
+        logger.info("Allergen keywords migration completed")
+    except Exception as e:
+        logger.warning(f"Allergen keywords migration warning (may be expected): {e}")
+
+    # Run Brakes product cache migration
+    try:
+        await run_brakes_cache_migration()
+        logger.info("Brakes product cache migration completed")
+    except Exception as e:
+        logger.warning(f"Brakes product cache migration warning (may be expected): {e}")
+
+    # Run description aliases migration
+    try:
+        await run_description_aliases_migration()
+        logger.info("Description aliases migration completed")
+    except Exception as e:
+        logger.warning(f"Description aliases migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()

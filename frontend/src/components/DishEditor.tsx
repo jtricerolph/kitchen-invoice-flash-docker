@@ -15,16 +15,12 @@ interface RecipeDetail {
   menu_section_name: string | null
   description: string | null
   batch_portions: number
-  batch_output_type: string
-  batch_yield_qty: number | null
-  batch_yield_unit: string | null
-  output_qty: number
-  output_unit: string
   prep_time_minutes: number | null
   cook_time_minutes: number | null
   notes: string | null
   is_archived: boolean
   kds_menu_item_name: string | null
+  gross_sell_price: number | null
   ingredients: RecipeIngredientItem[]
   sub_recipes: SubRecipeItem[]
   steps: StepItem[]
@@ -182,7 +178,7 @@ function getCompatibleUnits(unit: string): string[] {
   return COMPATIBLE_UNITS[unit] || [unit]
 }
 
-export default function RecipeEditor() {
+export default function DishEditor() {
   const { id } = useParams<{ id: string }>()
   const recipeId = parseInt(id || '0')
   const { token } = useAuth()
@@ -192,14 +188,11 @@ export default function RecipeEditor() {
   // Edit states
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
-  const [editBatch, setEditBatch] = useState('1')
-  const [editBatchType, setEditBatchType] = useState('portions')
-  const [editYieldQty, setEditYieldQty] = useState('')
-  const [editYieldUnit, setEditYieldUnit] = useState('ml')
   const [editPrep, setEditPrep] = useState('')
   const [editCook, setEditCook] = useState('')
   const [editNotes, setEditNotes] = useState('')
   const [editSection, setEditSection] = useState<string>('')
+  const [editKds, setEditKds] = useState('')
   const [isDirty, setIsDirty] = useState(false)
 
   // Add ingredient modal
@@ -222,6 +215,13 @@ export default function RecipeEditor() {
   const [editRiYield, setEditRiYield] = useState('100')
   const [editRiNotes, setEditRiNotes] = useState('')
 
+  // Drag-and-drop sort mode
+  const [sortingIngredients, setSortingIngredients] = useState(false)
+  const [sortingSubs, setSortingSubs] = useState(false)
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
+  const [dragType, setDragType] = useState<'ing' | 'sub' | null>(null)
+
   // Add sub-recipe modal
   const [showAddSub, setShowAddSub] = useState(false)
   const [selectedSubId, setSelectedSubId] = useState<number | null>(null)
@@ -243,6 +243,9 @@ export default function RecipeEditor() {
   const [imageCaption, setImageCaption] = useState('')
   const [imageFile, setImageFile] = useState<File | null>(null)
 
+  // Gross price GP calculator
+  const [grossPrice, setGrossPrice] = useState('')
+
   // Cost trend
   const [showCostTrend, setShowCostTrend] = useState(false)
   const [trendTooltip, setTrendTooltip] = useState<{ x: number; y: number; date: string; cost: string; trigger: string } | null>(null)
@@ -253,13 +256,6 @@ export default function RecipeEditor() {
   // Sections — showMatrix stores category_id or null
   const [showMatrix, setShowMatrix] = useState<number | null>(null)
   const [showHistory, setShowHistory] = useState(false)
-
-  // Drag-and-drop sort mode
-  const [sortingIngredients, setSortingIngredients] = useState(false)
-  const [sortingSubs, setSortingSubs] = useState(false)
-  const [dragIdx, setDragIdx] = useState<number | null>(null)
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
-  const [dragType, setDragType] = useState<'ing' | 'sub' | null>(null)
 
   // Fetch recipe
   const { data: recipe } = useQuery<RecipeDetail>({
@@ -274,11 +270,11 @@ export default function RecipeEditor() {
     enabled: !!token && !!recipeId,
   })
 
-  // Fetch sections
+  // Fetch sections (dish courses)
   const { data: sections } = useQuery<MenuSection[]>({
-    queryKey: ['recipe-sections'],
+    queryKey: ['dish-courses'],
     queryFn: async () => {
-      const res = await fetch('/api/recipes/menu-sections?section_type=recipe', {
+      const res = await fetch('/api/recipes/menu-sections?section_type=dish', {
         headers: { Authorization: `Bearer ${token}` },
       })
       return res.json()
@@ -307,7 +303,7 @@ export default function RecipeEditor() {
       })
       return res.json()
     },
-    enabled: !!token && !!recipeId && !!scalePortions && parseFloat(scalePortions) > 0,
+    enabled: !!token && !!recipeId && !!scalePortions && parseInt(scalePortions) > 0,
   })
 
   // Fetch flags
@@ -359,7 +355,7 @@ export default function RecipeEditor() {
     enabled: !!token && !!recipeId && showCostTrend,
   })
 
-  // Fetch available recipes for sub-recipe dropdown
+  // Fetch available recipes for sub-recipe dropdown (component recipes only)
   const { data: availableRecipes } = useQuery<Array<{ id: number; name: string; recipe_type: string; batch_portions: number; batch_output_type: string; batch_yield_qty: number | null; batch_yield_unit: string | null; output_unit: string }>>({
     queryKey: ['recipes-list-for-sub'],
     queryFn: async () => {
@@ -376,14 +372,12 @@ export default function RecipeEditor() {
     if (recipe) {
       setEditName(recipe.name)
       setEditDesc(recipe.description || '')
-      setEditBatch(recipe.batch_portions.toString())
-      setEditBatchType(recipe.batch_output_type || 'portions')
-      setEditYieldQty(recipe.batch_yield_qty?.toString() || '')
-      setEditYieldUnit(recipe.batch_yield_unit || 'ml')
       setEditPrep(recipe.prep_time_minutes?.toString() || '')
       setEditCook(recipe.cook_time_minutes?.toString() || '')
       setEditNotes(recipe.notes || '')
       setEditSection(recipe.menu_section_id?.toString() || '')
+      setEditKds(recipe.kds_menu_item_name || '')
+      setGrossPrice(recipe.gross_sell_price?.toString() || '')
       setIsDirty(false)
     }
   }, [recipe])
@@ -652,6 +646,7 @@ export default function RecipeEditor() {
     },
   })
 
+  // Drag-and-drop handlers
   const handleDragStart = (index: number, type: 'ing' | 'sub') => {
     setDragIdx(index)
     setDragType(type)
@@ -712,14 +707,13 @@ export default function RecipeEditor() {
     updateMutation.mutate({
       name: editName,
       description: editDesc || null,
-      batch_portions: editBatchType === 'portions' ? (parseInt(editBatch) || 1) : 1,
-      batch_output_type: editBatchType,
-      batch_yield_qty: editBatchType === 'bulk' ? (parseFloat(editYieldQty) || null) : null,
-      batch_yield_unit: editBatchType === 'bulk' ? editYieldUnit : null,
+      batch_portions: 1,
       prep_time_minutes: editPrep ? parseInt(editPrep) : null,
       cook_time_minutes: editCook ? parseInt(editCook) : null,
       notes: editNotes || null,
       menu_section_id: editSection ? parseInt(editSection) : null,
+      kds_menu_item_name: editKds || null,
+      gross_sell_price: grossPrice && parseFloat(grossPrice) > 0 ? parseFloat(grossPrice) : null,
     })
   }
 
@@ -727,18 +721,16 @@ export default function RecipeEditor() {
     window.open(`/api/recipes/${recipeId}/print?format=${format}&token=${token}`, '_blank')
   }
 
-  if (!recipe) return <div style={styles.loading}>Loading recipe...</div>
+  if (!recipe) return <div style={styles.loading}>Loading dish...</div>
 
   const totalCost = costData?.total_cost_recent
   const costPerPortion = costData?.cost_per_portion
-  const outputUnit = recipe?.output_unit || 'portion'
-  const costUnitLabel = outputUnit === 'portion' ? 'Portion Cost' : `Cost per ${outputUnit}`
 
   return (
     <div style={styles.page}>
       {/* Header */}
       <div style={styles.topBar}>
-        <button onClick={() => navigate('/recipes')} style={styles.backBtn}>← Back</button>
+        <button onClick={() => navigate('/dishes')} style={styles.backBtn}>← Back</button>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button onClick={() => handlePrint('kitchen')} style={styles.secondaryBtn}>Print Kitchen Card</button>
           <button onClick={() => handlePrint('full')} style={styles.secondaryBtn}>Print Full</button>
@@ -756,51 +748,17 @@ export default function RecipeEditor() {
             onChange={(e) => { setEditName(e.target.value); setIsDirty(true) }}
             style={{ ...styles.nameInput, flex: 1 }}
           />
-          <span style={{
-            background: '#8b5cf6',
-            color: 'white', padding: '4px 12px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600,
-          }}>
-            RECIPE
-          </span>
+          <span style={{ background: '#3b82f6', color: 'white', padding: '4px 12px', borderRadius: '4px', fontSize: '0.8rem', fontWeight: 600 }}>DISH</span>
         </div>
 
         <div style={styles.metaGrid}>
           <div>
-            <label style={styles.label}>Section</label>
+            <label style={styles.label}>Course</label>
             <select value={editSection} onChange={(e) => { setEditSection(e.target.value); setIsDirty(true) }} style={styles.input}>
               <option value="">None</option>
               {sections?.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
-          <div>
-            <label style={styles.label}>Output Type</label>
-            <select value={editBatchType} onChange={(e) => { setEditBatchType(e.target.value); setIsDirty(true) }} style={styles.input}>
-              <option value="portions">Portioned</option>
-              <option value="bulk">Bulk (volume/weight)</option>
-            </select>
-          </div>
-          {editBatchType === 'portions' ? (
-            <div>
-              <label style={styles.label}>Batch Portions</label>
-              <input type="number" value={editBatch} onChange={(e) => { setEditBatch(e.target.value); setIsDirty(true) }} style={styles.input} min="1" />
-            </div>
-          ) : (
-            <>
-              <div>
-                <label style={styles.label}>Yield Qty</label>
-                <input type="number" value={editYieldQty} onChange={(e) => { setEditYieldQty(e.target.value); setIsDirty(true) }} style={styles.input} step="0.1" min="0.1" />
-              </div>
-              <div>
-                <label style={styles.label}>Yield Unit</label>
-                <select value={editYieldUnit} onChange={(e) => { setEditYieldUnit(e.target.value); setIsDirty(true) }} style={styles.input}>
-                  <option value="ml">ml</option>
-                  <option value="ltr">ltr</option>
-                  <option value="g">g</option>
-                  <option value="kg">kg</option>
-                </select>
-              </div>
-            </>
-          )}
           <div>
             <label style={styles.label}>Prep (min)</label>
             <input type="number" value={editPrep} onChange={(e) => { setEditPrep(e.target.value); setIsDirty(true) }} style={styles.input} />
@@ -813,6 +771,9 @@ export default function RecipeEditor() {
 
         <label style={styles.label}>Description</label>
         <textarea value={editDesc} onChange={(e) => { setEditDesc(e.target.value); setIsDirty(true) }} style={{ ...styles.input, minHeight: '50px' }} />
+
+        <label style={styles.label}>KDS Menu Item Name</label>
+        <input value={editKds} onChange={(e) => { setEditKds(e.target.value); setIsDirty(true) }} style={styles.input} placeholder="Matches KDS/SambaPOS item name" />
       </div>
 
       {/* Flags notification */}
@@ -979,77 +940,77 @@ export default function RecipeEditor() {
         </table>
       </div>
 
-      {/* Sub-recipes */}
+      {/* Sub-recipes - always shown for dishes */}
       <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h3 style={{ margin: 0 }}>Sub-Recipes</h3>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              {recipe.sub_recipes.length > 1 && (
-                <button
-                  onClick={() => setSortingSubs(!sortingSubs)}
-                  style={{ ...styles.addBtn, background: sortingSubs ? '#3b82f6' : undefined, color: sortingSubs ? '#fff' : undefined }}
-                >{sortingSubs ? '✓ Done' : '↕ Sort'}</button>
-              )}
-              <button onClick={() => setShowAddSub(true)} style={styles.addBtn}>+ Add</button>
-            </div>
+        <div style={styles.sectionHeader}>
+          <h3 style={{ margin: 0 }}>Sub-Recipes</h3>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {recipe.sub_recipes.length > 1 && (
+              <button
+                onClick={() => setSortingSubs(!sortingSubs)}
+                style={{ ...styles.addBtn, background: sortingSubs ? '#3b82f6' : undefined, color: sortingSubs ? '#fff' : undefined }}
+              >{sortingSubs ? '✓ Done' : '↕ Sort'}</button>
+            )}
+            <button onClick={() => setShowAddSub(true)} style={styles.addBtn}>+ Add</button>
           </div>
-          {recipe.sub_recipes.length > 0 ? (
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  {sortingSubs && <th style={{ ...styles.th, width: '30px' }}></th>}
-                  <th style={styles.th}>Recipe</th>
-                  <th style={styles.th}>Type</th>
-                  <th style={styles.th}>Batch Output</th>
-                  <th style={styles.th}>Amount Used</th>
-                  <th style={styles.th}>Cost</th>
-                  <th style={styles.th}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {recipe.sub_recipes.map((sr, idx) => (
-                  <tr
-                    key={sr.id}
-                    style={{ ...styles.tr, opacity: dragType === 'sub' && dragIdx === idx ? 0.4 : 1, background: dragType === 'sub' && dragOverIdx === idx ? '#e0f2fe' : undefined }}
-                    draggable={sortingSubs}
-                    onDragStart={() => handleDragStart(idx, 'sub')}
-                    onDragOver={(e) => handleDragOver(e, idx)}
-                    onDrop={handleDropSubs}
-                    onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); setDragType(null) }}
-                  >
-                    {sortingSubs && (
-                      <td style={{ ...styles.td, cursor: 'grab', textAlign: 'center', fontSize: '1rem', color: '#999' }}>☰</td>
-                    )}
-                    <td style={styles.td}>
-                      <span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={() => navigate(`/recipes/${sr.child_recipe_id}`)}>
-                        {sr.child_recipe_name}
+        </div>
+        {recipe.sub_recipes.length > 0 ? (
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                {sortingSubs && <th style={{ ...styles.th, width: '30px' }}></th>}
+                <th style={styles.th}>Recipe</th>
+                <th style={styles.th}>Type</th>
+                <th style={styles.th}>Batch Output</th>
+                <th style={styles.th}>Amount Used</th>
+                <th style={styles.th}>Cost</th>
+                <th style={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {recipe.sub_recipes.map((sr, idx) => (
+                <tr
+                  key={sr.id}
+                  style={{ ...styles.tr, opacity: dragType === 'sub' && dragIdx === idx ? 0.4 : 1, background: dragType === 'sub' && dragOverIdx === idx ? '#e0f2fe' : undefined }}
+                  draggable={sortingSubs}
+                  onDragStart={() => handleDragStart(idx, 'sub')}
+                  onDragOver={(e) => handleDragOver(e, idx)}
+                  onDrop={handleDropSubs}
+                  onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); setDragType(null) }}
+                >
+                  {sortingSubs && (
+                    <td style={{ ...styles.td, cursor: 'grab', textAlign: 'center', fontSize: '1rem', color: '#999' }}>☰</td>
+                  )}
+                  <td style={styles.td}>
+                    <span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={() => navigate(`/recipes/${sr.child_recipe_id}`)}>
+                      {sr.child_recipe_name}
+                    </span>
+                  </td>
+                  <td style={styles.td}>{sr.child_recipe_type}</td>
+                  <td style={styles.td}>
+                    {sr.batch_output_type === 'bulk'
+                      ? `${sr.output_qty}${sr.output_unit}`
+                      : `${sr.batch_portions} portions`}
+                  </td>
+                  <td style={styles.td}>
+                    {sr.portions_needed}{sr.batch_output_type === 'bulk' ? sr.portions_needed_unit : ' portions'}
+                    {sr.batch_output_type === 'bulk' && sr.portions_needed_unit !== sr.output_unit && (
+                      <span style={{ fontSize: '0.7rem', color: '#888', marginLeft: '4px' }}>
+                        ({sr.output_unit})
                       </span>
-                    </td>
-                    <td style={styles.td}>{sr.child_recipe_type}</td>
-                    <td style={styles.td}>
-                      {sr.batch_output_type === 'bulk'
-                        ? `${sr.output_qty}${sr.output_unit}`
-                        : `${sr.batch_portions} portions`}
-                    </td>
-                    <td style={styles.td}>
-                      {sr.portions_needed}{sr.batch_output_type === 'bulk' ? sr.portions_needed_unit : ' portions'}
-                      {sr.batch_output_type === 'bulk' && sr.portions_needed_unit !== sr.output_unit && (
-                        <span style={{ fontSize: '0.7rem', color: '#888', marginLeft: '4px' }}>
-                          ({sr.output_unit})
-                        </span>
-                      )}
-                    </td>
-                    <td style={styles.td}>{sr.cost_contribution != null ? `£${sr.cost_contribution.toFixed(2)}` : '-'}</td>
-                    <td style={styles.td}>
-                      <button onClick={() => removeSubMutation.mutate(sr.id)} style={styles.removeBtn}>✕</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>No sub-recipes added</div>
-          )}
+                    )}
+                  </td>
+                  <td style={styles.td}>{sr.cost_contribution != null ? `£${sr.cost_contribution.toFixed(2)}` : '-'}</td>
+                  <td style={styles.td}>
+                    <button onClick={() => removeSubMutation.mutate(sr.id)} style={styles.removeBtn}>✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>No sub-recipes added</div>
+        )}
       </div>
 
       {/* Steps */}
@@ -1154,7 +1115,7 @@ export default function RecipeEditor() {
               <div key={img.id} style={styles.imageCard}>
                 <img
                   src={`/api/recipes/${recipeId}/images/${img.id}?token=${token}`}
-                  alt={img.caption || 'Recipe image'}
+                  alt={img.caption || 'Dish image'}
                   style={{ ...styles.imageThumb, cursor: 'pointer' }}
                   onClick={() => setLightboxImg(`/api/recipes/${recipeId}/images/${img.id}?token=${token}`)}
                 />
@@ -1183,12 +1144,12 @@ export default function RecipeEditor() {
 
         <div style={styles.costGrid}>
           <div style={styles.costBox}>
-            <div style={styles.costLabel}>Recipe Total</div>
+            <div style={styles.costLabel}>Dish Total</div>
             <div style={styles.costValue}>{totalCost != null ? `£${totalCost.toFixed(2)}` : '-'}</div>
           </div>
           <div style={styles.costBox}>
-            <div style={styles.costLabel}>{costUnitLabel}</div>
-            <div style={styles.costValue}>{costPerPortion != null ? `£${costPerPortion.toFixed(4)}` : '-'}</div>
+            <div style={styles.costLabel}>Portion Cost</div>
+            <div style={styles.costValue}>{costPerPortion != null ? `£${costPerPortion.toFixed(2)}` : '-'}</div>
           </div>
           {costData?.total_cost_min != null && (
             <div style={styles.costBox}>
@@ -1199,6 +1160,51 @@ export default function RecipeEditor() {
             </div>
           )}
         </div>
+
+        {costData?.gp_comparison && (
+          <div style={{ marginTop: '0.75rem' }}>
+            <strong style={{ fontSize: '0.85rem' }}>Suggested Sell Price (incl. VAT):</strong>
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+              {costData.gp_comparison.map(gp => (
+                <div key={gp.gp_target} style={styles.gpBadge}>
+                  {gp.gp_target}% GP → <strong>£{gp.suggested_price.toFixed(2)}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Reverse GP calculator */}
+        {costPerPortion != null && (
+          <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div>
+              <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#555', display: 'block', marginBottom: '2px' }}>Gross Sell Price</label>
+              <input
+                type="number"
+                value={grossPrice}
+                onChange={(e) => { setGrossPrice(e.target.value); setIsDirty(true) }}
+                style={{ ...styles.input, width: '100px' }}
+                step="0.5"
+                min="0"
+                placeholder="£"
+              />
+            </div>
+            {grossPrice && parseFloat(grossPrice) > 0 && (() => {
+              const gross = parseFloat(grossPrice)
+              const net = gross / 1.20
+              const gp = ((net - costPerPortion) / net) * 100
+              const gpColor = gp >= 70 ? '#16a34a' : gp >= 60 ? '#ca8a04' : '#dc2626'
+              return (
+                <div style={{ ...styles.gpBadge, borderColor: gpColor, background: `${gpColor}10` }}>
+                  <span style={{ color: gpColor, fontWeight: 700, fontSize: '1rem' }}>{gp.toFixed(1)}% GP</span>
+                  <span style={{ color: '#888', fontSize: '0.75rem', marginLeft: '0.5rem' }}>
+                    (net £{net.toFixed(2)})
+                  </span>
+                </div>
+              )
+            })()}
+          </div>
+        )}
 
         {/* Cost Trend */}
         <div style={{ marginTop: '0.5rem' }}>
@@ -1284,7 +1290,7 @@ export default function RecipeEditor() {
                           x: rect ? p.x + rect.left - (rect?.left || 0) : p.x,
                           y: p.y - 10,
                           date: new Date(p.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-                          cost: `\u00A3${p.cost_per_portion.toFixed(4)}`,
+                          cost: `\u00A3${p.cost_per_portion.toFixed(2)}`,
                           trigger: p.trigger,
                         })
                       }}
@@ -1355,21 +1361,20 @@ export default function RecipeEditor() {
         )}
       </div>
 
-      {/* Scale Recipe */}
+      {/* Scale Dish */}
       <div style={styles.section}>
         <div style={styles.sectionHeader}>
-          <h3 style={{ margin: 0 }}>Scale Recipe</h3>
+          <h3 style={{ margin: 0 }}>Scale Dish</h3>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             <input
               type="number"
               value={scalePortions}
               onChange={(e) => setScalePortions(e.target.value)}
               style={{ ...styles.input, width: '80px' }}
-              placeholder={recipe.output_qty.toString()}
-              min="0.1"
-              step={recipe.batch_output_type === 'bulk' ? '0.1' : '1'}
+              placeholder={recipe.batch_portions.toString()}
+              min="1"
             />
-            <span style={{ fontSize: '0.8rem', color: '#888' }}>{outputUnit}{outputUnit === 'portion' ? 's' : ''}</span>
+            <span style={{ fontSize: '0.8rem', color: '#888' }}>portions</span>
           </div>
         </div>
 
@@ -1377,7 +1382,6 @@ export default function RecipeEditor() {
           const displayData = scaledCostData || costData
           if (!displayData?.ingredients) return null
 
-          // Calculate totals for the total row
           const totalRecent = displayData.ingredients.reduce((sum, ci) => sum + (ci.cost_recent ?? 0), 0)
             + (displayData.sub_recipes?.reduce((sum, sr) => sum + (sr.cost_contribution ?? 0), 0) ?? 0)
           const totalMin = displayData.ingredients.reduce((sum, ci) => sum + (ci.cost_min ?? 0), 0)
@@ -1708,7 +1712,7 @@ export default function RecipeEditor() {
         >
           <img
             src={lightboxImg}
-            alt="Recipe image"
+            alt="Dish image"
             style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: '8px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}
             onClick={(e) => e.stopPropagation()}
           />
@@ -1750,6 +1754,7 @@ const styles: Record<string, React.CSSProperties> = {
   costBox: { minWidth: '120px' },
   costLabel: { fontSize: '0.75rem', color: '#666', fontWeight: 600 },
   costValue: { fontSize: '1.3rem', fontWeight: 700, color: '#333' },
+  gpBadge: { background: 'white', padding: '0.35rem 0.75rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.8rem' },
   flagWarning: { background: '#fff3cd', color: '#856404', padding: '0.75rem 1rem', borderRadius: '6px', marginBottom: '0.75rem', fontSize: '0.85rem' },
   logEntry: { display: 'flex', gap: '0.5rem', padding: '0.35rem 0', borderBottom: '1px solid #f0f0f0', alignItems: 'center' },
   linkBtn: { background: 'none', border: 'none', color: '#3b82f6', cursor: 'pointer', fontSize: '0.8rem', padding: 0 },

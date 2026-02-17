@@ -12,14 +12,44 @@ from azure.core.exceptions import HttpResponseError
 logger = logging.getLogger(__name__)
 
 
+# Map written/abbreviated unit names to standard unit_size_type
+_UNIT_NORMALIZE = {
+    # Weight
+    'g': 'g', 'gm': 'g', 'gms': 'g', 'grm': 'g', 'gram': 'g', 'grams': 'g',
+    'kg': 'kg', 'kgs': 'kg', 'kilo': 'kg', 'kilos': 'kg',
+    'kilogram': 'kg', 'kilograms': 'kg', 'kilergram': 'kg',
+    'oz': 'oz', 'ounce': 'oz', 'ounces': 'oz',
+    # Volume
+    'ml': 'ml', 'mls': 'ml', 'millilitre': 'ml', 'millilitres': 'ml',
+    'milliliter': 'ml', 'milliliters': 'ml',
+    'cl': 'cl', 'cls': 'cl', 'centilitre': 'cl', 'centilitres': 'cl',
+    'l': 'ltr', 'ltr': 'ltr', 'ltrs': 'ltr',
+    'litre': 'ltr', 'litres': 'ltr', 'liter': 'ltr', 'liters': 'ltr',
+    'pint': 'pint', 'pints': 'pint', 'pt': 'pint',
+}
+
+# Build regex alternation from keys, longest first to avoid partial matches
+_UNIT_PATTERN = '|'.join(sorted(_UNIT_NORMALIZE.keys(), key=len, reverse=True))
+
+
+def _normalize_unit(raw_unit: str) -> str:
+    """Normalize a matched unit string to standard abbreviation."""
+    return _UNIT_NORMALIZE.get(raw_unit.lower(), raw_unit.lower())
+
+
 def parse_pack_size(raw_content: str) -> dict:
     """
     Extract pack size info from raw line item content.
+    For weight ranges (e.g. 140-170GM), uses the larger end.
 
     Examples:
         "120x15g" -> pack_quantity=120, unit_size=15, unit_size_type="g"
         "12×1ltr" -> pack_quantity=12, unit_size=1, unit_size_type="ltr"
         "6x1.5kg" -> pack_quantity=6, unit_size=1.5, unit_size_type="kg"
+        "Coconut Milk 400ml" -> pack_quantity=1, unit_size=400, unit_size_type="ml"
+        "Semiskimmed milk 1 Litre" -> pack_quantity=1, unit_size=1, unit_size_type="ltr"
+        "FILLET 140-170GM SKINNED" -> pack_quantity=1, unit_size=170, unit_size_type="g"
+        "454GM NETT PACK" -> pack_quantity=1, unit_size=454, unit_size_type="g"
     """
     result = {
         "pack_quantity": None,
@@ -30,17 +60,44 @@ def parse_pack_size(raw_content: str) -> dict:
     if not raw_content:
         return result
 
-    # Pattern: 120x15g, 12×1ltr, 6x1.5kg, etc. (note: includes Unicode × symbol)
-    pack_pattern = r'(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(g|kg|ml|ltr|l|oz|cl)\b'
+    # Pattern 1a: Pack format with range - 10x140-170g (uses larger end)
+    pack_range = rf'(\d+)\s*[x×]\s*\d+(?:\.\d+)?\s*[-–]\s*(\d+(?:\.\d+)?)\s*({_UNIT_PATTERN})\b'
+    match = re.search(pack_range, raw_content, re.IGNORECASE)
+
+    if match:
+        result["pack_quantity"] = int(match.group(1))
+        result["unit_size"] = float(match.group(2))
+        result["unit_size_type"] = _normalize_unit(match.group(3))
+        return result
+
+    # Pattern 1b: Pack format - 120x15g, 12×1ltr, 6x1.5kg, 2x1 Litre
+    pack_pattern = rf'(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)\s*({_UNIT_PATTERN})\b'
     match = re.search(pack_pattern, raw_content, re.IGNORECASE)
 
     if match:
         result["pack_quantity"] = int(match.group(1))
         result["unit_size"] = float(match.group(2))
-        result["unit_size_type"] = match.group(3).lower()
-        # Normalize 'l' to 'ltr' for consistency
-        if result["unit_size_type"] == 'l':
-            result["unit_size_type"] = 'ltr'
+        result["unit_size_type"] = _normalize_unit(match.group(3))
+        return result
+
+    # Pattern 2a: Standalone range - "140-170GM", "1.25-1.65KG" (uses larger end)
+    range_pattern = rf'(?<!£)(?<!\$)\d+(?:\.\d+)?\s*[-–]\s*(\d+(?:\.\d+)?)\s*({_UNIT_PATTERN})\b'
+    match = re.search(range_pattern, raw_content, re.IGNORECASE)
+
+    if match:
+        result["pack_quantity"] = 1
+        result["unit_size"] = float(match.group(1))
+        result["unit_size_type"] = _normalize_unit(match.group(2))
+        return result
+
+    # Pattern 2b: Standalone size - "400ml", "1 Litre", "250 Grams", "454GM"
+    standalone_pattern = rf'(?<!£)(?<!\$)(\d+(?:\.\d+)?)\s*({_UNIT_PATTERN})\b'
+    match = re.search(standalone_pattern, raw_content, re.IGNORECASE)
+
+    if match:
+        result["pack_quantity"] = 1
+        result["unit_size"] = float(match.group(1))
+        result["unit_size_type"] = _normalize_unit(match.group(2))
 
     return result
 
@@ -581,8 +638,8 @@ async def process_invoice_with_azure(
                                 line_item["amount"] = round(adjusted_amount, 2)
                                 logger.debug(f"Adjusted line amount from gross {current_amount} to net {adjusted_amount} (expected ~{expected_net:.2f})")
 
-                        # Parse pack size from raw content (e.g., "120x15g")
-                        pack_info = parse_pack_size(line_item["raw_content"])
+                        # Parse pack size from raw content or description (e.g., "120x15g", "400ml")
+                        pack_info = parse_pack_size(line_item["raw_content"] or line_item.get("description", ""))
                         line_item["pack_quantity"] = pack_info["pack_quantity"]
                         line_item["unit_size"] = pack_info["unit_size"]
                         line_item["unit_size_type"] = pack_info["unit_size_type"]

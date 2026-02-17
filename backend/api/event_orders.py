@@ -309,12 +309,24 @@ async def _collect_ingredients_for_recipe(
 
     result: dict[int, float] = defaultdict(float)
 
-    # Direct ingredients
+    # Direct ingredients (yield-adjusted: divide by yield to get required purchase qty)
     ri_result = await db.execute(
-        select(RecipeIngredient).where(RecipeIngredient.recipe_id == recipe_id)
+        select(RecipeIngredient)
+        .options(selectinload(RecipeIngredient.ingredient))
+        .where(RecipeIngredient.recipe_id == recipe_id)
     )
+    _bases = {"g": 1.0, "kg": 1000.0, "ml": 1.0, "ltr": 1000.0}
     for ri in ri_result.scalars().all():
-        result[ri.ingredient_id] += float(ri.quantity) * multiplier
+        yld = float(ri.yield_percent) if ri.yield_percent else 100.0
+        raw_qty = float(ri.quantity) * multiplier
+        # Convert from display unit to standard unit if needed
+        if ri.unit and ri.ingredient and ri.unit != ri.ingredient.standard_unit:
+            from_base = _bases.get(ri.unit)
+            to_base = _bases.get(ri.ingredient.standard_unit)
+            if from_base and to_base:
+                raw_qty = raw_qty * from_base / to_base
+        adjusted_qty = raw_qty / (yld / 100) if yld > 0 else raw_qty
+        result[ri.ingredient_id] += adjusted_qty
 
     # Sub-recipe ingredients
     sr_result = await db.execute(
@@ -322,10 +334,22 @@ async def _collect_ingredients_for_recipe(
     )
     for sr in sr_result.scalars().all():
         child_result = await db.execute(
-            select(Recipe.batch_portions).where(Recipe.id == sr.child_recipe_id)
+            select(Recipe).where(Recipe.id == sr.child_recipe_id)
         )
-        child_batch = child_result.scalar() or 1
-        child_multiplier = multiplier * (float(sr.portions_needed) / child_batch)
+        child_recipe = child_result.scalar_one_or_none()
+        if not child_recipe:
+            continue
+        # Use unified output qty (handles both portioned and bulk)
+        child_output_qty = float(child_recipe.batch_yield_qty) if child_recipe.batch_output_type == "bulk" and child_recipe.batch_yield_qty else (child_recipe.batch_portions or 1)
+        child_output_unit = child_recipe.batch_yield_unit if child_recipe.batch_output_type == "bulk" and child_recipe.batch_yield_unit else "portion"
+        # Convert portions_needed to child output unit if different unit was used
+        needed = float(sr.portions_needed)
+        needed_unit = sr.portions_needed_unit or child_output_unit
+        if needed_unit != child_output_unit:
+            _bases = {"g": 1.0, "kg": 1000.0, "ml": 1.0, "ltr": 1000.0}
+            if needed_unit in _bases and child_output_unit in _bases:
+                needed = needed * _bases[needed_unit] / _bases[child_output_unit]
+        child_multiplier = multiplier * (needed / child_output_qty)
         child_ings = await _collect_ingredients_for_recipe(sr.child_recipe_id, child_multiplier, db, depth + 1)
         for ing_id, qty in child_ings.items():
             result[ing_id] += qty
@@ -360,11 +384,12 @@ async def get_shopping_list(
         if not recipe:
             continue
 
-        # For plated: multiplier = quantity (servings)
-        # For component: multiplier = quantity (batches), scale by batch_portions internally
+        # For dish: multiplier = quantity (servings) / output_qty
+        # For component: multiplier = quantity (batches)
         if recipe.recipe_type == "component":
             multiplier = float(item.quantity)  # each item.quantity = number of batches
         else:
+            # Dishes are always portioned with batch_portions=1
             multiplier = float(item.quantity) / (recipe.batch_portions or 1)
 
         ings = await _collect_ingredients_for_recipe(recipe.id, multiplier, db)
@@ -398,9 +423,8 @@ async def get_shopping_list(
         if not ing:
             continue
 
-        # Yield-adjusted quantity
-        yld = float(ing.yield_percent) if ing.yield_percent else 100.0
-        adjusted_qty = total_qty / (yld / 100) if yld > 0 else total_qty
+        # Quantity already yield-adjusted during collection
+        adjusted_qty = total_qty
 
         # Source info
         sources = []
@@ -449,7 +473,6 @@ async def get_shopping_list(
             "total_quantity": round(total_qty, 3),
             "adjusted_quantity": round(adjusted_qty, 3),
             "unit": ing.standard_unit,
-            "yield_percent": yld,
             "sources": sources,
             "recipe_breakdown": recipe_breakdown.get(ing_id, []),
         }
@@ -459,6 +482,141 @@ async def get_shopping_list(
     shopping_items.sort(key=lambda x: (x["category"], x["ingredient_name"]))
 
     return {"items": shopping_items, "by_supplier": dict(by_supplier) if group_by_supplier else {}}
+
+
+# ── Generate Purchase Orders ─────────────────────────────────────────────────
+
+@router.post("/{order_id}/generate-po")
+async def generate_purchase_orders(
+    order_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate purchase orders from shopping list, grouped by supplier."""
+    from models.purchase_order import PurchaseOrder, PurchaseOrderLineItem
+
+    order = await _get_order(order_id, user.kitchen_id, db)
+
+    # Get shopping list grouped by supplier
+    items_result = await db.execute(
+        select(EventOrderItem)
+        .options(selectinload(EventOrderItem.recipe))
+        .where(EventOrderItem.event_order_id == order_id)
+    )
+    items = items_result.scalars().all()
+
+    # Aggregate ingredient quantities
+    total_ingredients: dict[int, float] = defaultdict(float)
+    for item in items:
+        recipe = item.recipe
+        if not recipe:
+            continue
+        if recipe.recipe_type == "component":
+            multiplier = float(item.quantity)
+        else:
+            multiplier = float(item.quantity) / (recipe.batch_portions or 1)
+        ings = await _collect_ingredients_for_recipe(recipe.id, multiplier, db)
+        for ing_id, qty in ings.items():
+            total_ingredients[ing_id] += qty
+
+    if not total_ingredients:
+        raise HTTPException(400, "No ingredients to order")
+
+    # Load ingredients with sources
+    from sqlalchemy.orm import selectinload as si
+    ing_result = await db.execute(
+        select(Ingredient)
+        .options(
+            selectinload(Ingredient.sources).selectinload(IngredientSource.supplier),
+        )
+        .where(Ingredient.id.in_(list(total_ingredients.keys())))
+    )
+    ingredients = {ing.id: ing for ing in ing_result.scalars().all()}
+
+    # Group by supplier: {supplier_id: [{ingredient, qty, source}]}
+    supplier_lines: dict[int, list] = defaultdict(list)
+    unmapped = []
+
+    for ing_id, total_qty in total_ingredients.items():
+        ing = ingredients.get(ing_id)
+        if not ing:
+            continue
+
+        # Quantity already yield-adjusted during collection
+        adjusted_qty = total_qty
+
+        # Pick the most recent source (by latest_invoice_date)
+        best_source = None
+        for src in (ing.sources or []):
+            if best_source is None or (src.latest_invoice_date and (
+                not best_source.latest_invoice_date or src.latest_invoice_date > best_source.latest_invoice_date
+            )):
+                best_source = src
+
+        if best_source and best_source.supplier_id:
+            pack_total = None
+            suggested_packs = 1
+            if best_source.pack_quantity and best_source.unit_size and best_source.unit_size_type:
+                pack_in_std = convert_to_standard(
+                    Decimal(str(best_source.pack_quantity)) * best_source.unit_size,
+                    best_source.unit_size_type,
+                    ing.standard_unit,
+                )
+                if pack_in_std and float(pack_in_std) > 0:
+                    pack_total = float(pack_in_std)
+                    suggested_packs = int(adjusted_qty / pack_total) + (1 if adjusted_qty % pack_total > 0 else 0)
+
+            supplier_lines[best_source.supplier_id].append({
+                "ingredient": ing,
+                "source": best_source,
+                "quantity": max(suggested_packs, 1),
+                "unit_price": float(best_source.latest_unit_price) if best_source.latest_unit_price else 0,
+            })
+        else:
+            unmapped.append(ing.name)
+
+    # Create one PO per supplier
+    created_pos = []
+    for supplier_id, lines in supplier_lines.items():
+        total = sum(l["quantity"] * l["unit_price"] for l in lines)
+        po = PurchaseOrder(
+            kitchen_id=user.kitchen_id,
+            supplier_id=supplier_id,
+            order_date=order.event_date or date.today(),
+            order_type="itemised",
+            status="DRAFT",
+            total_amount=Decimal(str(round(total, 2))),
+            notes=f"Auto-generated from event order: {order.name}",
+            created_by=user.id,
+        )
+        db.add(po)
+        await db.flush()
+
+        for idx, line in enumerate(lines):
+            line_total = round(line["quantity"] * line["unit_price"], 2)
+            po_line = PurchaseOrderLineItem(
+                purchase_order_id=po.id,
+                kitchen_id=user.kitchen_id,
+                product_code=line["source"].product_code,
+                description=line["ingredient"].name,
+                unit=line["ingredient"].standard_unit,
+                unit_price=Decimal(str(line["unit_price"])),
+                quantity=Decimal(str(line["quantity"])),
+                total=Decimal(str(line_total)),
+                line_number=idx + 1,
+                source="event_order",
+            )
+            db.add(po_line)
+
+        created_pos.append({"id": po.id, "supplier_id": supplier_id})
+
+    await db.commit()
+
+    return {
+        "created": len(created_pos),
+        "purchase_orders": created_pos,
+        "unmapped_ingredients": unmapped,
+    }
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

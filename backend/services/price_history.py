@@ -560,11 +560,23 @@ class PriceHistoryService:
             conditions.append(Invoice.supplier_id == supplier_id)
 
         if search_query:
-            search_pattern = f"%{search_query}%"
-            conditions.append(or_(
-                LineItem.product_code.ilike(search_pattern),
-                LineItem.description.ilike(search_pattern)
-            ))
+            # Split into words so "Cod Fillet" matches "COD: FILLET 1-2KG SCALED BONED"
+            words = search_query.strip().split()
+            if len(words) == 1:
+                search_pattern = f"%{words[0]}%"
+                conditions.append(or_(
+                    LineItem.product_code.ilike(search_pattern),
+                    LineItem.description.ilike(search_pattern)
+                ))
+            else:
+                # All words must appear in description (or exact phrase matches product_code)
+                word_conditions = []
+                for word in words:
+                    word_conditions.append(LineItem.description.ilike(f"%{word}%"))
+                conditions.append(or_(
+                    and_(*word_conditions),
+                    LineItem.product_code.ilike(f"%{search_query}%")
+                ))
 
         # Build query for consolidated items using subquery
         # We need to group by product identity and get aggregates
@@ -648,7 +660,13 @@ class PriceHistoryService:
                     LineItem.unit_price,
                     Invoice.id,
                     Invoice.invoice_number,
-                    LineItem.unit
+                    LineItem.unit,
+                    LineItem.id.label('line_item_id'),
+                    LineItem.line_number,
+                    LineItem.raw_content,
+                    LineItem.pack_quantity.label('li_pack_quantity'),
+                    LineItem.unit_size,
+                    LineItem.unit_size_type,
                 )
                 .where(and_(*recent_conditions))
                 .order_by(desc(Invoice.invoice_date))
@@ -661,6 +679,12 @@ class PriceHistoryService:
             most_recent_invoice_id = recent_row[1] if recent_row else None
             most_recent_invoice_number = recent_row[2] if recent_row else None
             unit = recent_row[3] if recent_row else None
+            most_recent_line_item_id = recent_row[4] if recent_row else None
+            most_recent_line_number = recent_row[5] if recent_row else None
+            most_recent_raw_content = recent_row[6] if recent_row else None
+            most_recent_pack_quantity = recent_row[7] if recent_row else None
+            most_recent_unit_size = recent_row[8] if recent_row else None
+            most_recent_unit_size_type = recent_row[9] if recent_row else None
 
             # Get earliest price in period for change detection
             # Match by first line of description only
@@ -739,6 +763,36 @@ class PriceHistoryService:
             def_result = await self.db.execute(def_query)
             def_row = def_result.fetchone()
 
+            # Look up ingredient source mapping
+            from models.ingredient import Ingredient, IngredientSource
+
+            src_conditions = [
+                IngredientSource.kitchen_id == self.kitchen_id,
+                IngredientSource.supplier_id == supplier_id_val,
+            ]
+
+            # Match by product_code (preferred) OR description_pattern (fallback)
+            if product_code:
+                src_conditions.append(IngredientSource.product_code == product_code)
+            else:
+                src_conditions.append(IngredientSource.product_code.is_(None))
+                if description:
+                    src_conditions.append(func.lower(IngredientSource.description_pattern) == description.lower())
+
+            src_query = (
+                select(
+                    IngredientSource.ingredient_id,
+                    Ingredient.name.label('ingredient_name'),
+                    Ingredient.standard_unit.label('ingredient_standard_unit'),
+                    IngredientSource.price_per_std_unit,
+                )
+                .join(Ingredient, IngredientSource.ingredient_id == Ingredient.id)
+                .where(and_(*src_conditions))
+                .limit(1)
+            )
+            src_result = await self.db.execute(src_query)
+            src_row = src_result.fetchone()
+
             items.append({
                 'product_code': product_code,
                 'description': description,
@@ -757,6 +811,16 @@ class PriceHistoryService:
                 'has_definition': def_row is not None,
                 'portions_per_unit': def_row[0] if def_row else None,
                 'pack_quantity': def_row[1] if def_row else None,
+                'most_recent_line_item_id': most_recent_line_item_id,
+                'most_recent_line_number': most_recent_line_number,
+                'most_recent_raw_content': most_recent_raw_content,
+                'most_recent_pack_quantity': most_recent_pack_quantity,
+                'most_recent_unit_size': most_recent_unit_size,
+                'most_recent_unit_size_type': most_recent_unit_size_type,
+                'ingredient_id': src_row[0] if src_row else None,
+                'ingredient_name': src_row[1] if src_row else None,
+                'ingredient_standard_unit': src_row[2] if src_row else None,
+                'price_per_std_unit': src_row[3] if src_row else None,
             })
 
         return items, total_count

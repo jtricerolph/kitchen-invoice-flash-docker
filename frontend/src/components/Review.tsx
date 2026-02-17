@@ -9,6 +9,8 @@ import CreateDisputeModal from './CreateDisputeModal'
 import DisputeDetailModal from './DisputeDetailModal'
 import LinkDisputeModal from './LinkDisputeModal'
 import PurchaseOrderModal from './PurchaseOrderModal'
+import IngredientModal from './IngredientModal'
+import { IngredientModalResult, LineItemResult } from '../utils/ingredientHelpers'
 
 // Use local worker file from public directory
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
@@ -138,10 +140,26 @@ interface LineItem {
   future_change_percent: number | null
   // Page number from OCR (for multi-page invoices)
   page_number: number | null
+  // Ingredient mapping
+  ingredient_id?: number | null
+  ingredient_name?: string | null
+  ingredient_unit?: string | null
 }
+
+// Ingredient types for mapping modal
+interface IngredientSuggestion {
+  id: number
+  name: string
+  category_name: string | null
+  standard_unit: string
+  yield_percent: number
+  similarity?: number
+}
+
 
 // Scale icon color based on data completeness
 const getScaleIconColor = (item: LineItem): string => {
+  if (item.ingredient_id) return '#28a745'  // Green - mapped to ingredient
   if (!item.pack_quantity) return '#dc3545'  // Red - no pack data
   if (item.portions_per_unit === null) return '#ffc107'  // Amber - portions not defined
   if (item.cost_per_portion !== null) return '#28a745'  // Green - fully complete
@@ -359,7 +377,6 @@ export default function Review() {
   const [bulkEditMode, setBulkEditMode] = useState(false)
   const [highlightedField, setHighlightedField] = useState<string | null>(null)
   const [expandedLineItem, setExpandedLineItem] = useState<number | null>(null)
-  const [expandedCostBreakdown, setExpandedCostBreakdown] = useState<number | null>(null)
   const [costBreakdownEdits, setCostBreakdownEdits] = useState<Partial<LineItem>>({})
   const [descSwapItem, setDescSwapItem] = useState<LineItem | null>(null)  // For description swap modal
   const [portionDescription, setPortionDescription] = useState<string>('')
@@ -392,6 +409,31 @@ export default function Review() {
   // Current visible page for sticky indicator (multi-page invoices)
   const [currentVisiblePage, setCurrentVisiblePage] = useState<number>(1)
   const lineItemsTableRef = useRef<HTMLDivElement>(null)
+
+  // Ingredient mapping modal state
+  const [ingredientModalItem, setIngredientModalItem] = useState<LineItem | null>(null)
+  const [ingredientSearch, setIngredientSearch] = useState('')
+  const [ingredientSuggestions, setIngredientSuggestions] = useState<IngredientSuggestion[]>([])
+  const [ingredientSearchLoading, setIngredientSearchLoading] = useState(false)
+  const [selectedIngredientId, setSelectedIngredientId] = useState<number | null>(null)
+  const [selectedIngredientName, setSelectedIngredientName] = useState('')
+  const [selectedIngredientUnit, setSelectedIngredientUnit] = useState('')
+  const [showCreateIngredient, setShowCreateIngredient] = useState(false)
+  const [showLegacyPortioning, setShowLegacyPortioning] = useState(false)
+  const [ingredientConversionDisplay, setIngredientConversionDisplay] = useState('')
+
+  // Description alias suggestion state
+  const [aliasSuggestions, setAliasSuggestions] = useState<Record<string, {
+    description: string
+    source_id: number
+    ingredient_id: number
+    ingredient_name: string | null
+    canonical_description: string
+    product_code: string | null
+    similarity: number
+    price_difference: number | null
+  }>>({})
+  const [addingAliasFor, setAddingAliasFor] = useState<string | null>(null)
 
   // Price history modal state
   const [historyModal, setHistoryModal] = useState<{
@@ -491,6 +533,38 @@ export default function Review() {
     },
     staleTime: 60000, // Cache for 1 minute
   })
+
+  // Fetch description alias suggestions for unmapped line items without product codes
+  useEffect(() => {
+    if (!lineItems || !supplierId || !token) return
+    const unmappedItems = lineItems.filter(li => !li.ingredient_id && !li.product_code && li.description)
+    if (unmappedItems.length === 0) {
+      setAliasSuggestions({})
+      return
+    }
+    const items = unmappedItems.map(li => ({
+      description: li.description!.split('\n')[0].trim(),
+      price: li.unit_price ?? undefined,
+    }))
+    // Deduplicate by description
+    const uniqueItems = Array.from(new Map(items.map(i => [i.description.toLowerCase(), i])).values())
+    if (uniqueItems.length === 0) return
+
+    fetch('/api/ingredients/sources/alias-suggestions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supplier_id: parseInt(supplierId), items: uniqueItems }),
+    })
+      .then(res => res.ok ? res.json() : [])
+      .then((suggestions: any[]) => {
+        const map: typeof aliasSuggestions = {}
+        for (const s of suggestions) {
+          map[s.description.toLowerCase()] = s
+        }
+        setAliasSuggestions(map)
+      })
+      .catch(() => setAliasSuggestions({}))
+  }, [lineItems, supplierId, token])
 
   // Helper to get bounding box for a field from raw OCR data
   const getFieldBoundingBox = (fieldName: string): { x: number; y: number; width: number; height: number; pageNumber: number } | null => {
@@ -1002,6 +1076,32 @@ export default function Review() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['suppliers'] })
       queryClient.invalidateQueries({ queryKey: ['invoice', id] })
+    },
+  })
+
+  const addDescriptionAliasMutation = useMutation({
+    mutationFn: async ({ sourceId, alias }: { sourceId: number; alias: string }) => {
+      const res = await fetch(`/api/ingredients/sources/${sourceId}/aliases`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ alias }),
+      })
+      if (!res.ok) throw new Error('Failed to add alias')
+      return res.json()
+    },
+    onSuccess: (_data, variables) => {
+      // Remove this suggestion from the map
+      setAliasSuggestions(prev => {
+        const next = { ...prev }
+        delete next[variables.alias.toLowerCase()]
+        return next
+      })
+      setAddingAliasFor(null)
+      // Refresh line items (descriptions will have been renamed)
+      queryClient.invalidateQueries({ queryKey: ['invoice-line-items', id] })
     },
   })
 
@@ -1525,71 +1625,210 @@ export default function Review() {
   }
 
   const toggleCostBreakdown = async (item: LineItem) => {
-    if (expandedCostBreakdown === item.id) {
-      setExpandedCostBreakdown(null)
-      setCostBreakdownEdits({})
-      setPortionDescription('')
-      setSaveAsDefault(false)
-      setCurrentDefinition(null)
-      // Close line item preview when closing cost breakdown
-      setExpandedLineItem(null)
-    } else {
-      setExpandedCostBreakdown(item.id)
-      setCostBreakdownEdits({
+    // Open ingredient mapping modal
+    setIngredientModalItem(item)
+    setCostBreakdownEdits({
+      pack_quantity: item.pack_quantity,
+      unit_size: item.unit_size,
+      unit_size_type: item.unit_size_type,
+      portions_per_unit: item.portions_per_unit,
+      unit_price: item.unit_price,
+    })
+    setPortionDescription('')
+    setSaveAsDefault(false)
+    setCurrentDefinition(null)
+    setShowLegacyPortioning(false)
+    setShowCreateIngredient(false)
+    setIngredientSearch('')
+    setIngredientSuggestions([])
+    setSelectedIngredientId(item.ingredient_id || null)
+    setSelectedIngredientName(item.ingredient_name || '')
+    setSelectedIngredientUnit(item.ingredient_unit || '')
+
+    // Show conversion display immediately if pack data exists
+    // Works with or without ingredient — falls back to unit_size_type as target unit
+    if (item.unit_size && item.unit_size_type) {
+      updateConversionDisplay(item.ingredient_unit || undefined, {
         pack_quantity: item.pack_quantity,
         unit_size: item.unit_size,
         unit_size_type: item.unit_size_type,
-        portions_per_unit: item.portions_per_unit,
         unit_price: item.unit_price,
       })
-      setPortionDescription('')
-      setSaveAsDefault(false)
-      setCurrentDefinition(null)
-      // Automatically open line item preview when opening cost breakdown
-      setExpandedLineItem(item.id)
-      setHighlightedField(null)
-      resetZoom()
+    }
 
-      // Fetch the saved definition for this line item
-      setDefinitionLoading(true)
-      try {
-        const res = await fetch(`/api/invoices/${id}/line-items/${item.id}/definition`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (res.ok) {
-          const def = await res.json()
-          setCurrentDefinition(def)
-          // Load portion description from saved definition
-          setPortionDescription(def?.portion_description || '')
-        } else {
-          setCurrentDefinition(null)
-        }
-      } catch {
-        setCurrentDefinition(null)
-      } finally {
-        setDefinitionLoading(false)
+    // Fetch saved definition
+    setDefinitionLoading(true)
+    try {
+      const res = await fetch(`/api/invoices/${id}/line-items/${item.id}/definition`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const def = await res.json()
+        setCurrentDefinition(def)
+        setPortionDescription(def?.portion_description || '')
       }
+    } catch { /* ignore */ }
+    setDefinitionLoading(false)
+
+    // Auto-suggest ingredient match from description
+    if (item.description && !item.ingredient_id) {
+      searchIngredients(item.description)
     }
   }
 
+  const searchIngredients = async (query: string) => {
+    if (!query || query.length < 2) {
+      setIngredientSuggestions([])
+      return
+    }
+    setIngredientSearchLoading(true)
+    try {
+      const res = await fetch(`/api/ingredients/suggest?description=${encodeURIComponent(query)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setIngredientSuggestions(data)
+      }
+    } catch { /* ignore */ }
+    setIngredientSearchLoading(false)
+  }
+
+  const selectIngredient = (ing: IngredientSuggestion) => {
+    setSelectedIngredientId(ing.id)
+    setSelectedIngredientName(ing.name)
+    setSelectedIngredientUnit(ing.standard_unit)
+    setIngredientSearch('')
+    setIngredientSuggestions([])
+    // Default the unit type to ingredient's standard unit if not already set
+    if (!costBreakdownEdits.unit_size_type) {
+      setCostBreakdownEdits(prev => ({ ...prev, unit_size_type: ing.standard_unit }))
+    }
+    updateConversionDisplay(ing.standard_unit)
+  }
+
+  const updateConversionDisplay = (stdUnit?: string, overrides?: Partial<LineItem>) => {
+    const edits = overrides ? { ...costBreakdownEdits, ...overrides } : costBreakdownEdits
+    const unit = stdUnit || selectedIngredientUnit || edits.unit_size_type
+    const pq = edits.pack_quantity || 1
+    const us = edits.unit_size
+    const ust = edits.unit_size_type
+    const up = edits.unit_price
+    if (!us || !ust || !unit) {
+      setIngredientConversionDisplay('')
+      return
+    }
+    // Unit conversion factors: source unit → ingredient standard unit
+    const conversions: Record<string, Record<string, number>> = {
+      g: { g: 1, kg: 0.001 }, kg: { g: 1000, kg: 1 }, oz: { g: 28.3495, kg: 0.0283495 },
+      ml: { ml: 1, ltr: 0.001 }, cl: { ml: 10, ltr: 0.01 }, ltr: { ml: 1000, ltr: 1 },
+      each: { each: 1 },
+    }
+    const conv = conversions[ust]?.[unit]
+    if (!conv) {
+      setIngredientConversionDisplay(ust !== unit ? `Cannot convert ${ust} → ${unit}` : `${us}${ust}`)
+      return
+    }
+    const totalStd = pq * us * conv
+    const pricePerStd = up ? (up / totalStd) : null
+    const packNote = pq > 1 ? `${pq} × ${us}${ust} = ` : ''
+    // Build display string
+    let display = `${packNote}${totalStd.toFixed(totalStd % 1 ? 2 : 0)} ${unit}`
+    if (pricePerStd) {
+      display += ` → £${pricePerStd.toFixed(4)} per ${unit}`
+      // For g/ml also show per kg/ltr
+      if (unit === 'g' && pricePerStd) {
+        display += ` (£${(pricePerStd * 1000).toFixed(2)}/kg)`
+      } else if (unit === 'ml' && pricePerStd) {
+        display += ` (£${(pricePerStd * 1000).toFixed(2)}/ltr)`
+      }
+    }
+    setIngredientConversionDisplay(display)
+  }
+
+  const handleIngredientCreated = (_result: IngredientModalResult) => {
+    // IngredientModal already created the source mapping, so close everything
+    refetchLineItems()
+    closeIngredientModal()
+  }
+
+  const closeIngredientModal = () => {
+    setIngredientModalItem(null)
+    setCostBreakdownEdits({})
+    setPortionDescription('')
+    setSaveAsDefault(false)
+    setCurrentDefinition(null)
+    setSelectedIngredientId(null)
+    setSelectedIngredientName('')
+    setSelectedIngredientUnit('')
+    setShowCreateIngredient(false)
+    setIngredientSearch('')
+    setIngredientSuggestions([])
+    setIngredientConversionDisplay('')
+  }
+
   const saveCostBreakdown = async (itemId: number) => {
-    // First update the line item
+    // Update the line item pack fields
     await updateLineItemMutation.mutateAsync({ itemId, data: costBreakdownEdits })
 
-    // If "save as default" is checked, save the definition (works with or without product code)
+    // If an ingredient is selected, set ingredient_id and create/update ingredient_source
+    if (selectedIngredientId) {
+      try {
+        // Set ingredient_id on line item
+        await fetch(`/api/invoices/${id}/line-items/${itemId}`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ingredient_id: selectedIngredientId }),
+        })
+
+        // Create ingredient source mapping (links supplier product → ingredient)
+        if (invoice?.supplier_id) {
+          const sourceData: Record<string, unknown> = {
+            supplier_id: invoice.supplier_id,
+            pack_quantity: costBreakdownEdits.pack_quantity || 1,
+            unit_size: costBreakdownEdits.unit_size || null,
+            unit_size_type: costBreakdownEdits.unit_size_type || selectedIngredientUnit || null,
+          }
+          // Use product_code if available, otherwise description pattern
+          const li = ingredientModalItem
+          if (li?.product_code) {
+            sourceData.product_code = li.product_code
+          } else if (li?.description) {
+            sourceData.description_pattern = li.description.substring(0, 100).toLowerCase().trim()
+          }
+          // Include price and invoice ref for price tracking
+          if (costBreakdownEdits.unit_price) {
+            sourceData.latest_unit_price = costBreakdownEdits.unit_price
+          }
+          if (id) {
+            sourceData.invoice_id = parseInt(id as string)
+          }
+          const srcRes = await fetch(`/api/ingredients/${selectedIngredientId}/sources`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(sourceData),
+          })
+          if (!srcRes.ok) {
+            const errBody = await srcRes.json().catch(() => ({}))
+            console.warn('Source creation failed:', srcRes.status, errBody)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to set ingredient mapping:', err)
+      }
+    }
+
+    // Save as default definition if checked
     if (saveAsDefault) {
       try {
         await saveDefinitionMutation.mutateAsync({ itemId, portionDesc: portionDescription })
       } catch (err) {
         console.error('Failed to save definition:', err)
-        // Don't block the main save operation
       }
     }
 
-    setExpandedCostBreakdown(null)
-    setCostBreakdownEdits({})
-    setPortionDescription('')
-    setSaveAsDefault(false)
+    closeIngredientModal()
+    refetchLineItems()
   }
 
   // Sort and filter line items - must be before early returns (Rules of Hooks)
@@ -3488,6 +3727,66 @@ export default function Review() {
                                 {item.quantity?.toFixed(2)} × £{item.unit_price?.toFixed(2)} ≠ £{item.amount?.toFixed(2)}
                               </div>
                             )}
+                            {/* Description alias suggestion banner */}
+                            {!item.ingredient_id && !item.product_code && item.description && (() => {
+                              const firstLine = item.description.split('\n')[0].trim().toLowerCase()
+                              const suggestion = aliasSuggestions[firstLine]
+                              if (!suggestion) return null
+                              const isAdding = addingAliasFor === firstLine
+                              return (
+                                <div style={{
+                                  fontSize: '0.75rem',
+                                  color: '#0c5460',
+                                  background: '#d1ecf1',
+                                  padding: '0.25rem 0.5rem',
+                                  borderRadius: '4px',
+                                  marginTop: '4px',
+                                  border: '1px solid #bee5eb',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  gap: '0.5rem',
+                                  flexWrap: 'wrap',
+                                }}>
+                                  <span>
+                                    Similar to "{suggestion.canonical_description}"
+                                    {suggestion.ingredient_name && <> → {suggestion.ingredient_name}</>}
+                                    {' '}({Math.round(suggestion.similarity * 100)}% match)
+                                    {suggestion.price_difference != null && suggestion.price_difference > 5 && (
+                                      <span style={{ color: '#856404', marginLeft: '6px' }}>
+                                        Price differs {suggestion.price_difference.toFixed(0)}%
+                                      </span>
+                                    )}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setAddingAliasFor(firstLine)
+                                      addDescriptionAliasMutation.mutate({
+                                        sourceId: suggestion.source_id,
+                                        alias: item.description!.split('\n')[0].trim(),
+                                      })
+                                    }}
+                                    disabled={isAdding}
+                                    style={{
+                                      padding: '0.2rem 0.5rem',
+                                      background: '#17a2b8',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: isAdding ? 'default' : 'pointer',
+                                      fontSize: '0.7rem',
+                                      fontWeight: '500',
+                                      whiteSpace: 'nowrap' as const,
+                                      opacity: isAdding ? 0.6 : 1,
+                                    }}
+                                  >
+                                    {isAdding ? 'Adding...' : '+ Add as alias'}
+                                  </button>
+                                </div>
+                              )
+                            })()}
                           </td>
                           <td style={{ ...styles.td, fontSize: '0.85rem' }}>{item.unit || '—'}</td>
                           <td style={{ ...styles.td, ...errorCellStyleLeft }}>{item.quantity?.toFixed(2) || '—'}</td>
@@ -3583,15 +3882,17 @@ export default function Review() {
                               onClick={() => toggleCostBreakdown(item)}
                               style={{
                                 ...styles.scaleBtn,
-                                ...(expandedCostBreakdown === item.id ? styles.scaleBtnActive : {}),
+                                ...(ingredientModalItem?.id === item.id ? styles.scaleBtnActive : {}),
                                 color: getScaleIconColor(item)
                               }}
                               title={
-                                !item.pack_quantity
-                                  ? 'No pack data - click to define'
-                                  : item.portions_per_unit === null
-                                    ? 'Pack data extracted - portions not defined'
-                                    : 'Complete - cost per portion calculated'
+                                item.ingredient_id
+                                  ? `Mapped → ${item.ingredient_name || 'Ingredient'}`
+                                  : !item.pack_quantity
+                                    ? 'No pack data - click to map ingredient'
+                                    : item.portions_per_unit === null
+                                      ? 'Pack data extracted - click to map ingredient'
+                                      : 'Pack data complete - click to map ingredient'
                               }
                             >
                               <ScaleIcon />
@@ -3643,197 +3944,6 @@ export default function Review() {
                         </>
                       )}
                     </tr>
-                    {expandedCostBreakdown === item.id && (
-                      <tr>
-                        <td colSpan={11} style={styles.costBreakdownCell}>
-                          <div style={styles.costBreakdownContainer}>
-                            <div style={styles.costBreakdownHeader}>
-                              <span style={{ fontWeight: '600' }}>Pack Size & Cost Breakdown</span>
-                              {item.raw_content && (
-                                <span style={styles.rawContentHint} title={item.raw_content}>
-                                  Raw: {item.raw_content.substring(0, 50)}...
-                                </span>
-                              )}
-                            </div>
-                            <div style={{ ...styles.costBreakdownGrid, gap: '1rem' }}>
-                              <div style={styles.costBreakdownField}>
-                                <label>Pack Qty</label>
-                                <input
-                                  type="number"
-                                  value={costBreakdownEdits.pack_quantity || ''}
-                                  onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, pack_quantity: parseInt(e.target.value) || null })}
-                                  onFocus={(e) => e.target.select()}
-                                  style={styles.costBreakdownInput}
-                                  placeholder="e.g., 120"
-                                />
-                              </div>
-                              <div style={styles.costBreakdownField}>
-                                <label>Unit Size</label>
-                                <div style={{ display: 'flex', gap: '4px' }}>
-                                  <input
-                                    type="number"
-                                    step="0.1"
-                                    value={costBreakdownEdits.unit_size || ''}
-                                    onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, unit_size: parseFloat(e.target.value) || null })}
-                                    onFocus={(e) => e.target.select()}
-                                    style={{ ...styles.costBreakdownInput, width: '60px' }}
-                                    placeholder="e.g., 15"
-                                  />
-                                  <select
-                                    value={costBreakdownEdits.unit_size_type || ''}
-                                    onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, unit_size_type: e.target.value || null })}
-                                    style={{ ...styles.costBreakdownInput, width: '55px' }}
-                                  >
-                                    <option value="">—</option>
-                                    <option value="each">each</option>
-                                    <option value="g">g</option>
-                                    <option value="kg">kg</option>
-                                    <option value="ml">ml</option>
-                                    <option value="ltr">ltr</option>
-                                    <option value="oz">oz</option>
-                                    <option value="cl">cl</option>
-                                  </select>
-                                </div>
-                              </div>
-                              <div style={styles.costBreakdownField}>
-                                <label>Portions/Unit</label>
-                                <input
-                                  type="number"
-                                  value={costBreakdownEdits.portions_per_unit ?? ''}
-                                  onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, portions_per_unit: e.target.value ? parseInt(e.target.value) : null })}
-                                  onFocus={(e) => e.target.select()}
-                                  style={styles.costBreakdownInput}
-                                  min="1"
-                                  placeholder="—"
-                                />
-                              </div>
-                              <div style={{ ...styles.costBreakdownField, gridColumn: 'span 2' }}>
-                                <label>Portion Desc</label>
-                                <input
-                                  type="text"
-                                  value={portionDescription}
-                                  onChange={(e) => setPortionDescription(e.target.value)}
-                                  style={{ ...styles.costBreakdownInput, width: '100%' }}
-                                  placeholder="e.g., 250ml glass or 1 slice"
-                                  title="Describe what a portion is, e.g., '250ml glass', '1 slice'"
-                                />
-                              </div>
-                              <div style={styles.costBreakdownField}>
-                                <label>Unit Price</label>
-                                <span style={styles.costBreakdownValue}>
-                                  {costBreakdownEdits.unit_price ? `£${costBreakdownEdits.unit_price.toFixed(2)}` : '—'}
-                                </span>
-                              </div>
-                              <div style={styles.costBreakdownField}>
-                                <label>Cost/Item</label>
-                                <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600' }}>
-                                  {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price
-                                    ? `£${(costBreakdownEdits.unit_price / costBreakdownEdits.pack_quantity).toFixed(4)}`
-                                    : '—'}
-                                </span>
-                              </div>
-                              <div style={styles.costBreakdownField}>
-                                <label>Cost/Portion</label>
-                                <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600' }}>
-                                  {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price && costBreakdownEdits.portions_per_unit
-                                    ? `£${(costBreakdownEdits.unit_price / (costBreakdownEdits.pack_quantity * costBreakdownEdits.portions_per_unit)).toFixed(4)}`
-                                    : '—'}
-                                </span>
-                              </div>
-                              <div style={styles.costBreakdownField}>
-                                <label>Total Portions</label>
-                                <span style={{ ...styles.costBreakdownValue, color: '#007bff', fontWeight: '600' }}>
-                                  {item.quantity && costBreakdownEdits.pack_quantity && costBreakdownEdits.portions_per_unit
-                                    ? Math.round(item.quantity * costBreakdownEdits.pack_quantity * costBreakdownEdits.portions_per_unit)
-                                    : '—'}
-                                </span>
-                              </div>
-                            </div>
-                            {/* Show saved definition info OR update checkbox */}
-                            {(item.product_code || item.description) && (
-                              <>
-                                {definitionLoading ? (
-                                  <div style={styles.saveAsDefaultRow}>
-                                    <span style={{ fontSize: '0.85rem', color: '#666' }}>Loading saved default...</span>
-                                  </div>
-                                ) : currentDefinition ? (
-                                  <>
-                                    {/* Show saved by info */}
-                                    <div style={styles.savedByInfo}>
-                                      <span>
-                                        Definition saved by <strong>{currentDefinition.saved_by_username || 'Unknown'}</strong>
-                                        {currentDefinition.updated_at && (
-                                          <> on {new Date(currentDefinition.updated_at).toLocaleDateString()}</>
-                                        )}
-                                        {currentDefinition.source_invoice_number && (
-                                          <> from invoice{' '}
-                                            <a
-                                              href={`/invoice/${currentDefinition.source_invoice_id}`}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              style={{ color: '#007bff', textDecoration: 'underline' }}
-                                            >
-                                              {currentDefinition.source_invoice_number}
-                                            </a>
-                                          </>
-                                        )}
-                                      </span>
-                                    </div>
-                                    {/* Only show update checkbox if values have changed */}
-                                    {(
-                                      costBreakdownEdits.pack_quantity !== currentDefinition.pack_quantity ||
-                                      costBreakdownEdits.unit_size !== currentDefinition.unit_size ||
-                                      costBreakdownEdits.unit_size_type !== currentDefinition.unit_size_type ||
-                                      costBreakdownEdits.portions_per_unit !== currentDefinition.portions_per_unit ||
-                                      portionDescription !== (currentDefinition.portion_description || '')
-                                    ) && (
-                                      <div style={styles.saveAsDefaultRow}>
-                                        <label style={styles.saveAsDefaultLabel}>
-                                          <input
-                                            type="checkbox"
-                                            checked={saveAsDefault}
-                                            onChange={(e) => setSaveAsDefault(e.target.checked)}
-                                            style={{ marginRight: '0.5rem' }}
-                                          />
-                                          Update saved default
-                                        </label>
-                                        <span style={styles.saveAsDefaultHint}>
-                                          Values have changed from saved default
-                                        </span>
-                                      </div>
-                                    )}
-                                  </>
-                                ) : (
-                                  /* No saved definition - show save as default option */
-                                  <div style={styles.saveAsDefaultRow}>
-                                    <label style={styles.saveAsDefaultLabel}>
-                                      <input
-                                        type="checkbox"
-                                        checked={saveAsDefault}
-                                        onChange={(e) => setSaveAsDefault(e.target.checked)}
-                                        style={{ marginRight: '0.5rem' }}
-                                      />
-                                      Save as default for "{item.product_code || item.description?.substring(0, 30)}"
-                                    </label>
-                                    <span style={styles.saveAsDefaultHint}>
-                                      Future invoices will auto-apply these settings
-                                    </span>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                            <div style={styles.costBreakdownActions}>
-                              <button onClick={() => saveCostBreakdown(item.id)} style={styles.smallBtn}>
-                                {saveAsDefault ? 'Save & Update Default' : 'Save'}
-                              </button>
-                              <button onClick={() => { setExpandedCostBreakdown(null); setCostBreakdownEdits({}); setPortionDescription(''); setSaveAsDefault(false); setCurrentDefinition(null); }} style={styles.smallBtnCancel}>
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                     {expandedLineItem === item.id && bbox && (
                       <tr>
                         <td colSpan={11} style={styles.lineItemPreviewCell}>
@@ -4577,6 +4687,249 @@ export default function Review() {
         onClose={() => setViewingPoId(null)}
         onSaved={() => refetchPoMatch()}
         poId={viewingPoId}
+      />
+
+      {/* Ingredient Mapping Modal */}
+      {ingredientModalItem && (
+        <div style={styles.modalOverlay} onClick={closeIngredientModal}>
+          <div style={{ ...styles.wideModal, maxWidth: '650px' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Ingredient Mapping</h3>
+              <button onClick={closeIngredientModal} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}>&times;</button>
+            </div>
+
+            {/* Line item context */}
+            <div style={{ padding: '0.75rem', background: '#f8f9fa', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              <strong>{ingredientModalItem.description || ingredientModalItem.product_code || 'Unknown item'}</strong>
+              {ingredientModalItem.unit_price && <span style={{ marginLeft: '1rem', color: '#666' }}>£{ingredientModalItem.unit_price.toFixed(2)}</span>}
+              {ingredientModalItem.raw_content && (
+                <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.25rem' }}>Raw: {ingredientModalItem.raw_content.substring(0, 80)}</div>
+              )}
+            </div>
+
+            {/* Ingredient mapping section */}
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ fontWeight: '600', fontSize: '0.9rem', display: 'block', marginBottom: '0.5rem' }}>
+                Ingredient {selectedIngredientId && <span style={{ color: '#28a745', fontWeight: 'normal' }}>({selectedIngredientName})</span>}
+              </label>
+
+              {selectedIngredientId ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#d4edda', borderRadius: '6px', border: '1px solid #c3e6cb' }}>
+                  <span style={{ flex: 1 }}>{selectedIngredientName} <span style={{ color: '#666', fontSize: '0.85rem' }}>({selectedIngredientUnit})</span></span>
+                  <button
+                    onClick={() => { setSelectedIngredientId(null); setSelectedIngredientName(''); setSelectedIngredientUnit(''); setIngredientConversionDisplay(''); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#666', fontSize: '1.1rem' }}
+                  >&times;</button>
+                </div>
+              ) : (
+                <>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type="text"
+                      value={ingredientSearch}
+                      onChange={(e) => {
+                        setIngredientSearch(e.target.value)
+                        searchIngredients(e.target.value)
+                      }}
+                      placeholder="Search ingredients..."
+                      style={{ ...styles.input, width: '100%', boxSizing: 'border-box' }}
+                    />
+                    {ingredientSearchLoading && <span style={{ position: 'absolute', right: '10px', top: '10px', color: '#999' }}>...</span>}
+                  </div>
+
+                  {/* Suggestions dropdown */}
+                  {ingredientSuggestions.length > 0 && (
+                    <div style={{ border: '1px solid #ddd', borderRadius: '0 0 6px 6px', maxHeight: '200px', overflowY: 'auto', background: '#fff' }}>
+                      {ingredientSuggestions.map((s) => (
+                        <div
+                          key={s.id}
+                          onClick={() => selectIngredient(s)}
+                          style={{ padding: '0.5rem 0.75rem', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '0.9rem', display: 'flex', justifyContent: 'space-between' }}
+                          onMouseOver={(e) => (e.currentTarget.style.background = '#f0f7ff')}
+                          onMouseOut={(e) => (e.currentTarget.style.background = '#fff')}
+                        >
+                          <span>{s.name} <span style={{ color: '#999', fontSize: '0.8rem' }}>({s.standard_unit})</span></span>
+                          <span style={{ color: '#999', fontSize: '0.8rem' }}>{s.category_name || ''} {s.similarity ? `${(s.similarity * 100).toFixed(0)}%` : ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Create new ingredient */}
+                  <button
+                    onClick={() => setShowCreateIngredient(true)}
+                    style={{ marginTop: '0.5rem', padding: '0.4rem 0.75rem', background: '#f0f0f0', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
+                  >
+                    + Create new ingredient
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Invoice → Ingredient conversion */}
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ fontWeight: '600', fontSize: '0.9rem', display: 'block', marginBottom: '0.25rem' }}>
+                {selectedIngredientId ? `How much ${selectedIngredientName} is in this line item?` : 'Unit size & pricing'}
+              </label>
+              <div style={{ fontSize: '0.8rem', color: '#888', marginBottom: '0.5rem' }}>
+                {ingredientModalItem?.description}{ingredientModalItem?.unit_price ? ` @ £${ingredientModalItem.unit_price.toFixed(2)}` : ''}
+                {ingredientModalItem?.quantity && ingredientModalItem.quantity > 1 ? ` × ${ingredientModalItem.quantity}` : ''}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end' }}>
+                <div style={styles.costBreakdownField}>
+                  <label style={{ fontSize: '0.8rem', color: '#666' }}>Contains</label>
+                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <input
+                      type="number" step="0.1"
+                      value={costBreakdownEdits.unit_size || ''}
+                      onChange={(e) => { const v = { ...costBreakdownEdits, unit_size: parseFloat(e.target.value) || null }; setCostBreakdownEdits(v); updateConversionDisplay(undefined, v) }}
+                      onFocus={(e) => e.target.select()}
+                      style={{ ...styles.costBreakdownInput, width: '70px' }}
+                      placeholder="e.g., 2"
+                    />
+                    <select
+                      value={costBreakdownEdits.unit_size_type || selectedIngredientUnit || ''}
+                      onChange={(e) => { const v = { ...costBreakdownEdits, unit_size_type: e.target.value || null }; setCostBreakdownEdits(v); updateConversionDisplay(undefined, v) }}
+                      style={{ ...styles.costBreakdownInput, width: '60px' }}
+                    >
+                      <option value="">--</option>
+                      <option value="each">each</option>
+                      <option value="g">g</option>
+                      <option value="kg">kg</option>
+                      <option value="ml">ml</option>
+                      <option value="ltr">ltr</option>
+                      <option value="oz">oz</option>
+                      <option value="cl">cl</option>
+                    </select>
+                    {selectedIngredientUnit && costBreakdownEdits.unit_size_type && costBreakdownEdits.unit_size_type !== selectedIngredientUnit && (
+                      <span style={{ fontSize: '0.75rem', color: '#999' }}>→ {selectedIngredientUnit}</span>
+                    )}
+                  </div>
+                </div>
+                <div style={styles.costBreakdownField}>
+                  <label style={{ fontSize: '0.8rem', color: '#666' }}>Pack of</label>
+                  <input
+                    type="number"
+                    value={costBreakdownEdits.pack_quantity || ''}
+                    onChange={(e) => { const v = { ...costBreakdownEdits, pack_quantity: parseInt(e.target.value) || null }; setCostBreakdownEdits(v); updateConversionDisplay(undefined, v) }}
+                    onFocus={(e) => e.target.select()}
+                    style={{ ...styles.costBreakdownInput, width: '50px' }}
+                    placeholder="1"
+                  />
+                </div>
+                <div style={styles.costBreakdownField}>
+                  <label style={{ fontSize: '0.8rem', color: '#666' }}>Line Price</label>
+                  <span style={{ ...styles.costBreakdownValue, fontSize: '0.9rem' }}>
+                    {costBreakdownEdits.unit_price ? `£${costBreakdownEdits.unit_price.toFixed(2)}` : '--'}
+                  </span>
+                </div>
+              </div>
+              {ingredientConversionDisplay && (
+                <div style={{ marginTop: '0.5rem', padding: '0.5rem 0.75rem', background: '#e8f5e9', borderRadius: '6px', fontSize: '0.9rem', color: '#2e7d32', fontWeight: '500' }}>
+                  {ingredientConversionDisplay}
+                </div>
+              )}
+            </div>
+
+            {/* Legacy portioning (collapsible) */}
+            <div style={{ marginBottom: '1rem' }}>
+              <button
+                onClick={() => setShowLegacyPortioning(!showLegacyPortioning)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.85rem', color: '#666', padding: 0 }}
+              >
+                {showLegacyPortioning ? '▾' : '▸'} Legacy Portioning
+              </button>
+              {showLegacyPortioning && (
+                <div style={{ marginTop: '0.5rem', padding: '0.75rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    <div style={styles.costBreakdownField}>
+                      <label style={{ fontSize: '0.8rem', color: '#666' }}>Portions/Unit</label>
+                      <input
+                        type="number"
+                        value={costBreakdownEdits.portions_per_unit ?? ''}
+                        onChange={(e) => setCostBreakdownEdits({ ...costBreakdownEdits, portions_per_unit: e.target.value ? parseInt(e.target.value) : null })}
+                        style={styles.costBreakdownInput} min="1" placeholder="--"
+                      />
+                    </div>
+                    <div style={{ ...styles.costBreakdownField, minWidth: '150px' }}>
+                      <label style={{ fontSize: '0.8rem', color: '#666' }}>Portion Desc</label>
+                      <input
+                        type="text" value={portionDescription}
+                        onChange={(e) => setPortionDescription(e.target.value)}
+                        style={{ ...styles.costBreakdownInput, width: '100%' }}
+                        placeholder="e.g., 250ml glass"
+                      />
+                    </div>
+                    <div style={styles.costBreakdownField}>
+                      <label style={{ fontSize: '0.8rem', color: '#666' }}>Cost/Portion</label>
+                      <span style={{ ...styles.costBreakdownValue, color: '#28a745', fontWeight: '600', fontSize: '0.9rem' }}>
+                        {costBreakdownEdits.pack_quantity && costBreakdownEdits.unit_price && costBreakdownEdits.portions_per_unit
+                          ? `£${(costBreakdownEdits.unit_price / (costBreakdownEdits.pack_quantity * costBreakdownEdits.portions_per_unit)).toFixed(4)}`
+                          : '--'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Save as default */}
+            {(ingredientModalItem.product_code || ingredientModalItem.description) && (
+              <>
+                {definitionLoading ? (
+                  <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: '0.5rem' }}>Loading saved default...</div>
+                ) : currentDefinition ? (
+                  <div style={{ ...styles.savedByInfo, marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '0.85rem' }}>
+                      Definition by <strong>{currentDefinition.saved_by_username || 'Unknown'}</strong>
+                      {currentDefinition.updated_at && <> on {new Date(currentDefinition.updated_at).toLocaleDateString()}</>}
+                    </span>
+                  </div>
+                ) : null}
+                {!selectedIngredientId && (
+                  <div style={{ ...styles.saveAsDefaultRow, marginBottom: '1rem' }}>
+                    <label style={styles.saveAsDefaultLabel}>
+                      <input type="checkbox" checked={saveAsDefault} onChange={(e) => setSaveAsDefault(e.target.checked)} style={{ marginRight: '0.5rem' }} />
+                      {currentDefinition ? 'Update saved default' : `Save as default for "${ingredientModalItem.product_code || ingredientModalItem.description?.substring(0, 30)}"`}
+                    </label>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <button onClick={closeIngredientModal} style={{ ...styles.smallBtnCancel, padding: '0.5rem 1.25rem' }}>Cancel</button>
+              <button onClick={() => saveCostBreakdown(ingredientModalItem.id)} style={{ ...styles.smallBtn, padding: '0.5rem 1.25rem' }}>
+                {selectedIngredientId ? 'Save & Map Ingredient' : (saveAsDefault ? 'Save & Update Default' : 'Save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <IngredientModal
+        open={showCreateIngredient}
+        onClose={() => setShowCreateIngredient(false)}
+        onSaved={handleIngredientCreated}
+        prePopulateName={ingredientSearch || ''}
+        preSelectLineItem={ingredientModalItem ? {
+          product_code: ingredientModalItem.product_code,
+          description: ingredientModalItem.description,
+          supplier_id: invoice?.supplier_id || null,
+          supplier_name: invoice?.supplier_name || null,
+          unit: ingredientModalItem.unit,
+          most_recent_price: ingredientModalItem.unit_price,
+          total_quantity: ingredientModalItem.quantity,
+          occurrence_count: 1,
+          most_recent_invoice_id: Number(id),
+          most_recent_line_number: ingredientModalItem.line_number,
+          most_recent_pack_quantity: ingredientModalItem.pack_quantity,
+          most_recent_unit_size: ingredientModalItem.unit_size,
+          most_recent_unit_size_type: ingredientModalItem.unit_size_type,
+          ingredient_id: ingredientModalItem.ingredient_id || null,
+          ingredient_name: ingredientModalItem.ingredient_name || null,
+        } as LineItemResult : null}
       />
     </div>
   )
