@@ -63,6 +63,7 @@ export default function IngredientModal({
   const [scanning, setScanning] = useState(false)
   const [labelPreview, setLabelPreview] = useState<string | null>(null)
   const [showLabelModal, setShowLabelModal] = useState(false)
+  const [showLineItemPreview, setShowLineItemPreview] = useState(false)
   const [cropFile, setCropFile] = useState<File | null>(null)
   const [brakesFetching, setBrakesFetching] = useState(false)
   const [brakesManualCode, setBrakesManualCode] = useState('')
@@ -155,6 +156,7 @@ export default function IngredientModal({
     setScanning(false)
     setLabelPreview(null)
     setShowLabelModal(false)
+    setShowLineItemPreview(false)
     setCropFile(null)
     setBrakesFetching(false)
     setBrakesManualCode('')
@@ -725,12 +727,16 @@ export default function IngredientModal({
 
             {/* Line item invoice preview */}
             {selectedLi && selectedLi.most_recent_line_number != null && (
-              <div style={{ marginTop: '0.5rem', borderRadius: '6px', overflow: 'hidden', border: '1px solid #e0e0e0' }}>
+              <div
+                style={{ marginTop: '0.5rem', borderRadius: '6px', overflow: 'hidden', border: '1px solid #e0e0e0', cursor: 'pointer' }}
+                onClick={() => setShowLineItemPreview(true)}
+                title="Click to enlarge"
+              >
                 <img
                   src={`/api/invoices/${selectedLi.most_recent_invoice_id}/line-items/${selectedLi.most_recent_line_number}/preview?token=${encodeURIComponent(token || '')}`}
                   alt="Invoice line item"
                   style={{ width: '100%', height: 'auto', display: 'block' }}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                  onError={(e) => { (e.target as HTMLImageElement).parentElement!.style.display = 'none' }}
                 />
               </div>
             )}
@@ -827,6 +833,26 @@ export default function IngredientModal({
               src={labelPreview}
               alt="Product label"
               style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: '8px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}
+            />
+          </div>
+        </div>
+      )}
+      {showLineItemPreview && selectedLi?.most_recent_line_number != null && (
+        <div
+          onClick={() => setShowLineItemPreview(false)}
+          style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, cursor: 'pointer' }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', maxWidth: '95vw', maxHeight: '90vh' }}>
+            <button
+              onClick={() => setShowLineItemPreview(false)}
+              style={{ position: 'absolute', top: '-12px', right: '-12px', width: '28px', height: '28px', borderRadius: '50%', background: 'white', border: '1px solid #ccc', cursor: 'pointer', fontSize: '0.9rem', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.2)', zIndex: 1 }}
+            >
+              {'\u2715'}
+            </button>
+            <img
+              src={`/api/invoices/${selectedLi.most_recent_invoice_id}/line-items/${selectedLi.most_recent_line_number}/preview?token=${encodeURIComponent(token || '')}`}
+              alt="Invoice line item"
+              style={{ maxWidth: '95vw', maxHeight: '90vh', borderRadius: '8px', boxShadow: '0 4px 20px rgba(0,0,0,0.3)' }}
             />
           </div>
         </div>
