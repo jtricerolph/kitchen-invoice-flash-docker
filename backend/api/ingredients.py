@@ -198,6 +198,37 @@ class SuggestResponse(BaseModel):
 
 # ── Category endpoints ───────────────────────────────────────────────────────
 
+DEFAULT_INGREDIENT_CATEGORIES = [
+    ("Dairy", 0), ("Meat", 1), ("Seafood", 2), ("Produce", 3),
+    ("Dry Goods", 4), ("Canned & Jarred", 5), ("Frozen Goods", 6),
+    ("Oils & Fats", 7), ("Herbs & Spices", 7), ("Bakery", 8),
+    ("Beverages", 9), ("Condiments", 11), ("Other", 12),
+]
+
+
+@router.post("/categories/seed-defaults")
+async def seed_default_categories(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Seed default ingredient categories. Skips any that already exist by name."""
+    kid = user.kitchen_id
+    created = 0
+    for name, sort_order in DEFAULT_INGREDIENT_CATEGORIES:
+        exists = await db.execute(
+            select(IngredientCategory).where(
+                IngredientCategory.kitchen_id == kid,
+                IngredientCategory.name == name,
+            )
+        )
+        if exists.scalar_one_or_none():
+            continue
+        db.add(IngredientCategory(kitchen_id=kid, name=name, sort_order=sort_order))
+        created += 1
+    await db.commit()
+    return {"ok": True, "created": created}
+
+
 @router.get("/categories")
 async def list_categories(
     user: User = Depends(get_current_user),

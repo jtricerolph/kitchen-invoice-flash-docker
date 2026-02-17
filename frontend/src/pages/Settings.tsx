@@ -6682,7 +6682,36 @@ export default function Settings() {
         {/* Ingredient Categories Section */}
         {activeSection === 'ingredient_categories' && (
           <div style={styles.section}>
-            <h2 style={styles.sectionTitle}>Ingredient Categories</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={styles.sectionTitle}>Ingredient Categories</h2>
+              <button
+                onClick={async () => {
+                  setIngCatMessage(null)
+                  try {
+                    const res = await fetch('/api/ingredients/categories/seed-defaults', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${token}` },
+                    })
+                    const data = await res.json()
+                    if (res.ok) {
+                      if (data.created === 0) {
+                        setIngCatMessage('All default categories already exist.')
+                      } else {
+                        setIngCatMessage(`Loaded ${data.created} default categories.`)
+                      }
+                      refetchIngCategories()
+                    } else {
+                      setIngCatMessage(`Error: ${data.detail || 'Failed to seed defaults'}`)
+                    }
+                  } catch {
+                    setIngCatMessage('Error: Network error')
+                  }
+                }}
+                style={{ padding: '0.4rem 0.75rem', background: '#6366f1', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+              >
+                Load Defaults
+              </button>
+            </div>
             <p style={styles.hint}>
               Manage ingredient groupings (e.g. Dairy, Meat, Produce). Categories help organise your ingredient library and can be used to filter the ingredients list.
             </p>
