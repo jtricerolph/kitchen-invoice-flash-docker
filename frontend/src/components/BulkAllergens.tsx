@@ -60,8 +60,6 @@ export default function BulkAllergens() {
   const [categoryFilter, setCategoryFilter] = useState<string>('')
   const [showUnassessedOnly, setShowUnassessedOnly] = useState(false)
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  const [suggestions, setSuggestions] = useState<Record<number, AllergenSuggestion[]>>({})
-  const [suggestionsLoading, setSuggestionsLoading] = useState<number | null>(null)
 
   // Fetch all non-archived ingredients
   const { data: ingredients } = useQuery<IngredientItem[]>({
@@ -115,6 +113,19 @@ export default function BulkAllergens() {
     enabled: !!token,
   })
 
+  // Fetch suggestions for ALL ingredients in bulk (single request)
+  const { data: allSuggestions } = useQuery<Record<number, AllergenSuggestion[]>>({
+    queryKey: ['bulk-suggestions'],
+    queryFn: async () => {
+      const res = await fetch('/api/food-flags/suggest/bulk', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return {}
+      return res.json()
+    },
+    enabled: !!token,
+  })
+
   // Toggle a flag on an ingredient
   const toggleFlagMutation = useMutation({
     mutationFn: async ({ ingredientId, flagId, action }: { ingredientId: number; flagId: number; action: 'add' | 'remove' }) => {
@@ -158,29 +169,8 @@ export default function BulkAllergens() {
     },
   })
 
-  const toggleExpanded = async (ing: IngredientItem) => {
-    if (expandedId === ing.id) {
-      setExpandedId(null)
-      return
-    }
-    setExpandedId(ing.id)
-    // Fetch suggestions if not cached
-    if (!suggestions[ing.id]) {
-      setSuggestionsLoading(ing.id)
-      try {
-        const params = new URLSearchParams()
-        params.set('name', ing.name)
-        if (ing.product_ingredients) params.set('text', ing.product_ingredients)
-        const res = await fetch(`/api/food-flags/suggest?${params}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (res.ok) {
-          const data: AllergenSuggestion[] = await res.json()
-          setSuggestions(prev => ({ ...prev, [ing.id]: data }))
-        }
-      } catch { /* ignore */ }
-      setSuggestionsLoading(null)
-    }
+  const toggleExpanded = (ing: IngredientItem) => {
+    setExpandedId(expandedId === ing.id ? null : ing.id)
   }
 
   // Only show required categories as column groups
@@ -286,17 +276,22 @@ export default function BulkAllergens() {
                 const ingFlagIds = new Set(ing.flags.map(f => f.food_flag_id))
                 const nones = bulkNones?.[ing.id] || []
                 const isExpanded = expandedId === ing.id
-                const ingSuggestions = suggestions[ing.id]
+                const ingSuggestions = allSuggestions?.[ing.id]
                 const pendingSuggestions = ingSuggestions?.filter(s => !ingFlagIds.has(s.flag_id))
+                const hasPendingSuggestions = !!pendingSuggestions?.length
                 const totalCols = 1 + requiredCategories.length + flagColumns.length
 
                 return (
                   <tbody key={ing.id}>
                     <tr style={styles.tr}>
                       <td
-                        style={{ ...styles.td, position: 'sticky', left: 0, background: isExpanded ? '#f0f7ff' : 'white', zIndex: 1, fontWeight: 500, cursor: 'pointer' }}
+                        style={{
+                          ...styles.td, position: 'sticky', left: 0, zIndex: 1, fontWeight: 500, cursor: 'pointer',
+                          background: isExpanded ? '#f0f7ff' : hasPendingSuggestions ? '#fffbeb' : 'white',
+                          borderLeft: hasPendingSuggestions ? '3px solid #f59e0b' : undefined,
+                        }}
                         onClick={() => toggleExpanded(ing)}
-                        title="Click to show details"
+                        title={hasPendingSuggestions ? `${pendingSuggestions!.length} suggested allergen(s) — click to review` : 'Click to show details'}
                       >
                         <span style={{ fontSize: '0.65rem', color: '#888', marginRight: '4px' }}>{isExpanded ? '\u25BC' : '\u25B6'}</span>
                         {ing.name}
@@ -386,12 +381,8 @@ export default function BulkAllergens() {
                             {/* Allergen suggestions */}
                             <div style={{ flex: 1 }}>
                               <div style={{ fontWeight: 600, color: '#555', marginBottom: '0.25rem', fontSize: '0.7rem', textTransform: 'uppercase' as const }}>Keyword Suggestions</div>
-                              {suggestionsLoading === ing.id ? (
-                                <div style={{ color: '#888' }}>Loading...</div>
-                              ) : !pendingSuggestions?.length ? (
-                                <div style={{ color: '#bbb' }}>
-                                  {ingSuggestions ? 'No suggestions' : 'Error loading'}
-                                </div>
+                              {!pendingSuggestions?.length ? (
+                                <div style={{ color: '#bbb' }}>No suggestions</div>
                               ) : (
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
                                   {pendingSuggestions.map(s => (

@@ -91,6 +91,7 @@ export default function MenuEditor() {
       return res.json()
     },
     enabled: !!token && menuId > 0,
+    staleTime: 0,
   })
 
   // Mutations

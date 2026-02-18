@@ -301,7 +301,11 @@ async def list_menus(
 
     items_list = []
     for m in menus:
-        # Count how many items are on active menus for published indicator
+        # Compute staleness for this menu's items
+        all_items = list(m.items) if m.items else []
+        staleness = await _compute_staleness(all_items, db) if all_items else {}
+        stale_count = sum(1 for s in staleness.values() if s.get("is_stale"))
+
         items_list.append({
             "id": m.id,
             "name": m.name,
@@ -310,7 +314,8 @@ async def list_menus(
             "is_active": m.is_active,
             "sort_order": m.sort_order,
             "division_count": len(m.divisions) if m.divisions else 0,
-            "item_count": len(m.items) if m.items else 0,
+            "item_count": len(all_items),
+            "stale_count": stale_count,
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "updated_at": m.updated_at.isoformat() if m.updated_at else None,
         })

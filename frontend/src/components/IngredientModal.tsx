@@ -42,6 +42,39 @@ function getSupplierLookup(supplierName: string | null | undefined): SupplierLoo
   return SUPPLIER_LOOKUPS.find(l => l.namePattern.test(supplierName)) || null
 }
 
+// ── Product name vs line item similarity scoring ─────────────────────────────
+const NOISE_WORDS = new Set([
+  'brakes', 'brake', 'bidfood', 'the', 'a', 'an', 'and', 'or', 'of', 'for', 'with', 'in',
+  'per', 'pack', 'pkt', 'case', 'cs', 'box', 'bag', 'tub', 'tin', 'jar', 'btl', 'bottle',
+  'x', 'pk', 'ea', 'each',
+])
+
+function tokenize(text: string): Set<string> {
+  return new Set(
+    text.toLowerCase()
+      .replace(/[^a-z0-9%]+/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 2 && !NOISE_WORDS.has(w))
+  )
+}
+
+function productMatchScore(productName: string, lineItemDesc: string): number {
+  const prodTokens = tokenize(productName)
+  const liTokens = tokenize(lineItemDesc)
+  if (prodTokens.size === 0 || liTokens.size === 0) return 0
+  let overlap = 0
+  for (const t of prodTokens) {
+    if (liTokens.has(t)) { overlap++; continue }
+    // Partial match: one token contains the other (e.g. "chicken" vs "chkn", "fz" vs "frozen")
+    for (const lt of liTokens) {
+      if (t.length >= 4 && lt.length >= 4 && (t.includes(lt) || lt.includes(t))) { overlap += 0.5; break }
+    }
+  }
+  // Asymmetric: score primarily against the smaller set (invoice descriptions are often abbreviated)
+  const denominator = Math.min(prodTokens.size, liTokens.size)
+  return Math.round((overlap / denominator) * 100)
+}
+
 interface IngredientModalProps {
   open: boolean
   onClose: () => void
@@ -100,6 +133,7 @@ export default function IngredientModal({
   const [supplierManualCode, setSupplierManualCode] = useState('')
   const [supplierAutoApplyIds, setSupplierAutoApplyIds] = useState<number[]>([])
   const [supplierNoneCategoryIds, setSupplierNoneCategoryIds] = useState<number[]>([])
+  const [supplierProductName, setSupplierProductName] = useState<string | null>(null)
   const [pendingDismissals, setPendingDismissals] = useState<DismissalInfo[]>([])
 
   // Track if initial supplier fetch is needed (set during init, consumed by separate effect)
@@ -196,6 +230,7 @@ export default function IngredientModal({
     setSupplierManualCode('')
     setSupplierAutoApplyIds([])
     setSupplierNoneCategoryIds([])
+    setSupplierProductName(null)
     setPendingDismissals([])
     setPendingSupplierFetch(null)
   }
@@ -206,6 +241,11 @@ export default function IngredientModal({
   }
 
   const activeLookup = useMemo(() => getSupplierLookup(selectedLi?.supplier_name), [selectedLi?.supplier_name])
+
+  const supplierMatchScore = useMemo(() => {
+    if (!supplierProductName || supplierProductName === 'NOT FOUND' || !selectedLi?.description) return null
+    return productMatchScore(supplierProductName, selectedLi.description)
+  }, [supplierProductName, selectedLi?.description])
 
   const fetchSupplierProduct = async (productCode: string, lookup: SupplierLookup, force = false) => {
     setSupplierFetching(true)
@@ -219,6 +259,7 @@ export default function IngredientModal({
         const data = await res.json()
         if (data.found) {
           setFormPrepackaged(true)
+          setSupplierProductName(data.product_name || null)
           let ingText = data.ingredients_text || ''
           if (data.contains_allergens?.length > 0) {
             ingText += `\nContains: ${data.contains_allergens.join(', ')}`
@@ -238,6 +279,8 @@ export default function IngredientModal({
             .map((f: { flag_id: number }) => f.flag_id)
           if (autoApplyIds.length > 0) setSupplierAutoApplyIds(autoApplyIds)
           if (data.none_category_ids?.length > 0) setSupplierNoneCategoryIds(data.none_category_ids)
+        } else {
+          setSupplierProductName('NOT FOUND')
         }
       }
     } catch { /* ignore */ }
@@ -855,16 +898,51 @@ export default function IngredientModal({
                     </div>
                   </div>
                 </div>
-                {(supplierAutoApplyIds.length > 0 || supplierNoneCategoryIds.length > 0) && (
+                {supplierProductName === 'NOT FOUND' && (
                   <div style={{
                     marginTop: '0.35rem',
                     padding: '0.35rem 0.5rem',
-                    background: '#e8f5e9',
-                    border: '1px solid #a5d6a7',
+                    background: '#fdecea',
+                    border: '1px solid #ef9a9a',
                     borderRadius: '4px',
                     fontSize: '0.72rem',
-                    color: '#2e7d32',
+                    color: '#c62828',
                   }}>
+                    Product not found on Brakes website — SKU may be incorrect
+                  </div>
+                )}
+                {supplierProductName && supplierProductName !== 'NOT FOUND' && (
+                  <div style={{
+                    marginTop: '0.35rem',
+                    padding: '0.35rem 0.5rem',
+                    background: supplierMatchScore !== null && supplierMatchScore < 30 ? '#fdecea' : supplierMatchScore !== null && supplierMatchScore < 60 ? '#fffbeb' : '#e8f5e9',
+                    border: `1px solid ${supplierMatchScore !== null && supplierMatchScore < 30 ? '#ef9a9a' : supplierMatchScore !== null && supplierMatchScore < 60 ? '#f59e0b55' : '#a5d6a7'}`,
+                    borderRadius: '4px',
+                    fontSize: '0.72rem',
+                    color: supplierMatchScore !== null && supplierMatchScore < 30 ? '#c62828' : supplierMatchScore !== null && supplierMatchScore < 60 ? '#b45309' : '#2e7d32',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: (supplierAutoApplyIds.length > 0 || supplierNoneCategoryIds.length > 0) ? '0.2rem' : 0 }}>
+                      <span style={{ flex: 1 }}>
+                        <span style={{ fontWeight: 600 }}>Matched: </span>{supplierProductName}
+                      </span>
+                      {supplierMatchScore !== null && (
+                        <span style={{
+                          fontWeight: 700,
+                          fontSize: '0.68rem',
+                          padding: '0.1rem 0.35rem',
+                          borderRadius: '3px',
+                          background: supplierMatchScore < 30 ? '#c6282822' : supplierMatchScore < 60 ? '#b4530922' : '#2e7d3222',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          {supplierMatchScore}% match
+                        </span>
+                      )}
+                    </div>
+                    {supplierMatchScore !== null && supplierMatchScore < 30 && (
+                      <div style={{ fontSize: '0.68rem', fontStyle: 'italic', marginBottom: '0.15rem' }}>
+                        Product name doesn't match line item — verify SKU is correct
+                      </div>
+                    )}
                     {supplierAutoApplyIds.length > 0 && scanResult?.suggested_flags && (
                       <>
                         <span style={{ fontWeight: 600 }}>Auto-flagged: </span>

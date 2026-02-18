@@ -19,7 +19,8 @@ from .ingredient import Ingredient, IngredientCategory, IngredientSource, Ingred
 from .food_flag import FoodFlagCategory, FoodFlag, LineItemFlag, RecipeFlag, RecipeFlagOverride
 from .recipe import (
     Recipe, MenuSection, RecipeIngredient, RecipeSubRecipe,
-    RecipeStep, RecipeImage, RecipeChangeLog, RecipeCostSnapshot
+    RecipeStep, RecipeImage, RecipeChangeLog, RecipeCostSnapshot,
+    RecipeTextFlagDismissal,
 )
 from .menu import Menu, MenuDivision, MenuItem
 from .event_order import EventOrder, EventOrderItem
@@ -37,6 +38,7 @@ __all__ = [
     "FoodFlagCategory", "FoodFlag", "LineItemFlag", "RecipeFlag", "RecipeFlagOverride",
     "Recipe", "MenuSection", "RecipeIngredient", "RecipeSubRecipe",
     "RecipeStep", "RecipeImage", "RecipeChangeLog", "RecipeCostSnapshot",
+    "RecipeTextFlagDismissal",
     "Menu", "MenuDivision", "MenuItem",
     "EventOrder", "EventOrderItem",
 ]

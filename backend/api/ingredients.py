@@ -2,7 +2,7 @@
 Ingredient Library API — categories, ingredients, sources, auto-price, duplicate detection.
 """
 import logging
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
@@ -21,12 +21,37 @@ from models.food_flag import FoodFlag, FoodFlagCategory
 from models.line_item import LineItem
 from models.invoice import Invoice
 from models.supplier import Supplier
-from models.recipe import Recipe, RecipeIngredient
+from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe
 from auth.jwt import get_current_user
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _bump_recipes_using_ingredient(ingredient_id: int, db: AsyncSession):
+    """Bump updated_at on all recipes (and their parents) that use this ingredient,
+    so menu staleness detection picks up allergen flag changes."""
+    ri_result = await db.execute(
+        select(RecipeIngredient.recipe_id).where(RecipeIngredient.ingredient_id == ingredient_id)
+    )
+    recipe_ids = set(r[0] for r in ri_result.fetchall())
+    # Also parent recipes (1 level up)
+    for rid in list(recipe_ids):
+        parent_result = await db.execute(
+            select(RecipeSubRecipe.parent_recipe_id).where(RecipeSubRecipe.child_recipe_id == rid)
+        )
+        for (parent_id,) in parent_result.fetchall():
+            recipe_ids.add(parent_id)
+    if recipe_ids:
+        now = datetime.utcnow()
+        for rid in recipe_ids:
+            r = await db.execute(select(Recipe).where(Recipe.id == rid))
+            recipe = r.scalar_one_or_none()
+            if recipe:
+                recipe.updated_at = now
+        await db.commit()
+
 
 # ── Unit conversion constants ────────────────────────────────────────────────
 
@@ -1237,6 +1262,7 @@ async def set_ingredient_flags(
             )
 
     await db.commit()
+    await _bump_recipes_using_ingredient(ingredient_id, db)
     return {"ok": True}
 
 
@@ -1296,6 +1322,7 @@ async def toggle_flag_none(
         ))
 
     await db.commit()
+    await _bump_recipes_using_ingredient(ingredient_id, db)
     return {"ok": True}
 
 

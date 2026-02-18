@@ -212,6 +212,8 @@ export default function Dashboard() {
     dishes_missing_allergens: number
     dishes_missing_allergens_list: Array<{ id: number; name: string }>
     recipes_with_price_changes: number
+    stale_menu_items: number
+    stale_menu_names: string[]
   }>({
     queryKey: ['recipe-dashboard-stats'],
     queryFn: async () => {
@@ -599,6 +601,25 @@ export default function Dashboard() {
                 <p style={styles.statLabel}>Recipes affected by ingredient price changes (14 days)</p>
                 <div style={styles.cardLinkArea}>
                   <span style={styles.linkText}>View report →</span>
+                </div>
+              </div>
+            )}
+
+            {recipeStats.stale_menu_items > 0 && (
+              <div
+                style={{ ...styles.card, ...styles.cardFlex, ...styles.alertCard, cursor: 'pointer' }}
+                onClick={() => navigate('/menus')}
+              >
+                <h3 style={styles.cardTitle}>Menus Need Republishing</h3>
+                <div style={{ ...styles.statValue, color: '#92400e' }}>{recipeStats.stale_menu_items}</div>
+                <p style={styles.statLabel}>Dish{recipeStats.stale_menu_items !== 1 ? 'es' : ''} changed since last publish</p>
+                {recipeStats.stale_menu_names.length > 0 && (
+                  <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                    {recipeStats.stale_menu_names.join(', ')}
+                  </div>
+                )}
+                <div style={styles.cardLinkArea}>
+                  <span style={styles.linkText}>View menus →</span>
                 </div>
               </div>
             )}

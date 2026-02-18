@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime
 from typing import Optional
 
 import aiofiles
@@ -20,7 +21,7 @@ from models.user import User
 from models.food_flag import FoodFlagCategory, FoodFlag, LineItemFlag, RecipeFlag, RecipeFlagOverride, AllergenKeyword, BrakesProductCache
 from models.ingredient import Ingredient, IngredientFlag, IngredientFlagNone, IngredientFlagDismissal
 from models.line_item import LineItem
-from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe
+from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe, RecipeTextFlagDismissal
 from models.settings import KitchenSettings
 from auth.jwt import get_current_user
 
@@ -852,10 +853,93 @@ async def get_recipe_flags(
                         "suggestion_count": len(matched_flag_ids),
                     })
 
+    # ── Recipe text keyword scanning ──────────────────────────────────
+    recipe_text_suggestions = []
+    # Load recipe details for text scanning
+    recipe_result = await db.execute(
+        select(Recipe.name, Recipe.description, Recipe.notes).where(Recipe.id == recipe_id)
+    )
+    recipe_row = recipe_result.first()
+
+    # Reuse all_keywords if already loaded above, otherwise load now
+    if not unique_ids or not all_keywords:
+        kw_result2 = await db.execute(
+            select(AllergenKeyword)
+            .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+            .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+        )
+        all_keywords = kw_result2.scalars().all()
+
+    if recipe_row and all_keywords:
+        # Collect text sources: (text_value, source_label)
+        text_sources: list[tuple[str, str]] = []
+        if recipe_row.name:
+            text_sources.append((recipe_row.name, "recipe name"))
+        if recipe_row.description:
+            text_sources.append((recipe_row.description, "description"))
+        if recipe_row.notes:
+            text_sources.append((recipe_row.notes, "notes"))
+
+        # Also scan ingredient notes
+        ing_notes_result = await db.execute(
+            select(RecipeIngredient.notes, Ingredient.name)
+            .join(Ingredient, Ingredient.id == RecipeIngredient.ingredient_id)
+            .where(
+                RecipeIngredient.recipe_id == recipe_id,
+                RecipeIngredient.notes.isnot(None),
+                RecipeIngredient.notes != "",
+            )
+        )
+        for note_text, ing_name in ing_notes_result.all():
+            text_sources.append((note_text, f"ingredient note: {ing_name}"))
+
+        # Match keywords against each text source
+        text_flag_matches: dict[int, dict] = {}
+        for src_text, src_label in text_sources:
+            matches = match_allergen_keywords(src_text, all_keywords)
+            for m in matches:
+                fid = m["flag_id"]
+                if fid not in text_flag_matches:
+                    text_flag_matches[fid] = {
+                        "flag_id": fid,
+                        "flag_name": m["flag_name"],
+                        "flag_code": m.get("flag_code"),
+                        "category_name": m["category_name"],
+                        "matched_keywords": [],
+                        "sources": [],
+                    }
+                for kw in m["matched_keywords"]:
+                    entry = f"{kw} ({src_label})"
+                    if entry not in text_flag_matches[fid]["matched_keywords"]:
+                        text_flag_matches[fid]["matched_keywords"].append(entry)
+                if src_label not in text_flag_matches[fid]["sources"]:
+                    text_flag_matches[fid]["sources"].append(src_label)
+
+        if text_flag_matches:
+            # Subtract flags already in computed recipe flags
+            computed_flag_ids = set(f.food_flag_id for f in flags)
+            for fid in list(text_flag_matches.keys()):
+                if fid in computed_flag_ids:
+                    del text_flag_matches[fid]
+
+            # Subtract dismissed flags
+            dismissed_result = await db.execute(
+                select(RecipeTextFlagDismissal.food_flag_id).where(
+                    RecipeTextFlagDismissal.recipe_id == recipe_id,
+                )
+            )
+            dismissed_ids = set(dismissed_result.scalars().all())
+            for fid in list(text_flag_matches.keys()):
+                if fid in dismissed_ids:
+                    del text_flag_matches[fid]
+
+            recipe_text_suggestions = list(text_flag_matches.values())
+
     return {
         "flags": [f.model_dump() for f in flags],
         "unassessed_ingredients": unassessed,
         "open_suggestion_ingredients": open_suggestion_ings,
+        "recipe_text_suggestions": recipe_text_suggestions,
     }
 
 
@@ -1297,6 +1381,12 @@ async def update_flag_matrix(
                 await db.delete(flag_row)
                 updated += 1
 
+    if updated > 0:
+        # Bump recipe updated_at so menu staleness detection picks up flag changes
+        r2 = await db.execute(select(Recipe).where(Recipe.id == recipe_id))
+        recipe_obj = r2.scalar_one_or_none()
+        if recipe_obj:
+            recipe_obj.updated_at = datetime.utcnow()
     await db.commit()
     return {"ok": True, "updated": updated}
 
@@ -1330,9 +1420,17 @@ async def toggle_matrix_none(
     )
     none_row = existing.scalar_one_or_none()
 
+    # Helper to bump recipe updated_at for staleness detection
+    async def _bump_recipe():
+        r2 = await db.execute(select(Recipe).where(Recipe.id == recipe_id))
+        robj = r2.scalar_one_or_none()
+        if robj:
+            robj.updated_at = datetime.utcnow()
+
     if none_row:
         # Toggle OFF
         await db.delete(none_row)
+        await _bump_recipe()
         await db.commit()
         return {"ok": True, "is_none": False}
     else:
@@ -1355,8 +1453,139 @@ async def toggle_matrix_none(
             ingredient_id=data.ingredient_id,
             category_id=data.category_id,
         ))
+        await _bump_recipe()
         await db.commit()
         return {"ok": True, "is_none": True}
+
+
+# ── Recipe text flag dismissals ──────────────────────────────────────────────
+
+class RecipeTextDismissalCreate(BaseModel):
+    food_flag_id: int
+    dismissed_by_name: str
+    reason: Optional[str] = None
+    matched_keyword: Optional[str] = None
+
+class RecipeTextDismissalResponse(BaseModel):
+    id: int
+    recipe_id: int
+    food_flag_id: int
+    dismissed_by_name: str
+    reason: Optional[str] = None
+    matched_keyword: Optional[str] = None
+    created_at: str = ""
+    class Config:
+        from_attributes = True
+
+
+@router.get("/recipes/{recipe_id}/text-dismissals")
+async def get_recipe_text_dismissals(
+    recipe_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all dismissed recipe text allergen suggestions."""
+    r = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.kitchen_id == user.kitchen_id)
+    )
+    if not r.scalar_one_or_none():
+        raise HTTPException(404, "Recipe not found")
+
+    result = await db.execute(
+        select(RecipeTextFlagDismissal)
+        .where(RecipeTextFlagDismissal.recipe_id == recipe_id)
+        .order_by(RecipeTextFlagDismissal.created_at.desc())
+    )
+    dismissals = result.scalars().all()
+    return [
+        RecipeTextDismissalResponse(
+            id=d.id,
+            recipe_id=d.recipe_id,
+            food_flag_id=d.food_flag_id,
+            dismissed_by_name=d.dismissed_by_name,
+            reason=d.reason,
+            matched_keyword=d.matched_keyword,
+            created_at=str(d.created_at) if d.created_at else "",
+        )
+        for d in dismissals
+    ]
+
+
+@router.post("/recipes/{recipe_id}/text-dismissals")
+async def create_recipe_text_dismissal(
+    recipe_id: int,
+    data: RecipeTextDismissalCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss a recipe text allergen suggestion (upsert)."""
+    r = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.kitchen_id == user.kitchen_id)
+    )
+    if not r.scalar_one_or_none():
+        raise HTTPException(404, "Recipe not found")
+
+    existing = await db.execute(
+        select(RecipeTextFlagDismissal).where(
+            RecipeTextFlagDismissal.recipe_id == recipe_id,
+            RecipeTextFlagDismissal.food_flag_id == data.food_flag_id,
+        )
+    )
+    dismissal = existing.scalar_one_or_none()
+    if dismissal:
+        dismissal.dismissed_by_name = data.dismissed_by_name
+        dismissal.reason = data.reason
+        dismissal.matched_keyword = data.matched_keyword
+    else:
+        dismissal = RecipeTextFlagDismissal(
+            recipe_id=recipe_id,
+            food_flag_id=data.food_flag_id,
+            dismissed_by_name=data.dismissed_by_name,
+            reason=data.reason,
+            matched_keyword=data.matched_keyword,
+        )
+        db.add(dismissal)
+
+    await db.commit()
+    await db.refresh(dismissal)
+    return RecipeTextDismissalResponse(
+        id=dismissal.id,
+        recipe_id=dismissal.recipe_id,
+        food_flag_id=dismissal.food_flag_id,
+        dismissed_by_name=dismissal.dismissed_by_name,
+        reason=dismissal.reason,
+        matched_keyword=dismissal.matched_keyword,
+        created_at=str(dismissal.created_at) if dismissal.created_at else "",
+    )
+
+
+@router.delete("/recipes/{recipe_id}/text-dismissals/{dismissal_id}")
+async def delete_recipe_text_dismissal(
+    recipe_id: int,
+    dismissal_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a recipe text dismissal (re-enables the suggestion)."""
+    r = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.kitchen_id == user.kitchen_id)
+    )
+    if not r.scalar_one_or_none():
+        raise HTTPException(404, "Recipe not found")
+
+    result = await db.execute(
+        select(RecipeTextFlagDismissal).where(
+            RecipeTextFlagDismissal.id == dismissal_id,
+            RecipeTextFlagDismissal.recipe_id == recipe_id,
+        )
+    )
+    dismissal = result.scalar_one_or_none()
+    if not dismissal:
+        raise HTTPException(404, "Dismissal not found")
+
+    await db.delete(dismissal)
+    await db.commit()
+    return {"ok": True}
 
 
 # ── Shared allergen keyword matching ─────────────────────────────────────────
@@ -1430,6 +1659,57 @@ async def suggest_allergens(
                 merged[fid]["matched_keywords"].append(f"{kw} ({source_label})")
 
     return list(merged.values())
+
+
+@router.get("/suggest/bulk")
+async def suggest_allergens_bulk(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return allergen keyword suggestions for ALL ingredients in the kitchen.
+    Single DB query for keywords, then match against each ingredient's name + product_ingredients.
+    Returns: { ingredient_id: [ { flag_id, flag_name, flag_code, category_name, matched_keywords } ] }
+    """
+    # Load all keywords once
+    kw_result = await db.execute(
+        select(AllergenKeyword)
+        .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+        .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+    )
+    keywords = kw_result.scalars().all()
+    if not keywords:
+        return {}
+
+    # Load all non-archived ingredients
+    ing_result = await db.execute(
+        select(Ingredient.id, Ingredient.name, Ingredient.product_ingredients)
+        .where(Ingredient.kitchen_id == user.kitchen_id, Ingredient.is_archived == False)
+    )
+    ingredients = ing_result.all()
+
+    result: dict[int, list[dict]] = {}
+    for ing_id, ing_name, product_ingredients in ingredients:
+        merged: dict[int, dict] = {}
+        for input_text, source_label in [(ing_name, "name"), (product_ingredients, "ingredients")]:
+            if not input_text or len(input_text.strip()) < 2:
+                continue
+            matches = match_allergen_keywords(input_text, keywords)
+            for m in matches:
+                fid = m["flag_id"]
+                if fid not in merged:
+                    merged[fid] = {
+                        "flag_id": m["flag_id"],
+                        "flag_name": m["flag_name"],
+                        "flag_code": m["flag_code"],
+                        "category_name": m["category_name"],
+                        "matched_keywords": [],
+                    }
+                for kw in m["matched_keywords"]:
+                    merged[fid]["matched_keywords"].append(f"{kw} ({source_label})")
+        if merged:
+            result[ing_id] = list(merged.values())
+
+    return result
 
 
 # ── Allergen keyword CRUD (Settings) ────────────────────────────────────────

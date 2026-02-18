@@ -29,6 +29,7 @@ from models.ingredient import IngredientFlag, IngredientFlagNone
 from models.settings import KitchenSettings
 from auth.jwt import get_current_user, get_current_user_from_token
 from api.ingredients import convert_to_standard, UNIT_CONVERSIONS
+from models.menu import Menu, MenuItem
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,24 @@ async def recipe_dashboard_stats(
         ).distinct()
     )).scalars().all()
 
+    # Menu items needing republishing
+    from api.menus import _compute_staleness
+    menu_result = await db.execute(
+        select(Menu).options(selectinload(Menu.items)).where(
+            Menu.kitchen_id == kid, Menu.is_active == True
+        )
+    )
+    active_menus = menu_result.scalars().all()
+    stale_menu_items = 0
+    stale_menu_names: list[str] = []
+    for menu in active_menus:
+        if menu.items:
+            staleness = await _compute_staleness(list(menu.items), db)
+            menu_stale = sum(1 for s in staleness.values() if s.get("is_stale"))
+            if menu_stale > 0:
+                stale_menu_items += menu_stale
+                stale_menu_names.append(menu.name)
+
     return {
         "total_recipes": total,
         "dish_count": dishes,
@@ -439,6 +458,8 @@ async def recipe_dashboard_stats(
         "dishes_missing_allergens": dishes_missing_allergens,
         "dishes_missing_allergens_list": dishes_missing_list,
         "recipes_with_price_changes": len(price_change_logs),
+        "stale_menu_items": stale_menu_items,
+        "stale_menu_names": stale_menu_names,
     }
 
 
@@ -1760,13 +1781,26 @@ async def snapshot_recipe_cost(recipe_id: int, db: AsyncSession, trigger_source:
 
 
 async def _snapshot_recipe_and_parents(recipe_id: int, db: AsyncSession, trigger_source: str = ""):
-    """Snapshot a recipe and any parent recipes that use it as a sub-recipe."""
+    """Snapshot a recipe and any parent recipes that use it as a sub-recipe.
+    Also bumps updated_at so menu staleness detection picks up content changes."""
+    # Bump updated_at on the recipe itself (ingredient/sub-recipe changes don't trigger onupdate)
+    recipe_result = await db.execute(select(Recipe).where(Recipe.id == recipe_id))
+    recipe = recipe_result.scalar_one_or_none()
+    if recipe:
+        recipe.updated_at = datetime.utcnow()
+
     await snapshot_recipe_cost(recipe_id, db, trigger_source)
     parent_result = await db.execute(
         select(RecipeSubRecipe.parent_recipe_id).where(RecipeSubRecipe.child_recipe_id == recipe_id)
     )
     for (parent_id,) in parent_result.fetchall():
+        # Bump parent updated_at too
+        p_result = await db.execute(select(Recipe).where(Recipe.id == parent_id))
+        parent = p_result.scalar_one_or_none()
+        if parent:
+            parent.updated_at = datetime.utcnow()
         await snapshot_recipe_cost(parent_id, db, trigger_source)
+    await db.commit()
 
 
 async def snapshot_recipes_using_ingredient(
@@ -1808,6 +1842,11 @@ async def snapshot_recipes_using_ingredient(
             change_msg = f"{name} price set: £{new_p:.4f}{unit_label}"
 
     for rid in recipe_ids:
+        # Bump updated_at so menu staleness detection picks up ingredient flag changes
+        r_result = await db.execute(select(Recipe).where(Recipe.id == rid))
+        r = r_result.scalar_one_or_none()
+        if r:
+            r.updated_at = datetime.utcnow()
         await snapshot_recipe_cost(rid, db, trigger_source)
         if change_msg:
             db.add(RecipeChangeLog(
@@ -1815,6 +1854,8 @@ async def snapshot_recipes_using_ingredient(
                 change_summary=change_msg,
                 user_id=None,
             ))
+    if recipe_ids:
+        await db.commit()
 
 
 # ── Recipe Change Log ────────────────────────────────────────────────────────

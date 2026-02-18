@@ -63,6 +63,7 @@ from migrations.add_brakes_dietary_info import migrate as run_brakes_dietary_inf
 from migrations.add_ingredient_flag_dismissals import migrate as run_ingredient_flag_dismissals_migration
 from migrations.add_menus import migrate as run_menus_migration
 from migrations.add_ingredient_is_free import migrate as run_ingredient_is_free_migration
+from migrations.add_recipe_text_flag_dismissals import migrate as run_recipe_text_flag_dismissals_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -431,6 +432,13 @@ async def lifespan(app: FastAPI):
         logger.info("Ingredient is_free migration completed")
     except Exception as e:
         logger.warning(f"Ingredient is_free migration warning (may be expected): {e}")
+
+    # Run recipe text flag dismissals migration
+    try:
+        await run_recipe_text_flag_dismissals_migration()
+        logger.info("Recipe text flag dismissals migration completed")
+    except Exception as e:
+        logger.warning(f"Recipe text flag dismissals migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()

@@ -168,7 +168,25 @@ class RecipeCostSnapshot(Base):
     recipe: Mapped["Recipe"] = relationship("Recipe", back_populates="cost_snapshots")
 
 
+class RecipeTextFlagDismissal(Base):
+    """Tracks dismissed allergen keyword suggestions from recipe-level text fields"""
+    __tablename__ = "recipe_text_flag_dismissals"
+    __table_args__ = (UniqueConstraint("recipe_id", "food_flag_id", name="uq_recipe_text_flag_dismissals_recipe_flag"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id", ondelete="CASCADE"), nullable=False, index=True)
+    food_flag_id: Mapped[int] = mapped_column(ForeignKey("food_flags.id", ondelete="CASCADE"), nullable=False, index=True)
+    dismissed_by_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    matched_keyword: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    recipe: Mapped["Recipe"] = relationship("Recipe")
+    food_flag: Mapped["FoodFlag"] = relationship("FoodFlag")
+
+
 # Forward references
 from .user import Kitchen, User
 from .ingredient import Ingredient
-from .food_flag import RecipeFlag
+from .food_flag import RecipeFlag, FoodFlag

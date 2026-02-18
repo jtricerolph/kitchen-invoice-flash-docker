@@ -12,6 +12,7 @@ interface MenuListItem {
   sort_order: number
   division_count: number
   item_count: number
+  stale_count: number
   created_at: string | null
   updated_at: string | null
 }
@@ -43,6 +44,7 @@ export default function MenuList() {
       return res.json()
     },
     enabled: !!token,
+    staleTime: 0,
   })
 
   const createMutation = useMutation({
@@ -202,6 +204,14 @@ export default function MenuList() {
                 <span>{menu.division_count} section{menu.division_count !== 1 ? 's' : ''}</span>
                 <span style={{ margin: '0 0.5rem' }}>·</span>
                 <span>{menu.item_count} dish{menu.item_count !== 1 ? 'es' : ''}</span>
+                {menu.stale_count > 0 && (
+                  <>
+                    <span style={{ margin: '0 0.5rem' }}>·</span>
+                    <span style={{ background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: '3px', fontSize: '0.75rem', fontWeight: 600 }}>
+                      {menu.stale_count} need{menu.stale_count === 1 ? 's' : ''} republishing
+                    </span>
+                  </>
+                )}
               </div>
             </div>
             <div style={styles.cardActions}>

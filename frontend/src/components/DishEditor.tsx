@@ -143,6 +143,14 @@ interface FlagState {
   }>
   unassessed_ingredients: Array<{ id: number; name: string }>
   open_suggestion_ingredients?: Array<{ ingredient_id: number; ingredient_name: string; suggestion_count: number }>
+  recipe_text_suggestions?: Array<{
+    flag_id: number
+    flag_name: string
+    flag_code: string | null
+    category_name: string
+    matched_keywords: string[]
+    sources: string[]
+  }>
 }
 
 interface CostTrendSnapshot {
@@ -189,7 +197,7 @@ function getCompatibleUnits(unit: string): string[] {
 export default function DishEditor() {
   const { id } = useParams<{ id: string }>()
   const recipeId = parseInt(id || '0')
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -861,6 +869,35 @@ export default function DishEditor() {
               {' '}({i.suggestion_count})
             </span>
           ))}
+        </div>
+      )}
+      {flagData && flagData.recipe_text_suggestions && flagData.recipe_text_suggestions.length > 0 && (
+        <div style={{ background: '#fffbeb', color: '#b45309', padding: '0.75rem 1rem', borderRadius: '6px', marginBottom: '0.75rem', fontSize: '0.85rem', border: '1px solid #f59e0b55' }}>
+          <strong>Recipe text keyword matches</strong>
+          <div style={{ marginTop: '0.4rem' }}>
+            {flagData.recipe_text_suggestions.map(s => (
+              <div key={s.flag_id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
+                <span><strong>{s.flag_name}</strong> — {s.matched_keywords.join(', ')}</span>
+                <button
+                  style={{ marginLeft: 'auto', background: 'none', border: '1px solid #b4530955', borderRadius: '4px', color: '#b45309', cursor: 'pointer', padding: '0.15rem 0.5rem', fontSize: '0.8rem', whiteSpace: 'nowrap' }}
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(`/api/food-flags/recipes/${recipeId}/text-dismissals`, {
+                        method: 'POST',
+                        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          food_flag_id: s.flag_id,
+                          dismissed_by_name: user?.name || user?.email || 'Unknown',
+                          matched_keyword: s.matched_keywords.join(', '),
+                        }),
+                      })
+                      if (res.ok) queryClient.invalidateQueries({ queryKey: ['recipe-flags', recipeId] })
+                    } catch { /* ignore */ }
+                  }}
+                >Dismiss</button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
