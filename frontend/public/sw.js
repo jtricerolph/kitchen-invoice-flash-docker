@@ -1,6 +1,7 @@
-const CACHE_NAME = 'invoice-upload-v2'
+const CACHE_NAME = 'kitchen-app-v3'
 const SHELL_URLS = [
   '/manifest.json',
+  '/kds-manifest.json',
 ]
 
 self.addEventListener('install', (event) => {

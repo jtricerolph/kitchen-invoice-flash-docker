@@ -33,6 +33,7 @@ import MenuEditor from './components/MenuEditor'
 import BulkAllergens from './components/BulkAllergens'
 import PriceImpact from './components/PriceImpact'
 import UploadApp from './pages/UploadApp'
+import KDSApp from './pages/KDSApp'
 import SupportButton from './components/SupportButton'
 
 interface User {
@@ -121,7 +122,7 @@ function App() {
   }
 
   const location = useLocation()
-  const isFullscreenPage = location.pathname === '/kds' || location.pathname === '/upload-app'
+  const isFullscreenPage = location.pathname === '/kds' || location.pathname === '/upload-app' || location.pathname === '/kds-app'
 
   // Register service worker for PWA
   useEffect(() => {
@@ -329,6 +330,10 @@ function App() {
             <Route
               path="/upload-app"
               element={<UploadApp />}
+            />
+            <Route
+              path="/kds-app"
+              element={<KDSApp />}
             />
           </Routes>
         </main>
