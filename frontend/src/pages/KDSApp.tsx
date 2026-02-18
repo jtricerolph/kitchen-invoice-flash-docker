@@ -11,16 +11,22 @@ export default function KDSApp() {
   const [loginError, setLoginError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
 
-  // Swap manifest to KDS-specific one for PWA install
+  // Override viewport for mobile-friendly layout and swap manifest for PWA install
   useEffect(() => {
+    const viewport = document.querySelector('meta[name="viewport"]')
+    const originalViewport = viewport?.getAttribute('content') || ''
+    if (viewport) {
+      viewport.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no')
+    }
     const link = document.querySelector('link[rel="manifest"]')
-    const original = link?.getAttribute('href') || ''
+    const originalManifest = link?.getAttribute('href') || ''
     if (link) {
       link.setAttribute('href', '/kds-manifest.json')
     }
     document.title = 'Kitchen Display System'
     return () => {
-      if (link && original) link.setAttribute('href', original)
+      if (viewport && originalViewport) viewport.setAttribute('content', originalViewport)
+      if (link && originalManifest) link.setAttribute('href', originalManifest)
       document.title = 'Kitchen Invoice Flash'
     }
   }, [])

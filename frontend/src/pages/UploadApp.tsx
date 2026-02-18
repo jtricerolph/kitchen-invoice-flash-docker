@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '../App'
 import { PDFDocument } from 'pdf-lib'
 import imageCompression from 'browser-image-compression'
@@ -25,6 +25,17 @@ export default function UploadApp() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [captures, setCaptures] = useState<{ id: string; file: File; preview: string }[]>([])
 
+  // Override viewport for mobile-friendly layout on this page
+  useEffect(() => {
+    const viewport = document.querySelector('meta[name="viewport"]')
+    const original = viewport?.getAttribute('content') || ''
+    if (viewport) {
+      viewport.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no')
+    }
+    return () => {
+      if (viewport && original) viewport.setAttribute('content', original)
+    }
+  }, [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
