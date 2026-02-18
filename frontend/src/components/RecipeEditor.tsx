@@ -5,7 +5,7 @@ import { useAuth } from '../App'
 import FoodFlagBadges from './FoodFlagBadges'
 import RecipeFlagMatrix from './RecipeFlagMatrix'
 import IngredientModal from './IngredientModal'
-import { IngredientModalResult } from '../utils/ingredientHelpers'
+import { EditingIngredient, IngredientModalResult } from '../utils/ingredientHelpers'
 
 interface RecipeDetail {
   id: number
@@ -44,6 +44,8 @@ interface RecipeIngredientItem {
   yield_percent: number
   effective_price: number | null
   cost: number | null
+  is_manual_price?: boolean
+  has_no_price?: boolean
   notes: string | null
   sort_order: number
 }
@@ -64,6 +66,8 @@ interface SubRecipeItem {
   compatible_units: string[]
   cost_per_portion: number | null
   cost_contribution: number | null
+  has_manual_price_ingredients?: boolean
+  has_no_price_ingredients?: boolean
   notes: string | null
   sort_order: number
 }
@@ -95,6 +99,8 @@ interface CostIngredient {
   cost_recent: number | null
   cost_min: number | null
   cost_max: number | null
+  is_manual_price?: boolean
+  has_no_price?: boolean
 }
 
 interface CostSubRecipe {
@@ -139,6 +145,7 @@ interface FlagState {
     source_ingredients: string[]
   }>
   unassessed_ingredients: Array<{ id: number; name: string }>
+  open_suggestion_ingredients?: Array<{ ingredient_id: number; ingredient_name: string; suggestion_count: number }>
 }
 
 interface CostTrendSnapshot {
@@ -214,6 +221,9 @@ export default function RecipeEditor() {
 
   // Create ingredient sub-modal
   const [showCreateIng, setShowCreateIng] = useState(false)
+
+  // Edit ingredient modal (from open suggestion click)
+  const [editIngId, setEditIngId] = useState<number | null>(null)
 
   // Inline editing ingredient rows
   const [editingRiId, setEditingRiId] = useState<number | null>(null)
@@ -357,6 +367,32 @@ export default function RecipeEditor() {
       return res.json()
     },
     enabled: !!token && !!recipeId && showCostTrend,
+  })
+
+  // Fetch ingredient detail for edit modal
+  const { data: editIngData } = useQuery<EditingIngredient>({
+    queryKey: ['ingredient-edit', editIngId],
+    queryFn: async () => {
+      const res = await fetch(`/api/ingredients/${editIngId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Not found')
+      const data = await res.json()
+      return {
+        id: data.id,
+        name: data.name,
+        category_id: data.category_id,
+        standard_unit: data.standard_unit,
+        yield_percent: Number(data.yield_percent),
+        manual_price: data.manual_price != null ? Number(data.manual_price) : null,
+        notes: data.notes,
+        is_prepackaged: data.is_prepackaged || false,
+        is_free: data.is_free || false,
+        product_ingredients: data.product_ingredients,
+        has_label_image: data.has_label_image || false,
+      }
+    },
+    enabled: !!token && !!editIngId,
   })
 
   // Fetch available recipes for sub-recipe dropdown
@@ -822,6 +858,78 @@ export default function RecipeEditor() {
           {' — '}{flagData.unassessed_ingredients.map(i => i.name).join(', ')}
         </div>
       )}
+      {flagData && flagData.open_suggestion_ingredients && flagData.open_suggestion_ingredients.length > 0 && (
+        <div style={{ background: '#fffbeb', color: '#b45309', padding: '0.75rem 1rem', borderRadius: '6px', marginBottom: '0.75rem', fontSize: '0.85rem', border: '1px solid #f59e0b55' }}>
+          <strong>{flagData.open_suggestion_ingredients.length} ingredient{flagData.open_suggestion_ingredients.length > 1 ? 's have' : ' has'} unreviewed allergen suggestions</strong>
+          {' — '}{flagData.open_suggestion_ingredients.map((i, idx) => (
+            <span key={i.ingredient_id}>
+              {idx > 0 && ', '}
+              <span
+                style={{ cursor: 'pointer', textDecoration: 'underline', fontWeight: 600 }}
+                onClick={() => setEditIngId(i.ingredient_id)}
+              >{i.ingredient_name}</span>
+              {' '}({i.suggestion_count})
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Manual price / no price warnings */}
+      {recipe && (() => {
+        const manualPriceIngs = recipe.ingredients.filter(i => i.is_manual_price)
+        const noPriceIngs = recipe.ingredients.filter(i => i.has_no_price)
+        const manualPriceSubs = recipe.sub_recipes.filter(sr => sr.has_manual_price_ingredients)
+        const noPriceSubs = recipe.sub_recipes.filter(sr => sr.has_no_price_ingredients)
+        if (manualPriceIngs.length === 0 && noPriceIngs.length === 0 && manualPriceSubs.length === 0 && noPriceSubs.length === 0) return null
+        return (
+          <div style={{ background: '#fef3cd', color: '#856404', padding: '0.75rem 1rem', borderRadius: '6px', marginBottom: '0.75rem', fontSize: '0.85rem', border: '1px solid #ffc10755' }}>
+            {noPriceIngs.length > 0 && (
+              <div>
+                <strong>{noPriceIngs.length} ingredient{noPriceIngs.length > 1 ? 's have' : ' has'} no price</strong>
+                {' — '}{noPriceIngs.map((i, idx) => (
+                  <span key={i.ingredient_id}>
+                    {idx > 0 && ', '}
+                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => setEditIngId(i.ingredient_id)}>{i.ingredient_name}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {manualPriceIngs.length > 0 && (
+              <div style={{ marginTop: noPriceIngs.length > 0 ? '0.3rem' : 0 }}>
+                <strong>{manualPriceIngs.length} ingredient{manualPriceIngs.length > 1 ? 's use' : ' uses'} manual price</strong>
+                {' — '}{manualPriceIngs.map((i, idx) => (
+                  <span key={i.ingredient_id}>
+                    {idx > 0 && ', '}
+                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => setEditIngId(i.ingredient_id)}>{i.ingredient_name}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {noPriceSubs.length > 0 && (
+              <div style={{ marginTop: '0.3rem' }}>
+                <strong>{noPriceSubs.length} sub-recipe{noPriceSubs.length > 1 ? 's contain' : ' contains'} unpriced ingredients</strong>
+                {' — '}{noPriceSubs.map((sr, idx) => (
+                  <span key={sr.child_recipe_id}>
+                    {idx > 0 && ', '}
+                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => navigate(`/recipes/${sr.child_recipe_id}`)}>{sr.child_recipe_name}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {manualPriceSubs.length > 0 && (
+              <div style={{ marginTop: '0.3rem' }}>
+                <strong>{manualPriceSubs.length} sub-recipe{manualPriceSubs.length > 1 ? 's contain' : ' contains'} manual-priced ingredients</strong>
+                {' — '}{manualPriceSubs.map((sr, idx) => (
+                  <span key={sr.child_recipe_id}>
+                    {idx > 0 && ', '}
+                    <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => navigate(`/recipes/${sr.child_recipe_id}`)}>{sr.child_recipe_name}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Flag badges and matrix buttons */}
       {flagData && (
@@ -892,8 +1000,8 @@ export default function RecipeEditor() {
                 <td style={styles.td}>
                   <span
                     style={{ cursor: 'pointer', color: '#3b82f6', textDecoration: 'none' }}
-                    onClick={() => navigate('/ingredients')}
-                    title="View in Ingredients page"
+                    onClick={() => setEditIngId(ri.ingredient_id)}
+                    title="Edit ingredient"
                   >{ri.ingredient_name}</span>
                 </td>
                 {editingRiId === ri.id ? (
@@ -964,7 +1072,13 @@ export default function RecipeEditor() {
                     <td style={{ ...styles.td, cursor: 'pointer' }} onClick={() => { setEditingRiId(ri.id); setEditRiQty(ri.quantity.toString()); setEditRiUnit(ri.unit); setEditRiYield(ri.yield_percent.toString()); setEditRiNotes(ri.notes || '') }}>
                       {ri.yield_percent < 100 ? <span style={{ color: '#e94560' }}>{ri.yield_percent}%</span> : '100%'}
                     </td>
-                    <td style={styles.td}>{ri.cost != null ? `£${ri.cost.toFixed(2)}` : '-'}</td>
+                    <td style={styles.td}>
+                      {ri.cost != null ? (
+                        <span style={ri.is_manual_price ? { textDecoration: 'underline dashed #b45309', textUnderlineOffset: '2px' } : undefined} title={ri.is_manual_price ? 'Manual price' : undefined}>
+                          £{ri.cost.toFixed(2)}
+                        </span>
+                      ) : '-'}
+                    </td>
                     <td style={{ ...styles.td, cursor: 'pointer' }} onClick={() => { setEditingRiId(ri.id); setEditRiQty(ri.quantity.toString()); setEditRiUnit(ri.unit); setEditRiYield(ri.yield_percent.toString()); setEditRiNotes(ri.notes || '') }}>
                       <span style={{ color: '#888', fontSize: '0.8rem' }}>{ri.notes || '-'}</span>
                     </td>
@@ -999,7 +1113,6 @@ export default function RecipeEditor() {
                 <tr>
                   {sortingSubs && <th style={{ ...styles.th, width: '30px' }}></th>}
                   <th style={styles.th}>Recipe</th>
-                  <th style={styles.th}>Type</th>
                   <th style={styles.th}>Batch Output</th>
                   <th style={styles.th}>Amount Used</th>
                   <th style={styles.th}>Cost</th>
@@ -1025,7 +1138,6 @@ export default function RecipeEditor() {
                         {sr.child_recipe_name}
                       </span>
                     </td>
-                    <td style={styles.td}>{sr.child_recipe_type}</td>
                     <td style={styles.td}>
                       {sr.batch_output_type === 'bulk'
                         ? `${sr.output_qty}${sr.output_unit}`
@@ -1039,7 +1151,13 @@ export default function RecipeEditor() {
                         </span>
                       )}
                     </td>
-                    <td style={styles.td}>{sr.cost_contribution != null ? `£${sr.cost_contribution.toFixed(2)}` : '-'}</td>
+                    <td style={styles.td}>
+                      {sr.cost_contribution != null ? (
+                        <span style={(sr.has_manual_price_ingredients || sr.has_no_price_ingredients) ? { textDecoration: 'underline dashed #b45309', textUnderlineOffset: '2px' } : undefined} title={sr.has_manual_price_ingredients ? 'Includes manual-priced ingredients' : sr.has_no_price_ingredients ? 'Includes unpriced ingredients' : undefined}>
+                          £{sr.cost_contribution.toFixed(2)}
+                        </span>
+                      ) : '-'}
+                    </td>
                     <td style={styles.td}>
                       <button onClick={() => removeSubMutation.mutate(sr.id)} style={styles.removeBtn}>✕</button>
                     </td>
@@ -1395,39 +1513,49 @@ export default function RecipeEditor() {
                 </tr>
               </thead>
               <tbody>
-                {displayData.ingredients.map(ci => (
-                  <tr key={ci.ingredient_id}>
-                    <td style={styles.td}>{ci.ingredient_name}</td>
-                    <td style={styles.td}>{ci.quantity}{ci.unit}</td>
-                    <td style={styles.td}>{ci.cost_recent != null ? `£${ci.cost_recent.toFixed(2)}` : '-'}</td>
-                    <td style={styles.td}>{ci.cost_min != null ? `£${ci.cost_min.toFixed(2)}` : '-'}</td>
-                    <td style={styles.td}>{ci.cost_max != null ? `£${ci.cost_max.toFixed(2)}` : '-'}</td>
-                  </tr>
-                ))}
+                {displayData.ingredients.map(ci => {
+                  const manualStyle = ci.is_manual_price ? { textDecoration: 'underline dashed #b45309', textUnderlineOffset: '2px' } as const : undefined
+                  return (
+                    <tr key={ci.ingredient_id}>
+                      <td style={styles.td}>
+                        <span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={() => setEditIngId(ci.ingredient_id)} title="Edit ingredient">{ci.ingredient_name}</span>
+                      </td>
+                      <td style={styles.td}>{ci.quantity}{ci.unit}</td>
+                      <td style={styles.td}><span style={manualStyle} title={ci.is_manual_price ? 'Manual price' : undefined}>{ci.cost_recent != null ? `£${ci.cost_recent.toFixed(2)}` : '-'}</span></td>
+                      <td style={styles.td}><span style={manualStyle} title={ci.is_manual_price ? 'Manual price' : undefined}>{ci.cost_min != null ? `£${ci.cost_min.toFixed(2)}` : '-'}</span></td>
+                      <td style={styles.td}><span style={manualStyle} title={ci.is_manual_price ? 'Manual price' : undefined}>{ci.cost_max != null ? `£${ci.cost_max.toFixed(2)}` : '-'}</span></td>
+                    </tr>
+                  )
+                })}
                 {(() => {
                   const renderSubRecipes = (subs: CostSubRecipe[], depth: number): React.ReactNode[] => {
                     const rows: React.ReactNode[] = []
                     for (const sr of subs) {
                       const indent = depth * 1.5
                       const hasContent = (sr.child_ingredients && sr.child_ingredients.length > 0) || (sr.child_sub_recipes && sr.child_sub_recipes.length > 0)
+                      const srHasManual = sr.child_ingredients?.some(ci => ci.is_manual_price) || false
+                      const costStyle = srHasManual ? { textDecoration: 'underline dashed #b45309', textUnderlineOffset: '2px' } as const : undefined
                       // Sub-recipe header row
                       rows.push(
                         <tr key={`sub-header-${depth}-${sr.child_recipe_id}`}>
                           <td colSpan={5} style={{ ...styles.td, background: depth === 0 ? '#f0f0f0' : '#f5f5f5', fontWeight: 600, fontSize: '0.8rem', color: '#555', paddingLeft: `${0.5 + indent}rem` }}>
-                            {depth > 0 && '→ '}{sr.child_recipe_name} ({sr.portions_needed}{sr.output_unit === 'portion' ? ' portions' : sr.output_unit}) — £{sr.cost_contribution?.toFixed(2) ?? '-'}
+                            {depth > 0 && '→ '}<span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={() => navigate(`/recipes/${sr.child_recipe_id}`)}>{sr.child_recipe_name}</span> ({sr.portions_needed}{sr.output_unit === 'portion' ? ' portions' : sr.output_unit}) — <span style={costStyle} title={srHasManual ? 'Includes manual-priced ingredients' : undefined}>£{sr.cost_contribution?.toFixed(2) ?? '-'}</span>
                           </td>
                         </tr>
                       )
                       if (hasContent) {
                         // Direct ingredients of this sub-recipe
                         for (const ci of (sr.child_ingredients || [])) {
+                          const ciManualStyle = ci.is_manual_price ? { textDecoration: 'underline dashed #b45309', textUnderlineOffset: '2px' } as const : undefined
                           rows.push(
                             <tr key={`sub-${depth}-${sr.child_recipe_id}-ing-${ci.ingredient_id}`} style={{ background: '#fafafa' }}>
-                              <td style={{ ...styles.td, paddingLeft: `${1.5 + indent}rem`, color: '#666' }}>{ci.ingredient_name}</td>
+                              <td style={{ ...styles.td, paddingLeft: `${1.5 + indent}rem`, color: '#666' }}>
+                                <span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={() => setEditIngId(ci.ingredient_id)} title="Edit ingredient">{ci.ingredient_name}</span>
+                              </td>
                               <td style={{ ...styles.td, color: '#666' }}>{ci.quantity}{ci.unit}</td>
-                              <td style={{ ...styles.td, color: '#666' }}>{ci.cost_recent != null ? `£${ci.cost_recent.toFixed(2)}` : '-'}</td>
-                              <td style={{ ...styles.td, color: '#666' }}>{ci.cost_min != null ? `£${ci.cost_min.toFixed(2)}` : '-'}</td>
-                              <td style={{ ...styles.td, color: '#666' }}>{ci.cost_max != null ? `£${ci.cost_max.toFixed(2)}` : '-'}</td>
+                              <td style={{ ...styles.td, color: '#666' }}><span style={ciManualStyle} title={ci.is_manual_price ? 'Manual price' : undefined}>{ci.cost_recent != null ? `£${ci.cost_recent.toFixed(2)}` : '-'}</span></td>
+                              <td style={{ ...styles.td, color: '#666' }}><span style={ciManualStyle} title={ci.is_manual_price ? 'Manual price' : undefined}>{ci.cost_min != null ? `£${ci.cost_min.toFixed(2)}` : '-'}</span></td>
+                              <td style={{ ...styles.td, color: '#666' }}><span style={ciManualStyle} title={ci.is_manual_price ? 'Manual price' : undefined}>{ci.cost_max != null ? `£${ci.cost_max.toFixed(2)}` : '-'}</span></td>
                             </tr>
                           )
                         }
@@ -1566,6 +1694,19 @@ export default function RecipeEditor() {
           setIngSearch(result.name)
         }}
         prePopulateName={ingSearch}
+      />
+
+      {/* Edit Ingredient Modal (from ingredient name click) */}
+      <IngredientModal
+        open={!!editIngId && !!editIngData}
+        onClose={() => setEditIngId(null)}
+        onSaved={() => {
+          setEditIngId(null)
+          queryClient.invalidateQueries({ queryKey: ['recipe', recipeId] })
+          queryClient.invalidateQueries({ queryKey: ['recipe-cost', recipeId] })
+          queryClient.invalidateQueries({ queryKey: ['recipe-flags', recipeId] })
+        }}
+        editingIngredient={editIngData || undefined}
       />
 
       {/* Add Sub-recipe Modal */}

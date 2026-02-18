@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from database import get_db
 from models.user import User
-from models.ingredient import Ingredient, IngredientCategory, IngredientSource, IngredientFlag, IngredientFlagNone
+from models.ingredient import Ingredient, IngredientCategory, IngredientSource, IngredientFlag, IngredientFlagNone, IngredientFlagDismissal
 from models.food_flag import FoodFlag, FoodFlagCategory
 from models.line_item import LineItem
 from models.invoice import Invoice
@@ -105,6 +105,7 @@ class IngredientCreate(BaseModel):
     manual_price: Optional[float] = None
     notes: Optional[str] = None
     is_prepackaged: bool = False
+    is_free: bool = False
     product_ingredients: Optional[str] = None
 
 class IngredientUpdate(BaseModel):
@@ -116,6 +117,7 @@ class IngredientUpdate(BaseModel):
     notes: Optional[str] = None
     is_archived: Optional[bool] = None
     is_prepackaged: Optional[bool] = None
+    is_free: Optional[bool] = None
     product_ingredients: Optional[str] = None
 
 class SourceCreate(BaseModel):
@@ -176,6 +178,7 @@ class IngredientResponse(BaseModel):
     is_archived: bool = False
     flags_assessed: bool = False
     is_prepackaged: bool = False
+    is_free: bool = False
     product_ingredients: Optional[str] = None
     has_label_image: bool = False
     source_count: int = 0
@@ -363,6 +366,7 @@ def _build_ingredient_response(ing: Ingredient, source_count: int = 0, flags: li
         is_archived=ing.is_archived,
         flags_assessed=ing.flags_assessed if hasattr(ing, 'flags_assessed') else False,
         is_prepackaged=ing.is_prepackaged if hasattr(ing, 'is_prepackaged') else False,
+        is_free=ing.is_free if hasattr(ing, 'is_free') else False,
         product_ingredients=ing.product_ingredients if hasattr(ing, 'product_ingredients') else None,
         has_label_image=bool(ing.label_image_path) if hasattr(ing, 'label_image_path') else False,
         source_count=source_count or (len(ing.sources) if ing.sources else 0),
@@ -440,6 +444,7 @@ async def create_ingredient(
         manual_price=Decimal(str(data.manual_price)) if data.manual_price else None,
         notes=data.notes,
         is_prepackaged=data.is_prepackaged,
+        is_free=data.is_free,
         product_ingredients=data.product_ingredients,
         created_by=user.id,
     )
@@ -618,6 +623,8 @@ async def update_ingredient(
         ing.is_archived = data.is_archived
     if data.is_prepackaged is not None:
         ing.is_prepackaged = data.is_prepackaged
+    if data.is_free is not None:
+        ing.is_free = data.is_free
     if data.product_ingredients is not None:
         ing.product_ingredients = data.product_ingredients
 
@@ -1305,6 +1312,195 @@ async def get_flag_nones(
         )
     )
     return {"none_category_ids": [r for r in result.scalars().all()]}
+
+
+# ── Dismissal endpoints (allergen suggestion dismissals) ─────────────────────
+
+class DismissalCreate(BaseModel):
+    food_flag_id: int
+    dismissed_by_name: str
+    reason: Optional[str] = None
+    matched_keyword: Optional[str] = None
+
+class DismissalResponse(BaseModel):
+    id: int
+    ingredient_id: int
+    food_flag_id: int
+    dismissed_by_name: str
+    reason: Optional[str] = None
+    matched_keyword: Optional[str] = None
+    created_at: str = ""
+    class Config:
+        from_attributes = True
+
+class DismissalBatchRequest(BaseModel):
+    dismissals: list[DismissalCreate]
+
+
+@router.get("/{ingredient_id}/flags/dismissals")
+async def get_dismissals(
+    ingredient_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all dismissed allergen suggestions for an ingredient."""
+    # Verify ingredient belongs to kitchen
+    ing = await db.execute(
+        select(Ingredient).where(
+            Ingredient.id == ingredient_id,
+            Ingredient.kitchen_id == user.kitchen_id,
+        )
+    )
+    if not ing.scalar_one_or_none():
+        raise HTTPException(404, "Ingredient not found")
+
+    result = await db.execute(
+        select(IngredientFlagDismissal)
+        .where(IngredientFlagDismissal.ingredient_id == ingredient_id)
+        .order_by(IngredientFlagDismissal.created_at.desc())
+    )
+    dismissals = result.scalars().all()
+    return [
+        DismissalResponse(
+            id=d.id,
+            ingredient_id=d.ingredient_id,
+            food_flag_id=d.food_flag_id,
+            dismissed_by_name=d.dismissed_by_name,
+            reason=d.reason,
+            matched_keyword=d.matched_keyword,
+            created_at=str(d.created_at) if d.created_at else "",
+        )
+        for d in dismissals
+    ]
+
+
+@router.post("/{ingredient_id}/flags/dismissals")
+async def create_dismissal(
+    ingredient_id: int,
+    data: DismissalCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dismiss an allergen suggestion for an ingredient (upsert)."""
+    # Verify ingredient belongs to kitchen
+    ing = await db.execute(
+        select(Ingredient).where(
+            Ingredient.id == ingredient_id,
+            Ingredient.kitchen_id == user.kitchen_id,
+        )
+    )
+    if not ing.scalar_one_or_none():
+        raise HTTPException(404, "Ingredient not found")
+
+    # Upsert: check if already dismissed
+    existing = await db.execute(
+        select(IngredientFlagDismissal).where(
+            IngredientFlagDismissal.ingredient_id == ingredient_id,
+            IngredientFlagDismissal.food_flag_id == data.food_flag_id,
+        )
+    )
+    dismissal = existing.scalar_one_or_none()
+    if dismissal:
+        # Update existing
+        dismissal.dismissed_by_name = data.dismissed_by_name
+        dismissal.reason = data.reason
+        dismissal.matched_keyword = data.matched_keyword
+    else:
+        dismissal = IngredientFlagDismissal(
+            ingredient_id=ingredient_id,
+            food_flag_id=data.food_flag_id,
+            dismissed_by_name=data.dismissed_by_name,
+            reason=data.reason,
+            matched_keyword=data.matched_keyword,
+        )
+        db.add(dismissal)
+
+    await db.commit()
+    await db.refresh(dismissal)
+    return DismissalResponse(
+        id=dismissal.id,
+        ingredient_id=dismissal.ingredient_id,
+        food_flag_id=dismissal.food_flag_id,
+        dismissed_by_name=dismissal.dismissed_by_name,
+        reason=dismissal.reason,
+        matched_keyword=dismissal.matched_keyword,
+        created_at=str(dismissal.created_at) if dismissal.created_at else "",
+    )
+
+
+@router.post("/{ingredient_id}/flags/dismissals/batch")
+async def batch_create_dismissals(
+    ingredient_id: int,
+    data: DismissalBatchRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch persist dismissals (used after ingredient creation in create mode)."""
+    # Verify ingredient belongs to kitchen
+    ing = await db.execute(
+        select(Ingredient).where(
+            Ingredient.id == ingredient_id,
+            Ingredient.kitchen_id == user.kitchen_id,
+        )
+    )
+    if not ing.scalar_one_or_none():
+        raise HTTPException(404, "Ingredient not found")
+
+    created = 0
+    for d in data.dismissals:
+        # Upsert each
+        existing = await db.execute(
+            select(IngredientFlagDismissal).where(
+                IngredientFlagDismissal.ingredient_id == ingredient_id,
+                IngredientFlagDismissal.food_flag_id == d.food_flag_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue  # Already dismissed, skip
+        db.add(IngredientFlagDismissal(
+            ingredient_id=ingredient_id,
+            food_flag_id=d.food_flag_id,
+            dismissed_by_name=d.dismissed_by_name,
+            reason=d.reason,
+            matched_keyword=d.matched_keyword,
+        ))
+        created += 1
+
+    await db.commit()
+    return {"ok": True, "created": created}
+
+
+@router.delete("/{ingredient_id}/flags/dismissals/{dismissal_id}")
+async def delete_dismissal(
+    ingredient_id: int,
+    dismissal_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a dismissal (re-enables the suggestion)."""
+    # Verify ingredient belongs to kitchen
+    ing = await db.execute(
+        select(Ingredient).where(
+            Ingredient.id == ingredient_id,
+            Ingredient.kitchen_id == user.kitchen_id,
+        )
+    )
+    if not ing.scalar_one_or_none():
+        raise HTTPException(404, "Ingredient not found")
+
+    result = await db.execute(
+        select(IngredientFlagDismissal).where(
+            IngredientFlagDismissal.id == dismissal_id,
+            IngredientFlagDismissal.ingredient_id == ingredient_id,
+        )
+    )
+    dismissal = result.scalar_one_or_none()
+    if not dismissal:
+        raise HTTPException(404, "Dismissal not found")
+
+    await db.delete(dismissal)
+    await db.commit()
+    return {"ok": True}
 
 
 @router.get("/{ingredient_id}/recipes")

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, CSSProperties } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../App'
 import { useDebounce } from '../utils/searchHelpers'
-import IngredientFlagEditor, { AllergenSuggestion } from './IngredientFlagEditor'
+import IngredientFlagEditor, { AllergenSuggestion, DismissalInfo } from './IngredientFlagEditor'
 import ImageCropModal from './ImageCropModal'
 import {
   IngredientCategory,
@@ -84,6 +84,9 @@ export default function IngredientModal({
   const [pendingFlagIds, setPendingFlagIds] = useState<number[]>([])
   const [pendingNoneCatIds, setPendingNoneCatIds] = useState<number[]>([])
 
+  // Free item (e.g. water — skip price warnings)
+  const [formFree, setFormFree] = useState(false)
+
   // Prepackaged ingredient fields
   const [formPrepackaged, setFormPrepackaged] = useState(false)
   const [formProductIngredients, setFormProductIngredients] = useState('')
@@ -96,6 +99,8 @@ export default function IngredientModal({
   const [supplierFetching, setSupplierFetching] = useState(false)
   const [supplierManualCode, setSupplierManualCode] = useState('')
   const [supplierAutoApplyIds, setSupplierAutoApplyIds] = useState<number[]>([])
+  const [supplierNoneCategoryIds, setSupplierNoneCategoryIds] = useState<number[]>([])
+  const [pendingDismissals, setPendingDismissals] = useState<DismissalInfo[]>([])
 
   // Track if initial supplier fetch is needed (set during init, consumed by separate effect)
   const [pendingSupplierFetch, setPendingSupplierFetch] = useState<string | null>(null)
@@ -178,6 +183,7 @@ export default function IngredientModal({
     setLiMappingError('')
     setPendingFlagIds([])
     setPendingNoneCatIds([])
+    setFormFree(false)
     setFormPrepackaged(false)
     setFormProductIngredients('')
     setScanResult(null)
@@ -189,6 +195,8 @@ export default function IngredientModal({
     setSupplierFetching(false)
     setSupplierManualCode('')
     setSupplierAutoApplyIds([])
+    setSupplierNoneCategoryIds([])
+    setPendingDismissals([])
     setPendingSupplierFetch(null)
   }
 
@@ -229,6 +237,7 @@ export default function IngredientModal({
             .filter((f: { source: string }) => f.source === 'contains' || f.source === 'dietary')
             .map((f: { flag_id: number }) => f.flag_id)
           if (autoApplyIds.length > 0) setSupplierAutoApplyIds(autoApplyIds)
+          if (data.none_category_ids?.length > 0) setSupplierNoneCategoryIds(data.none_category_ids)
         }
       }
     } catch { /* ignore */ }
@@ -311,6 +320,16 @@ export default function IngredientModal({
         })
       } catch { /* ignore */ }
     }
+    // Batch persist dismissals from create mode
+    if (pendingDismissals.length > 0) {
+      try {
+        await fetch(`/api/ingredients/${ingredientId}/flags/dismissals/batch`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dismissals: pendingDismissals }),
+        })
+      } catch { /* ignore */ }
+    }
   }
 
   // ---- Effects ----
@@ -325,6 +344,7 @@ export default function IngredientModal({
       setFormYield(editingIngredient.yield_percent.toString())
       setFormPrice(editingIngredient.manual_price?.toString() || '')
       setFormNotes(editingIngredient.notes || '')
+      setFormFree(editingIngredient.is_free || false)
       setFormPrepackaged(editingIngredient.is_prepackaged || false)
       setFormProductIngredients(editingIngredient.product_ingredients || '')
       setLabelPreview(editingIngredient.has_label_image ? `/api/ingredients/${editingIngredient.id}/label-image?token=${encodeURIComponent(token || '')}` : null)
@@ -437,6 +457,7 @@ export default function IngredientModal({
       yield_percent: parseFloat(formYield),
       manual_price: !selectedLi && formPrice ? parseFloat(formPrice) : null,
       notes: formNotes || null,
+      is_free: formFree,
       is_prepackaged: formPrepackaged,
       product_ingredients: formPrepackaged ? (formProductIngredients || null) : null,
     }
@@ -571,6 +592,11 @@ export default function IngredientModal({
 
             <label style={styles.label}>Notes</label>
             <textarea value={formNotes} onChange={(e) => setFormNotes(e.target.value)} style={{ ...styles.input, minHeight: '50px' }} placeholder="Optional notes..." />
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.5rem', fontSize: '0.82rem', color: '#555', cursor: 'pointer' }}>
+              <input type="checkbox" checked={formFree} onChange={(e) => setFormFree(e.target.checked)} />
+              Free item (no cost — e.g. water, tap water)
+            </label>
 
             {formPrepackaged && (
               <div style={{ marginTop: '0.5rem', padding: '0.5rem', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
@@ -829,7 +855,7 @@ export default function IngredientModal({
                     </div>
                   </div>
                 </div>
-                {supplierAutoApplyIds.length > 0 && scanResult?.suggested_flags && (
+                {(supplierAutoApplyIds.length > 0 || supplierNoneCategoryIds.length > 0) && (
                   <div style={{
                     marginTop: '0.35rem',
                     padding: '0.35rem 0.5rem',
@@ -839,12 +865,23 @@ export default function IngredientModal({
                     fontSize: '0.72rem',
                     color: '#2e7d32',
                   }}>
-                    <span style={{ fontWeight: 600 }}>Auto-flagged: </span>
-                    {scanResult.suggested_flags
-                      .filter(f => supplierAutoApplyIds.includes(f.flag_id))
-                      .map(f => f.flag_name)
-                      .join(', ')
-                    }
+                    {supplierAutoApplyIds.length > 0 && scanResult?.suggested_flags && (
+                      <>
+                        <span style={{ fontWeight: 600 }}>Auto-flagged: </span>
+                        {scanResult.suggested_flags
+                          .filter(f => supplierAutoApplyIds.includes(f.flag_id))
+                          .map(f => f.flag_name)
+                          .join(', ')
+                        }
+                      </>
+                    )}
+                    {supplierNoneCategoryIds.length > 0 && (
+                      <span>
+                        {supplierAutoApplyIds.length > 0 ? ' | ' : ''}
+                        <span style={{ fontWeight: 600 }}>None of 14 allergens: </span>
+                        allergen categories set to None
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -857,10 +894,13 @@ export default function IngredientModal({
           ingredientId={editingIngredient?.id ?? null}
           token={token || ''}
           onChange={(flagIds, noneCatIds) => { setPendingFlagIds(flagIds); setPendingNoneCatIds(noneCatIds) }}
+          onDismissalsChange={(d) => setPendingDismissals(d)}
           ingredientName={formName}
           productIngredients={formPrepackaged ? formProductIngredients : undefined}
+          lineItemDescription={selectedLi?.description || undefined}
           scanSuggestions={scanResult?.suggested_flags}
           autoApplyFlagIds={supplierAutoApplyIds}
+          autoApplyNoneCategoryIds={supplierNoneCategoryIds}
         />
         <div style={styles.modalFooter}>
           <button onClick={handleClose} style={styles.cancelBtn}>Cancel</button>

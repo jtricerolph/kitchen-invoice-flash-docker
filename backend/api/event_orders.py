@@ -52,6 +52,14 @@ class EventOrderItemUpdate(BaseModel):
     notes: Optional[str] = None
     sort_order: Optional[int] = None
 
+class BulkItemEntry(BaseModel):
+    recipe_id: int
+    quantity: int
+    notes: Optional[str] = None
+
+class EventOrderBulkAdd(BaseModel):
+    items: list[BulkItemEntry]
+
 class EventOrderResponse(BaseModel):
     id: int
     name: str
@@ -256,6 +264,61 @@ async def add_item(
     await db.commit()
     await db.refresh(item)
     return {"id": item.id}
+
+
+@router.post("/{order_id}/items/bulk")
+async def add_items_bulk(
+    order_id: int,
+    data: EventOrderBulkAdd,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add multiple recipes to an event order at once (e.g. from a menu)."""
+    order = await _get_order(order_id, user.kitchen_id, db)
+
+    # Get existing recipe_ids on this order to detect duplicates
+    existing_result = await db.execute(
+        select(EventOrderItem.recipe_id).where(EventOrderItem.event_order_id == order_id)
+    )
+    existing_ids = {r[0] for r in existing_result.all()}
+
+    # Get max sort_order
+    max_sort_result = await db.execute(
+        select(func.coalesce(func.max(EventOrderItem.sort_order), -1))
+        .where(EventOrderItem.event_order_id == order_id)
+    )
+    next_sort = (max_sort_result.scalar() or 0) + 1
+
+    # Validate all recipe_ids belong to this kitchen
+    recipe_ids = [entry.recipe_id for entry in data.items]
+    valid_result = await db.execute(
+        select(Recipe.id).where(Recipe.id.in_(recipe_ids), Recipe.kitchen_id == user.kitchen_id)
+    )
+    valid_ids = {r[0] for r in valid_result.all()}
+
+    added = 0
+    skipped = 0
+    for entry in data.items:
+        if entry.recipe_id not in valid_ids:
+            skipped += 1
+            continue
+        if entry.recipe_id in existing_ids:
+            skipped += 1
+            continue
+        item = EventOrderItem(
+            event_order_id=order_id,
+            recipe_id=entry.recipe_id,
+            quantity=entry.quantity,
+            notes=entry.notes,
+            sort_order=next_sort,
+        )
+        db.add(item)
+        existing_ids.add(entry.recipe_id)
+        next_sort += 1
+        added += 1
+
+    await db.commit()
+    return {"added": added, "skipped": skipped}
 
 
 @router.patch("/items/{item_id}")

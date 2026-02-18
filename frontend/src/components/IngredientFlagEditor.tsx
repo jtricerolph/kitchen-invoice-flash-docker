@@ -33,27 +33,48 @@ export interface AllergenSuggestion {
   matched_keywords: string[]
 }
 
+export interface DismissalInfo {
+  id?: number  // server ID (only present after persist)
+  food_flag_id: number
+  flag_name?: string
+  dismissed_by_name: string
+  reason?: string
+  matched_keyword?: string
+}
+
 interface Props {
   ingredientId: number | null // null = create mode (flags stored locally)
   token: string
   onChange?: (flagIds: number[], noneCategoryIds: number[]) => void
+  onDismissalsChange?: (dismissals: DismissalInfo[]) => void  // for create mode batch persist
   ingredientName?: string       // for name-based suggestions
   productIngredients?: string   // for product-text-based suggestions
+  lineItemDescription?: string  // for line-item-based suggestions
   scanSuggestions?: AllergenSuggestion[] // from label OCR scan (passed from parent)
   autoApplyFlagIds?: number[] // flag IDs to auto-apply (e.g. from Brakes "Contains" statement)
+  autoApplyNoneCategoryIds?: number[] // category IDs to auto-set "None" (e.g. Brakes "Contains: None")
 }
 
-export default function IngredientFlagEditor({ ingredientId, token, onChange, ingredientName, productIngredients, scanSuggestions, autoApplyFlagIds }: Props) {
+export default function IngredientFlagEditor({ ingredientId, token, onChange, onDismissalsChange, ingredientName, productIngredients, lineItemDescription, scanSuggestions, autoApplyFlagIds, autoApplyNoneCategoryIds }: Props) {
   const queryClient = useQueryClient()
   const [activeFlagIds, setActiveFlagIds] = useState<Set<number>>(new Set())
   const [noneCategoryIds, setNoneCategoryIds] = useState<Set<number>>(new Set())
   const [autoApplied, setAutoApplied] = useState<Set<number>>(new Set()) // track which were auto-applied
+  const [autoAppliedNones, setAutoAppliedNones] = useState<Set<number>>(new Set()) // track auto-applied none categories
   const [expandedCats, setExpandedCats] = useState<Set<number>>(new Set())
   const [saving, setSaving] = useState(false)
   const [suggestionsExpanded, setSuggestionsExpanded] = useState(true)
 
-  // Debounce name and product ingredients for suggestion queries
+  // Dismissal state
+  const [dismissals, setDismissals] = useState<DismissalInfo[]>([])
+  const [dismissingFlagId, setDismissingFlagId] = useState<number | null>(null)
+  const [dismissName, setDismissName] = useState('')
+  const [dismissReason, setDismissReason] = useState('')
+  const [showDismissed, setShowDismissed] = useState(false)
+
+  // Debounce name, line item description, and product ingredients for suggestion queries
   const debouncedName = useDebounce(ingredientName || '', 500)
+  const debouncedLineItem = useDebounce(lineItemDescription || '', 500)
   const debouncedText = useDebounce(productIngredients || '', 500)
 
   // Fetch all flag categories
@@ -95,12 +116,26 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
     enabled: !!token && !!ingredientId,
   })
 
-  // Fetch allergen suggestions based on name + product ingredients text
+  // Fetch existing dismissals (edit mode only)
+  const { data: currentDismissals } = useQuery<DismissalInfo[]>({
+    queryKey: ['ingredient-flag-dismissals', ingredientId],
+    queryFn: async () => {
+      const res = await fetch(`/api/ingredients/${ingredientId}/flags/dismissals`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && !!ingredientId,
+  })
+
+  // Fetch allergen suggestions based on name, line item description, and product ingredients text
   const { data: nameSuggestions } = useQuery<AllergenSuggestion[]>({
-    queryKey: ['allergen-suggestions', debouncedName, debouncedText],
+    queryKey: ['allergen-suggestions', debouncedName, debouncedLineItem, debouncedText],
     queryFn: async () => {
       const params = new URLSearchParams()
       if (debouncedName) params.set('name', debouncedName)
+      if (debouncedLineItem) params.set('line_item', debouncedLineItem)
       if (debouncedText) params.set('text', debouncedText)
       const res = await fetch(`/api/food-flags/suggest?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -108,7 +143,7 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
       if (!res.ok) return []
       return res.json()
     },
-    enabled: !!token && (debouncedName.length >= 2 || debouncedText.length >= 5),
+    enabled: !!token && (debouncedName.length >= 2 || debouncedLineItem.length >= 2 || debouncedText.length >= 5),
   })
 
   // Sync from API data for edit mode
@@ -124,6 +159,13 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
     }
   }, [currentNones])
 
+  // Sync dismissals from API for edit mode
+  useEffect(() => {
+    if (currentDismissals) {
+      setDismissals(currentDismissals)
+    }
+  }, [currentDismissals])
+
   // Reset local state when ingredientId changes (e.g. modal opens for different ingredient)
   useEffect(() => {
     if (!ingredientId) {
@@ -131,6 +173,10 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
       setNoneCategoryIds(new Set())
       setExpandedCats(new Set())
       setSuggestionsExpanded(true)
+      setDismissals([])
+      setDismissingFlagId(null)
+      setShowDismissed(false)
+      setAutoAppliedNones(new Set())
     }
   }, [ingredientId])
 
@@ -178,6 +224,44 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
       }).catch(() => {})
     }
   }, [autoApplyFlagIds, categories])
+
+  // Auto-apply "None" to allergen categories (from Brakes "Contains: None of the 14 Food Allergens")
+  useEffect(() => {
+    if (!autoApplyNoneCategoryIds?.length || !categories?.length) return
+    const toApply = autoApplyNoneCategoryIds.filter(id => !noneCategoryIds.has(id) && !autoAppliedNones.has(id))
+    if (toApply.length === 0) return
+
+    const newNones = new Set(noneCategoryIds)
+    const newFlags = new Set(activeFlagIds)
+    for (const catId of toApply) {
+      // Only set "None" if no flags are active in this category
+      const catFlags = categories.find(c => c.id === catId)?.flags || []
+      const hasActiveFlags = catFlags.some(f => newFlags.has(f.id))
+      if (!hasActiveFlags) {
+        newNones.add(catId)
+      }
+    }
+    setNoneCategoryIds(newNones)
+    setAutoAppliedNones(prev => new Set([...prev, ...toApply]))
+    onChange?.([...newFlags], [...newNones])
+
+    // For edit mode, persist each "None" to API
+    if (ingredientId) {
+      for (const catId of toApply) {
+        const catFlags = categories.find(c => c.id === catId)?.flags || []
+        const hasActiveFlags = catFlags.some(f => newFlags.has(f.id))
+        if (!hasActiveFlags) {
+          fetch(`/api/ingredients/${ingredientId}/flags/none`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category_id: catId }),
+          }).catch(() => {})
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ['ingredient-flag-nones', ingredientId] })
+      queryClient.invalidateQueries({ queryKey: ['ingredients'] })
+    }
+  }, [autoApplyNoneCategoryIds, categories])
 
   // Check if two flag names conflict (e.g. "Gluten" vs "Gluten Free")
   const flagNamesConflict = (containsName: string, suitableName: string): boolean => {
@@ -292,6 +376,61 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
     }
   }
 
+  // Dismiss a suggestion
+  const confirmDismissal = async (suggestion: AllergenSuggestion) => {
+    if (!dismissName.trim()) return
+
+    const dismissal: DismissalInfo = {
+      food_flag_id: suggestion.flag_id,
+      flag_name: suggestion.flag_name,
+      dismissed_by_name: dismissName.trim(),
+      reason: dismissReason.trim() || undefined,
+      matched_keyword: suggestion.matched_keywords.join(', '),
+    }
+
+    // Edit mode: persist immediately
+    if (ingredientId) {
+      try {
+        const res = await fetch(`/api/ingredients/${ingredientId}/flags/dismissals`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(dismissal),
+        })
+        if (res.ok) {
+          const saved = await res.json()
+          dismissal.id = saved.id
+        }
+      } catch { /* ignore */ }
+    }
+
+    const updated = [...dismissals, dismissal]
+    setDismissals(updated)
+    setDismissingFlagId(null)
+    setDismissReason('')
+    // Keep dismissName for next dismiss in same session
+    onDismissalsChange?.(updated)
+  }
+
+  // Undo a dismissal
+  const undoDismissal = async (flagId: number) => {
+    const dismissal = dismissals.find(d => d.food_flag_id === flagId)
+    if (!dismissal) return
+
+    // Edit mode: delete from API
+    if (ingredientId && dismissal.id) {
+      try {
+        await fetch(`/api/ingredients/${ingredientId}/flags/dismissals/${dismissal.id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      } catch { /* ignore */ }
+    }
+
+    const updated = dismissals.filter(d => d.food_flag_id !== flagId)
+    setDismissals(updated)
+    onDismissalsChange?.(updated)
+  }
+
   // Apply all pending suggestions at once
   const applyAllSuggestions = async () => {
     const newFlags = new Set(activeFlagIds)
@@ -337,12 +476,17 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
   for (const s of (scanSuggestions || [])) {
     if (!seenFlagIds.has(s.flag_id)) {
       seenFlagIds.add(s.flag_id)
-      allSuggestions.push({ ...s, matched_keywords: s.matched_keywords.map(k => `${k} (label)`) })
+      // Use the source field if available (e.g. Brakes: "contains", "dietary", "keyword"),
+      // otherwise fall back to "label" for OCR label scan results
+      const src = 'source' in s ? (s as unknown as { source: string }).source : ''
+      const sourceLabel = src ? ({ contains: 'product data', dietary: 'product data', keyword: 'product data' }[src] || 'label') : 'label'
+      allSuggestions.push({ ...s, matched_keywords: s.matched_keywords.map(k => `${k} (${sourceLabel})`) })
     }
   }
 
-  // Filter out suggestions for flags already active
-  const pendingSuggestions = allSuggestions.filter(s => !activeFlagIds.has(s.flag_id))
+  // Filter out suggestions for flags already active or dismissed
+  const dismissedFlagIds = new Set(dismissals.map(d => d.food_flag_id))
+  const pendingSuggestions = allSuggestions.filter(s => !activeFlagIds.has(s.flag_id) && !dismissedFlagIds.has(s.flag_id))
 
   // Build badge list from active flags
   const activeFlags = categories.flatMap(c =>
@@ -431,28 +575,190 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, in
               gap: '0.3rem',
             }}>
               {pendingSuggestions.map(s => (
-                <div key={s.flag_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: '0.73rem', color: '#555' }}>
-                    <strong>{s.flag_name}</strong>
-                    {s.flag_code && <span style={{ color: '#888' }}> ({s.flag_code})</span>}
-                    <span style={{ color: '#999', marginLeft: '0.3rem', fontSize: '0.68rem' }}>
-                      matched: {s.matched_keywords.join(', ')}
+                <div key={s.flag_id}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: '0.73rem', color: '#555', flex: 1 }}>
+                      <strong>{s.flag_name}</strong>
+                      {s.flag_code && <span style={{ color: '#888' }}> ({s.flag_code})</span>}
+                      <span style={{ color: '#999', marginLeft: '0.3rem', fontSize: '0.68rem' }}>
+                        matched: {s.matched_keywords.join(', ')}
+                      </span>
                     </span>
+                    <div style={{ display: 'flex', gap: '0.25rem' }}>
+                      <button
+                        onClick={() => {
+                          setDismissingFlagId(s.flag_id)
+                          setDismissReason('')
+                        }}
+                        disabled={saving}
+                        style={{
+                          padding: '0.1rem 0.35rem',
+                          border: '1px solid #dc3545',
+                          borderRadius: '4px',
+                          background: 'white',
+                          cursor: saving ? 'default' : 'pointer',
+                          fontSize: '0.68rem',
+                          color: '#dc3545',
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                      <button
+                        onClick={() => applySuggestion(s)}
+                        disabled={saving}
+                        style={{
+                          padding: '0.1rem 0.35rem',
+                          border: '1px solid #ccc',
+                          borderRadius: '4px',
+                          background: 'white',
+                          cursor: saving ? 'default' : 'pointer',
+                          fontSize: '0.68rem',
+                          color: '#555',
+                        }}
+                      >
+                        + Apply
+                      </button>
+                    </div>
+                  </div>
+                  {/* Inline dismiss form */}
+                  {dismissingFlagId === s.flag_id && (
+                    <div style={{
+                      marginTop: '0.25rem',
+                      padding: '0.35rem 0.5rem',
+                      background: '#fff5f5',
+                      border: '1px solid #fca5a5',
+                      borderRadius: '4px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                    }}>
+                      <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          placeholder="Your name (required)"
+                          value={dismissName}
+                          onChange={e => setDismissName(e.target.value)}
+                          style={{
+                            flex: 1,
+                            padding: '0.2rem 0.4rem',
+                            border: '1px solid #ccc',
+                            borderRadius: '4px',
+                            fontSize: '0.73rem',
+                          }}
+                          autoFocus
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          placeholder="Reason (optional)"
+                          value={dismissReason}
+                          onChange={e => setDismissReason(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && dismissName.trim()) confirmDismissal(s) }}
+                          style={{
+                            flex: 1,
+                            padding: '0.2rem 0.4rem',
+                            border: '1px solid #ccc',
+                            borderRadius: '4px',
+                            fontSize: '0.73rem',
+                          }}
+                        />
+                        <button
+                          onClick={() => confirmDismissal(s)}
+                          disabled={!dismissName.trim()}
+                          style={{
+                            padding: '0.15rem 0.4rem',
+                            border: '1px solid #dc3545',
+                            borderRadius: '4px',
+                            background: dismissName.trim() ? '#dc3545' : '#f0f0f0',
+                            color: dismissName.trim() ? 'white' : '#999',
+                            cursor: dismissName.trim() ? 'pointer' : 'default',
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                          }}
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => setDismissingFlagId(null)}
+                          style={{
+                            padding: '0.15rem 0.4rem',
+                            border: '1px solid #ccc',
+                            borderRadius: '4px',
+                            background: 'white',
+                            cursor: 'pointer',
+                            fontSize: '0.68rem',
+                            color: '#666',
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Dismissed suggestions */}
+      {dismissals.length > 0 && (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <div
+            onClick={() => setShowDismissed(!showDismissed)}
+            style={{
+              padding: '0.2rem 0.5rem',
+              background: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderRadius: showDismissed ? '6px 6px 0 0' : '6px',
+              cursor: 'pointer',
+              fontSize: '0.68rem',
+              color: '#888',
+            }}
+          >
+            {dismissals.length} dismissed {showDismissed ? '\u25B2' : '\u25BC'}
+          </div>
+          {showDismissed && (
+            <div style={{
+              padding: '0.3rem 0.5rem',
+              background: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderTop: 'none',
+              borderRadius: '0 0 6px 6px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.2rem',
+            }}>
+              {dismissals.map(d => (
+                <div key={d.food_flag_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '0.7rem', color: '#999', textDecoration: 'line-through' }}>
+                    {d.flag_name || `Flag #${d.food_flag_id}`}
+                    {d.dismissed_by_name && (
+                      <span style={{ fontStyle: 'italic', marginLeft: '0.3rem' }}>
+                        by {d.dismissed_by_name}
+                      </span>
+                    )}
+                    {d.reason && (
+                      <span style={{ marginLeft: '0.3rem' }}>
+                        — {d.reason}
+                      </span>
+                    )}
                   </span>
                   <button
-                    onClick={() => applySuggestion(s)}
-                    disabled={saving}
+                    onClick={() => undoDismissal(d.food_flag_id)}
                     style={{
-                      padding: '0.1rem 0.35rem',
+                      padding: '0.05rem 0.3rem',
                       border: '1px solid #ccc',
                       borderRadius: '4px',
                       background: 'white',
-                      cursor: saving ? 'default' : 'pointer',
-                      fontSize: '0.68rem',
-                      color: '#555',
+                      cursor: 'pointer',
+                      fontSize: '0.65rem',
+                      color: '#666',
                     }}
                   >
-                    + Apply
+                    Undo
                   </button>
                 </div>
               ))}

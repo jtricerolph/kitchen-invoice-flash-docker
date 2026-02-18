@@ -26,6 +26,7 @@ interface IngredientItem {
   notes: string | null
   is_archived: boolean
   is_prepackaged: boolean
+  is_free: boolean
   product_ingredients: string | null
   has_label_image: boolean
   source_count: number
@@ -138,6 +139,7 @@ export default function Ingredients() {
       manual_price: ing.manual_price,
       notes: ing.notes,
       is_prepackaged: ing.is_prepackaged,
+      is_free: ing.is_free,
       product_ingredients: ing.product_ingredients,
       has_label_image: ing.has_label_image,
     })

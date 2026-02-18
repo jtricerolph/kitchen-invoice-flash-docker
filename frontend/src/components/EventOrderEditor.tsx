@@ -46,12 +46,62 @@ interface ShoppingListItem {
   recipe_breakdown: Array<{ recipe_name: string; quantity: number }>
 }
 
+interface BySupplierItem {
+  ingredient_name: string
+  quantity_needed: number
+  unit: string
+  supplier_name: string
+  product_code: string | null
+  pack_description: string | null
+  suggested_packs: number | null
+  cost_per_pack: number | null
+  subtotal: number | null
+}
+
+interface ShoppingListResponse {
+  items: ShoppingListItem[]
+  by_supplier: Record<string, BySupplierItem[]>
+}
+
 interface RecipeOption {
   id: number
   name: string
   recipe_type: string
   batch_portions: number
   cost_per_portion: number | null
+}
+
+interface MenuOption {
+  id: number
+  name: string
+  description: string | null
+  is_active: boolean
+  item_count: number
+  division_count: number
+}
+
+interface MenuDetail {
+  id: number
+  name: string
+  divisions: Array<{
+    id: number
+    name: string
+    items: Array<{
+      id: number
+      recipe_id: number | null
+      display_name: string
+      description: string | null
+      is_archived: boolean
+    }>
+  }>
+}
+
+interface MenuDishEntry {
+  recipe_id: number
+  display_name: string
+  division_name: string
+  checked: boolean
+  quantity: number
 }
 
 export default function EventOrderEditor() {
@@ -61,9 +111,17 @@ export default function EventOrderEditor() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const [showAddRecipe, setShowAddRecipe] = useState(false)
-  const [selectedRecipeId, setSelectedRecipeId] = useState<string>('')
+  // Modal state: which modal is open
+  const [addModalType, setAddModalType] = useState<'recipe' | 'dish' | 'menu' | null>(null)
+  const [searchText, setSearchText] = useState('')
+  const [selectedRecipeId, setSelectedRecipeId] = useState<number | null>(null)
   const [recipeQty, setRecipeQty] = useState('1')
+
+  // Menu modal state
+  const [selectedMenuId, setSelectedMenuId] = useState<number | null>(null)
+  const [menuDishes, setMenuDishes] = useState<MenuDishEntry[]>([])
+  const [covers, setCovers] = useState('1')
+
   const [showShopping, setShowShopping] = useState(false)
   const [groupBySupplier, setGroupBySupplier] = useState(false)
 
@@ -79,19 +137,47 @@ export default function EventOrderEditor() {
     enabled: !!token && !!orderId,
   })
 
+  // Fetch recipes filtered by type for recipe/dish modals
+  const recipeType = addModalType === 'recipe' ? 'component' : addModalType === 'dish' ? 'dish' : null
   const { data: recipes } = useQuery<RecipeOption[]>({
-    queryKey: ['recipes-for-event'],
+    queryKey: ['recipes-for-event', recipeType],
     queryFn: async () => {
-      const res = await fetch('/api/recipes', {
+      const res = await fetch(`/api/recipes?recipe_type=${recipeType}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed')
       return res.json()
     },
-    enabled: !!token && showAddRecipe,
+    enabled: !!token && (addModalType === 'recipe' || addModalType === 'dish'),
   })
 
-  const { data: shoppingList } = useQuery<{ items: ShoppingListItem[] }>({
+  // Fetch menus for menu modal
+  const { data: menus } = useQuery<MenuOption[]>({
+    queryKey: ['menus-for-event'],
+    queryFn: async () => {
+      const res = await fetch('/api/menus', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed')
+      return res.json()
+    },
+    enabled: !!token && addModalType === 'menu' && !selectedMenuId,
+  })
+
+  // Fetch selected menu detail
+  const { data: menuDetail } = useQuery<MenuDetail>({
+    queryKey: ['menu-detail-for-event', selectedMenuId],
+    queryFn: async () => {
+      const res = await fetch(`/api/menus/${selectedMenuId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed')
+      return res.json()
+    },
+    enabled: !!token && !!selectedMenuId,
+  })
+
+  const { data: shoppingList } = useQuery<ShoppingListResponse>({
     queryKey: ['event-shopping-list', orderId, groupBySupplier],
     queryFn: async () => {
       const params = groupBySupplier ? '?group_by_supplier=true' : ''
@@ -115,9 +201,24 @@ export default function EventOrderEditor() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['event-order', orderId] })
       queryClient.invalidateQueries({ queryKey: ['event-shopping-list', orderId] })
-      setShowAddRecipe(false)
-      setSelectedRecipeId('')
-      setRecipeQty('1')
+      closeModal()
+    },
+  })
+
+  const bulkAddMutation = useMutation({
+    mutationFn: async (items: Array<{ recipe_id: number; quantity: number; notes?: string }>) => {
+      const res = await fetch(`/api/event-orders/${orderId}/items/bulk`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      })
+      if (!res.ok) throw new Error('Failed')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['event-order', orderId] })
+      queryClient.invalidateQueries({ queryKey: ['event-shopping-list', orderId] })
+      closeModal()
     },
   })
 
@@ -147,6 +248,72 @@ export default function EventOrderEditor() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['event-order', orderId] }),
   })
 
+  function closeModal() {
+    setAddModalType(null)
+    setSearchText('')
+    setSelectedRecipeId(null)
+    setRecipeQty('1')
+    setSelectedMenuId(null)
+    setMenuDishes([])
+    setCovers('1')
+  }
+
+  // When menu detail loads, build the dishes list
+  function handleMenuSelected(menuId: number) {
+    setSelectedMenuId(menuId)
+    setSearchText('')
+  }
+
+  // Populate menuDishes when menuDetail loads
+  const populateMenuDishes = (detail: MenuDetail) => {
+    const existingRecipeIds = new Set((order?.items || []).map(i => i.recipe_id))
+    const dishes: MenuDishEntry[] = []
+    for (const div of detail.divisions) {
+      for (const item of div.items) {
+        if (item.recipe_id && !item.is_archived) {
+          dishes.push({
+            recipe_id: item.recipe_id,
+            display_name: item.display_name,
+            division_name: div.name,
+            checked: !existingRecipeIds.has(item.recipe_id),
+            quantity: parseInt(covers) || 1,
+          })
+        }
+      }
+    }
+    setMenuDishes(dishes)
+  }
+
+  // Effect: when menuDetail changes, populate
+  if (menuDetail && menuDishes.length === 0 && selectedMenuId) {
+    populateMenuDishes(menuDetail)
+  }
+
+  function handleCoversChange(val: string) {
+    setCovers(val)
+    const num = parseInt(val) || 1
+    setMenuDishes(prev => prev.map(d => ({ ...d, quantity: num })))
+  }
+
+  function handleMenuDishQty(idx: number, val: string) {
+    setMenuDishes(prev => prev.map((d, i) => i === idx ? { ...d, quantity: parseInt(val) || 0 } : d))
+  }
+
+  function handleMenuDishToggle(idx: number) {
+    setMenuDishes(prev => prev.map((d, i) => i === idx ? { ...d, checked: !d.checked } : d))
+  }
+
+  function handleBulkAdd() {
+    const items = menuDishes
+      .filter(d => d.checked && d.quantity > 0)
+      .map(d => ({
+        recipe_id: d.recipe_id,
+        quantity: d.quantity,
+        notes: `From menu: ${menuDetail?.name || ''}`,
+      }))
+    if (items.length > 0) bulkAddMutation.mutate(items)
+  }
+
   if (!order) return <div style={styles.loading}>Loading event order...</div>
 
   const totalCost = order.items.reduce((sum, i) => sum + (i.subtotal || 0), 0)
@@ -154,6 +321,21 @@ export default function EventOrderEditor() {
     if (i.recipe_type === 'dish') return sum + i.quantity
     return sum + (i.quantity * i.batch_portions)
   }, 0)
+
+  // Filter recipes by search
+  const filteredRecipes = (recipes || []).filter(r =>
+    !searchText || r.name.toLowerCase().includes(searchText.toLowerCase())
+  )
+
+  // Filter menus by search
+  const activeMenus = (menus || []).filter(m => m.is_active)
+  const filteredMenus = activeMenus.filter(m =>
+    !searchText || m.name.toLowerCase().includes(searchText.toLowerCase())
+  )
+
+  // Supplier grouped data
+  const bySupplier = shoppingList?.by_supplier || {}
+  const supplierNames = Object.keys(bySupplier).sort()
 
   return (
     <div style={styles.page}>
@@ -183,11 +365,15 @@ export default function EventOrderEditor() {
         </span>
       </div>
 
-      {/* Recipe items */}
+      {/* Items */}
       <div style={styles.section}>
         <div style={styles.sectionHeader}>
-          <h3 style={{ margin: 0 }}>Recipes</h3>
-          <button onClick={() => setShowAddRecipe(true)} style={styles.addBtn}>+ Add Recipe</button>
+          <h3 style={{ margin: 0 }}>Items</h3>
+          <div style={{ display: 'flex', gap: '0.35rem' }}>
+            <button onClick={() => setAddModalType('recipe')} style={styles.addBtn}>+ Recipe</button>
+            <button onClick={() => setAddModalType('dish')} style={styles.addBtn}>+ Dish</button>
+            <button onClick={() => setAddModalType('menu')} style={{ ...styles.addBtn, background: '#eff6ff', borderColor: '#93c5fd' }}>+ Menu</button>
+          </div>
         </div>
         {order.items.length > 0 ? (
           <table style={styles.table}>
@@ -208,10 +394,13 @@ export default function EventOrderEditor() {
                     <span style={{ cursor: 'pointer', color: '#3b82f6' }} onClick={() => navigate(`/recipes/${item.recipe_id}`)}>
                       {item.recipe_name}
                     </span>
+                    {item.notes && (
+                      <span style={{ fontSize: '0.7rem', color: '#999', marginLeft: '0.5rem' }}>{item.notes}</span>
+                    )}
                   </td>
                   <td style={styles.td}>
                     <span style={{ fontSize: '0.75rem', color: '#888' }}>
-                      {item.recipe_type === 'component' ? `Component (${item.batch_portions} per batch)` : 'Plated'}
+                      {item.recipe_type === 'component' ? `Component (${item.batch_portions} per batch)` : 'Dish'}
                     </span>
                   </td>
                   <td style={styles.td}>{item.quantity}</td>
@@ -232,7 +421,7 @@ export default function EventOrderEditor() {
             </tfoot>
           </table>
         ) : (
-          <div style={{ color: '#888', fontStyle: 'italic', padding: '1rem 0' }}>No recipes added yet</div>
+          <div style={{ color: '#888', fontStyle: 'italic', padding: '1rem 0' }}>No items added yet</div>
         )}
 
         {order.items.length > 0 && (
@@ -258,7 +447,7 @@ export default function EventOrderEditor() {
             </div>
           </div>
 
-          {showShopping && shoppingList && (
+          {showShopping && shoppingList && !groupBySupplier && (
             <table style={styles.table}>
               <thead>
                 <tr>
@@ -299,41 +488,294 @@ export default function EventOrderEditor() {
               </tbody>
             </table>
           )}
+
+          {showShopping && shoppingList && groupBySupplier && (
+            <div>
+              {supplierNames.length === 0 && (
+                <p style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>No supplier data available</p>
+              )}
+              {supplierNames.map(supplier => {
+                const items = bySupplier[supplier]
+                const supplierTotal = items.reduce((sum, i) => sum + (i.subtotal || 0), 0)
+                return (
+                  <div key={supplier} style={{ marginBottom: '1rem' }}>
+                    <div style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '0.4rem 0.5rem', background: '#f8f9fa', borderRadius: '4px', marginBottom: '0.25rem',
+                    }}>
+                      <strong style={{ fontSize: '0.85rem' }}>{supplier}</strong>
+                      {supplierTotal > 0 && (
+                        <span style={{ fontSize: '0.8rem', color: '#666' }}>£{supplierTotal.toFixed(2)}</span>
+                      )}
+                    </div>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Ingredient</th>
+                          <th style={styles.th}>Quantity</th>
+                          <th style={styles.th}>Packs</th>
+                          <th style={styles.th}>Est. Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items.map((item, idx) => (
+                          <tr key={idx}>
+                            <td style={styles.td}>{item.ingredient_name}</td>
+                            <td style={styles.td}>{item.quantity_needed}{item.unit}</td>
+                            <td style={styles.td}>
+                              {item.suggested_packs
+                                ? `${item.suggested_packs} × ${item.pack_description || 'pack'}`
+                                : '-'
+                              }
+                            </td>
+                            <td style={styles.td}>
+                              {item.subtotal != null ? `£${item.subtotal.toFixed(2)}` : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })}
+              {/* Show unsourced ingredients */}
+              {shoppingList.items.filter(i => i.sources.length === 0).length > 0 && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{
+                    padding: '0.4rem 0.5rem', background: '#fef3c7', borderRadius: '4px', marginBottom: '0.25rem',
+                  }}>
+                    <strong style={{ fontSize: '0.85rem', color: '#92400e' }}>No Supplier</strong>
+                  </div>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Ingredient</th>
+                        <th style={styles.th}>Category</th>
+                        <th style={styles.th}>Quantity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shoppingList.items.filter(i => i.sources.length === 0).map(item => (
+                        <tr key={item.ingredient_id}>
+                          <td style={styles.td}>{item.ingredient_name}</td>
+                          <td style={styles.td}><span style={{ fontSize: '0.75rem', color: '#888' }}>{item.category}</span></td>
+                          <td style={styles.td}>{item.adjusted_quantity}{item.unit}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Add recipe modal */}
-      {showAddRecipe && (
-        <div style={styles.overlay}>
-          <div style={styles.modal}>
+      {/* Add Recipe / Add Dish modal */}
+      {(addModalType === 'recipe' || addModalType === 'dish') && (
+        <div style={styles.overlay} onClick={closeModal}>
+          <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h3 style={{ margin: 0 }}>Add Recipe</h3>
-              <button onClick={() => setShowAddRecipe(false)} style={styles.closeBtn}>✕</button>
+              <h3 style={{ margin: 0 }}>Add {addModalType === 'recipe' ? 'Recipe' : 'Dish'}</h3>
+              <button onClick={closeModal} style={styles.closeBtn}>✕</button>
             </div>
             <div style={styles.modalBody}>
-              <label style={styles.label}>Select Recipe</label>
-              <select value={selectedRecipeId} onChange={(e) => setSelectedRecipeId(e.target.value)} style={styles.input}>
-                <option value="">Select...</option>
-                {recipes?.map(r => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} ({r.recipe_type}{r.recipe_type === 'component' ? `, batch: ${r.batch_portions}` : ''})
-                  </option>
+              <input
+                type="text"
+                value={searchText}
+                onChange={e => setSearchText(e.target.value)}
+                placeholder={`Search ${addModalType === 'recipe' ? 'recipes' : 'dishes'}...`}
+                style={styles.input}
+                autoFocus
+              />
+              <div style={{ maxHeight: '250px', overflow: 'auto', border: '1px solid #eee', borderRadius: '6px', marginTop: '0.5rem' }}>
+                {filteredRecipes.map(r => (
+                  <div
+                    key={r.id}
+                    onClick={() => setSelectedRecipeId(r.id)}
+                    style={{
+                      padding: '0.5rem 0.75rem',
+                      cursor: 'pointer',
+                      background: selectedRecipeId === r.id ? '#eff6ff' : '#fff',
+                      borderBottom: '1px solid #f3f4f6',
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    }}
+                  >
+                    <span style={{ fontWeight: selectedRecipeId === r.id ? 600 : 400, fontSize: '0.9rem' }}>
+                      {r.name}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: '#888' }}>
+                      {addModalType === 'recipe'
+                        ? `batch: ${r.batch_portions}`
+                        : r.cost_per_portion != null ? `£${r.cost_per_portion.toFixed(2)}/portion` : ''
+                      }
+                    </span>
+                  </div>
                 ))}
-              </select>
-              <label style={styles.label}>
-                Quantity ({selectedRecipeId && recipes?.find(r => r.id === parseInt(selectedRecipeId))?.recipe_type === 'component' ? 'batches' : 'servings'})
-              </label>
-              <input type="number" value={recipeQty} onChange={(e) => setRecipeQty(e.target.value)} style={styles.input} min="1" />
+                {filteredRecipes.length === 0 && (
+                  <p style={{ padding: '0.75rem', color: '#999', textAlign: 'center', margin: 0, fontSize: '0.85rem' }}>
+                    No {addModalType === 'recipe' ? 'recipes' : 'dishes'} found
+                  </p>
+                )}
+              </div>
+              {selectedRecipeId && (
+                <>
+                  <label style={styles.label}>
+                    Quantity ({addModalType === 'recipe' ? 'batches' : 'servings'})
+                  </label>
+                  <input type="number" value={recipeQty} onChange={e => setRecipeQty(e.target.value)} style={styles.input} min="1" />
+                </>
+              )}
             </div>
             <div style={styles.modalFooter}>
-              <button onClick={() => setShowAddRecipe(false)} style={styles.cancelBtn}>Cancel</button>
+              <button onClick={closeModal} style={styles.cancelBtn}>Cancel</button>
               <button
-                onClick={() => addItemMutation.mutate({ recipe_id: parseInt(selectedRecipeId), quantity: parseInt(recipeQty) })}
+                onClick={() => selectedRecipeId && addItemMutation.mutate({ recipe_id: selectedRecipeId, quantity: parseInt(recipeQty) || 1 })}
                 disabled={!selectedRecipeId || !recipeQty || addItemMutation.isPending}
                 style={styles.primaryBtn}
               >
-                Add
+                {addItemMutation.isPending ? 'Adding...' : 'Add'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Menu modal */}
+      {addModalType === 'menu' && (
+        <div style={styles.overlay} onClick={closeModal}>
+          <div style={{ ...styles.modal, width: '600px' }} onClick={e => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={{ margin: 0 }}>
+                {selectedMenuId ? `Add from: ${menuDetail?.name || 'Loading...'}` : 'Add Menu'}
+              </h3>
+              <button onClick={closeModal} style={styles.closeBtn}>✕</button>
+            </div>
+            <div style={styles.modalBody}>
+              {!selectedMenuId && (
+                <>
+                  <input
+                    type="text"
+                    value={searchText}
+                    onChange={e => setSearchText(e.target.value)}
+                    placeholder="Search menus..."
+                    style={styles.input}
+                    autoFocus
+                  />
+                  <div style={{ maxHeight: '300px', overflow: 'auto', border: '1px solid #eee', borderRadius: '6px', marginTop: '0.5rem' }}>
+                    {filteredMenus.map(m => (
+                      <div
+                        key={m.id}
+                        onClick={() => handleMenuSelected(m.id)}
+                        style={{
+                          padding: '0.6rem 0.75rem',
+                          cursor: 'pointer',
+                          borderBottom: '1px solid #f3f4f6',
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = '#f9fafb')}
+                        onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
+                      >
+                        <div>
+                          <span style={{ fontWeight: 500, fontSize: '0.9rem' }}>{m.name}</span>
+                          {m.description && <div style={{ fontSize: '0.75rem', color: '#888' }}>{m.description}</div>}
+                        </div>
+                        <span style={{ fontSize: '0.75rem', color: '#888' }}>
+                          {m.item_count} dish{m.item_count !== 1 ? 'es' : ''}
+                        </span>
+                      </div>
+                    ))}
+                    {filteredMenus.length === 0 && (
+                      <p style={{ padding: '0.75rem', color: '#999', textAlign: 'center', margin: 0, fontSize: '0.85rem' }}>
+                        No active menus found
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {selectedMenuId && menuDishes.length > 0 && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#555', whiteSpace: 'nowrap' }}>Covers:</label>
+                    <input
+                      type="number"
+                      value={covers}
+                      onChange={e => handleCoversChange(e.target.value)}
+                      style={{ ...styles.input, width: '80px' }}
+                      min="1"
+                    />
+                    <span style={{ fontSize: '0.75rem', color: '#888' }}>Sets quantity for all dishes</span>
+                  </div>
+                  <div style={{ maxHeight: '350px', overflow: 'auto', border: '1px solid #eee', borderRadius: '6px' }}>
+                    <table style={{ ...styles.table, fontSize: '0.85rem' }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...styles.th, width: '30px' }}></th>
+                          <th style={styles.th}>Dish</th>
+                          <th style={styles.th}>Section</th>
+                          <th style={{ ...styles.th, width: '80px' }}>Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {menuDishes.map((dish, idx) => {
+                          const alreadyOnOrder = (order?.items || []).some(i => i.recipe_id === dish.recipe_id)
+                          return (
+                            <tr key={idx} style={{ opacity: alreadyOnOrder ? 0.5 : 1 }}>
+                              <td style={styles.td}>
+                                <input
+                                  type="checkbox"
+                                  checked={dish.checked}
+                                  onChange={() => handleMenuDishToggle(idx)}
+                                  disabled={alreadyOnOrder}
+                                />
+                              </td>
+                              <td style={styles.td}>
+                                {dish.display_name}
+                                {alreadyOnOrder && <span style={{ fontSize: '0.7rem', color: '#f59e0b', marginLeft: '0.5rem' }}>already added</span>}
+                              </td>
+                              <td style={styles.td}>
+                                <span style={{ fontSize: '0.75rem', color: '#888' }}>{dish.division_name}</span>
+                              </td>
+                              <td style={styles.td}>
+                                <input
+                                  type="number"
+                                  value={dish.quantity}
+                                  onChange={e => handleMenuDishQty(idx, e.target.value)}
+                                  style={{ width: '60px', padding: '0.25rem', border: '1px solid #ddd', borderRadius: '4px', fontSize: '0.85rem', textAlign: 'center' }}
+                                  min="0"
+                                  disabled={!dish.checked || alreadyOnOrder}
+                                />
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {selectedMenuId && menuDishes.length === 0 && menuDetail && (
+                <p style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>No dishes on this menu</p>
+              )}
+            </div>
+            <div style={styles.modalFooter}>
+              {selectedMenuId && (
+                <button onClick={() => { setSelectedMenuId(null); setMenuDishes([]); setSearchText('') }} style={styles.cancelBtn}>
+                  ← Back
+                </button>
+              )}
+              <button onClick={closeModal} style={styles.cancelBtn}>Cancel</button>
+              {selectedMenuId && (
+                <button
+                  onClick={handleBulkAdd}
+                  disabled={menuDishes.filter(d => d.checked && d.quantity > 0).length === 0 || bulkAddMutation.isPending}
+                  style={styles.primaryBtn}
+                >
+                  {bulkAddMutation.isPending ? 'Adding...' : `Add ${menuDishes.filter(d => d.checked && d.quantity > 0).length} Dishes`}
+                </button>
+              )}
             </div>
           </div>
         </div>

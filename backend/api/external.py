@@ -1,11 +1,13 @@
 """
 Internal API for in-house apps — API key authentication, dish recipe data,
-food flag listings. Prefix: /api/external/
+food flag listings, menus. Prefix: /api/external/
 """
+import os
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -13,9 +15,11 @@ from sqlalchemy.orm import selectinload
 from database import get_db
 from models.settings import KitchenSettings
 from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe, RecipeImage
+from models.menu import Menu, MenuDivision, MenuItem
 from models.ingredient import Ingredient
 from models.food_flag import FoodFlagCategory, FoodFlag
 from api.food_flags import compute_recipe_flags
+from api.menus import _compute_staleness
 
 logger = logging.getLogger(__name__)
 
@@ -309,3 +313,185 @@ async def _get_recipe_ingredients(recipe_id: int, kitchen_id: int, db: AsyncSess
         return direct + sub_recipe_ings
 
     return []
+
+
+# ── Menu Endpoints ───────────────────────────────────────────────────────────
+
+@router.get("/menus")
+async def list_menus_external(
+    exclude_flags: Optional[str] = Query(None, description="Comma-separated flag IDs to exclude items containing those allergens"),
+    kitchen: KitchenSettings = Depends(get_kitchen_from_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """List active menus with divisions and items served from snapshots."""
+    result = await db.execute(
+        select(Menu)
+        .options(
+            selectinload(Menu.divisions).selectinload(MenuDivision.items),
+            selectinload(Menu.items),
+        )
+        .where(Menu.kitchen_id == kitchen.kitchen_id, Menu.is_active == True)
+        .order_by(Menu.sort_order)
+    )
+    menus = result.scalars().all()
+
+    exclude_flag_ids = set()
+    if exclude_flags:
+        exclude_flag_ids = {int(x.strip()) for x in exclude_flags.split(",") if x.strip().isdigit()}
+
+    menus_data = []
+    for menu in menus:
+        all_items = [i for i in (menu.items or []) if i.recipe_id is not None]
+        staleness = await _compute_staleness(all_items, db)
+
+        divisions_data = []
+        for div in sorted(menu.divisions or [], key=lambda d: d.sort_order):
+            div_items = sorted(
+                [i for i in all_items if i.division_id == div.id],
+                key=lambda i: i.sort_order,
+            )
+            items_data = []
+            for item in div_items:
+                snapshot = item.snapshot_json or {}
+                confirmed_flags = snapshot.get("confirmed_flags", [])
+
+                # Apply exclude filter
+                if exclude_flag_ids:
+                    item_flag_ids = {f.get("id") for f in confirmed_flags if f.get("id")}
+                    if item_flag_ids & exclude_flag_ids:
+                        continue
+
+                stale_info = staleness.get(item.id, {"is_stale": False})
+
+                items_data.append({
+                    "id": item.id,
+                    "display_name": snapshot.get("display_name", item.display_name),
+                    "description": snapshot.get("description", item.description),
+                    "price": snapshot.get("price", str(item.price) if item.price else None),
+                    "flags": [
+                        {"name": f.get("name"), "code": f.get("code"), "icon": f.get("icon"),
+                         "category": f.get("category"), "excludable": f.get("excludable", False)}
+                        for f in confirmed_flags
+                    ],
+                    "is_stale": stale_info.get("is_stale", False),
+                    "has_image": bool(item.image_path),
+                })
+
+            if items_data:
+                divisions_data.append({
+                    "name": div.name,
+                    "items": items_data,
+                })
+
+        menus_data.append({
+            "id": menu.id,
+            "name": menu.name,
+            "description": menu.description,
+            "divisions": divisions_data,
+        })
+
+    return menus_data
+
+
+@router.get("/menus/{menu_id}")
+async def get_menu_external(
+    menu_id: int,
+    exclude_flags: Optional[str] = Query(None),
+    kitchen: KitchenSettings = Depends(get_kitchen_from_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Single menu detail for external consumption."""
+    result = await db.execute(
+        select(Menu)
+        .options(
+            selectinload(Menu.divisions).selectinload(MenuDivision.items),
+            selectinload(Menu.items),
+        )
+        .where(
+            Menu.id == menu_id,
+            Menu.kitchen_id == kitchen.kitchen_id,
+            Menu.is_active == True,
+        )
+    )
+    menu = result.scalar_one_or_none()
+    if not menu:
+        raise HTTPException(404, "Menu not found")
+
+    exclude_flag_ids = set()
+    if exclude_flags:
+        exclude_flag_ids = {int(x.strip()) for x in exclude_flags.split(",") if x.strip().isdigit()}
+
+    all_items = [i for i in (menu.items or []) if i.recipe_id is not None]
+    staleness = await _compute_staleness(all_items, db)
+
+    divisions_data = []
+    for div in sorted(menu.divisions or [], key=lambda d: d.sort_order):
+        div_items = sorted(
+            [i for i in all_items if i.division_id == div.id],
+            key=lambda i: i.sort_order,
+        )
+        items_data = []
+        for item in div_items:
+            snapshot = item.snapshot_json or {}
+            confirmed_flags = snapshot.get("confirmed_flags", [])
+
+            if exclude_flag_ids:
+                item_flag_ids = {f.get("id") for f in confirmed_flags if f.get("id")}
+                if item_flag_ids & exclude_flag_ids:
+                    continue
+
+            stale_info = staleness.get(item.id, {"is_stale": False})
+
+            items_data.append({
+                "id": item.id,
+                "display_name": snapshot.get("display_name", item.display_name),
+                "description": snapshot.get("description", item.description),
+                "price": snapshot.get("price", str(item.price) if item.price else None),
+                "flags": [
+                    {"name": f.get("name"), "code": f.get("code"), "icon": f.get("icon"),
+                     "category": f.get("category"), "excludable": f.get("excludable", False)}
+                    for f in confirmed_flags
+                ],
+                "is_stale": stale_info.get("is_stale", False),
+                "has_image": bool(item.image_path),
+            })
+
+        if items_data:
+            divisions_data.append({
+                "name": div.name,
+                "items": items_data,
+            })
+
+    return {
+        "id": menu.id,
+        "name": menu.name,
+        "description": menu.description,
+        "divisions": divisions_data,
+    }
+
+
+@router.get("/menus/{menu_id}/items/{item_id}/image")
+async def serve_menu_item_image_external(
+    menu_id: int,
+    item_id: int,
+    kitchen: KitchenSettings = Depends(get_kitchen_from_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve a menu item image via API key authentication."""
+    result = await db.execute(
+        select(MenuItem)
+        .join(Menu, MenuItem.menu_id == Menu.id)
+        .where(
+            MenuItem.id == item_id,
+            MenuItem.menu_id == menu_id,
+            Menu.kitchen_id == kitchen.kitchen_id,
+        )
+    )
+    item = result.scalar_one_or_none()
+    if not item or not item.image_path:
+        raise HTTPException(404, "Image not found")
+
+    if not os.path.exists(item.image_path):
+        raise HTTPException(404, "Image file not found")
+
+    return FileResponse(item.image_path)

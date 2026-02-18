@@ -4915,7 +4915,7 @@ export default function Review() {
         prePopulateName={ingredientSearch || ingredientModalItem?.description?.split('\n')[0] || ''}
         preSelectLineItem={ingredientModalItem ? {
           product_code: ingredientModalItem.product_code,
-          description: ingredientModalItem.description,
+          description: ingredientModalItem.description?.split('\n')[0] || '',
           supplier_id: invoice?.supplier_id || null,
           supplier_name: invoice?.supplier_name || null,
           unit: ingredientModalItem.unit,

@@ -38,6 +38,7 @@ class Ingredient(Base):
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
     flags_assessed: Mapped[bool] = mapped_column(Boolean, default=False)  # True when user has reviewed flags (even if none apply)
     is_prepackaged: Mapped[bool] = mapped_column(Boolean, default=False)  # manufactured/pre-made product
+    is_free: Mapped[bool] = mapped_column(Boolean, default=False)  # free item (e.g. water) — skip price warnings
     product_ingredients: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # ingredients list from product label (OCR or manual)
     label_image_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # stored label photo path
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -51,6 +52,7 @@ class Ingredient(Base):
     sources: Mapped[List["IngredientSource"]] = relationship("IngredientSource", back_populates="ingredient", cascade="all, delete-orphan")
     flags: Mapped[List["IngredientFlag"]] = relationship("IngredientFlag", back_populates="ingredient", cascade="all, delete-orphan")
     flag_nones: Mapped[List["IngredientFlagNone"]] = relationship("IngredientFlagNone", cascade="all, delete-orphan")
+    flag_dismissals: Mapped[List["IngredientFlagDismissal"]] = relationship("IngredientFlagDismissal", cascade="all, delete-orphan")
 
 
 class IngredientSource(Base):
@@ -120,8 +122,26 @@ class IngredientFlagNone(Base):
     category: Mapped["FoodFlagCategory"] = relationship("FoodFlagCategory")
 
 
+class IngredientFlagDismissal(Base):
+    """Tracks dismissed allergen suggestions per ingredient+flag with accountability"""
+    __tablename__ = "ingredient_flag_dismissals"
+    __table_args__ = (UniqueConstraint("ingredient_id", "food_flag_id", name="uq_ingredient_flag_dismissals_ing_flag"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ingredient_id: Mapped[int] = mapped_column(ForeignKey("ingredients.id", ondelete="CASCADE"), nullable=False, index=True)
+    food_flag_id: Mapped[int] = mapped_column(ForeignKey("food_flags.id", ondelete="CASCADE"), nullable=False, index=True)
+    dismissed_by_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    matched_keyword: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    ingredient: Mapped["Ingredient"] = relationship("Ingredient")
+    food_flag: Mapped["FoodFlag"] = relationship("FoodFlag")
+
+
 # Forward references
 from .user import Kitchen, User
 from .supplier import Supplier
 from .invoice import Invoice
-from .food_flag import FoodFlag
+from .food_flag import FoodFlag, FoodFlagCategory

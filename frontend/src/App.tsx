@@ -28,6 +28,8 @@ import EventOrders from './components/EventOrders'
 import EventOrderEditor from './components/EventOrderEditor'
 import DishList from './components/DishList'
 import DishEditor from './components/DishEditor'
+import MenuList from './components/MenuList'
+import MenuEditor from './components/MenuEditor'
 import BulkAllergens from './components/BulkAllergens'
 import PriceImpact from './components/PriceImpact'
 import UploadApp from './pages/UploadApp'
@@ -289,6 +291,18 @@ function App() {
               }
             />
             <Route
+              path="/menus"
+              element={
+                token ? (isPageAccessible('/recipes') ? <MenuList /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/menus/:id"
+              element={
+                token ? (isPageAccessible('/recipes') ? <MenuEditor /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/allergens"
               element={
                 token ? (isPageAccessible('/recipes') ? <BulkAllergens /> : <Navigate to="/" />) : <Navigate to="/login" />
@@ -325,11 +339,21 @@ function App() {
 }
 
 function Header({ user, restrictedPages }: { user: User; restrictedPages: string[] }) {
+  const location = useLocation()
   const [reportsOpen, setReportsOpen] = useState(false)
   const [invoicesOpen, setInvoicesOpen] = useState(false)
   const [bookingsOpen, setBookingsOpen] = useState(false)
   const [recipesOpen, setRecipesOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+
+  // Close mobile menu and all dropdowns on navigation
+  useEffect(() => {
+    setMobileMenuOpen(false)
+    setInvoicesOpen(false)
+    setBookingsOpen(false)
+    setRecipesOpen(false)
+    setReportsOpen(false)
+  }, [location.pathname])
 
   // Check if a page should be shown in nav
   const showNavItem = (path: string) => {
@@ -348,6 +372,16 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
 
   // Check if recipes dropdown should be shown
   const showRecipes = showNavItem('/recipes')
+
+  // Toggle dropdown on click (for mobile touch support)
+  const toggleDropdown = (setter: React.Dispatch<React.SetStateAction<boolean>>, current: boolean) => {
+    // Close all other dropdowns first
+    setInvoicesOpen(false)
+    setBookingsOpen(false)
+    setRecipesOpen(false)
+    setReportsOpen(false)
+    setter(!current)
+  }
 
   return (
     <header style={styles.header}>
@@ -372,7 +406,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               onMouseEnter={() => setInvoicesOpen(true)}
               onMouseLeave={() => setInvoicesOpen(false)}
             >
-              <span style={styles.navLink}>Invoices ▾</span>
+              <span style={styles.navLink} onClick={() => toggleDropdown(setInvoicesOpen, invoicesOpen)}>Invoices ▾</span>
               {invoicesOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
@@ -395,7 +429,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               onMouseEnter={() => setBookingsOpen(true)}
               onMouseLeave={() => setBookingsOpen(false)}
             >
-              <span style={styles.navLink}>Bookings ▾</span>
+              <span style={styles.navLink} onClick={() => toggleDropdown(setBookingsOpen, bookingsOpen)}>Bookings ▾</span>
               {bookingsOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
@@ -413,13 +447,14 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               onMouseEnter={() => setRecipesOpen(true)}
               onMouseLeave={() => setRecipesOpen(false)}
             >
-              <span style={styles.navLink}>Recipes ▾</span>
+              <span style={styles.navLink} onClick={() => toggleDropdown(setRecipesOpen, recipesOpen)}>Recipes ▾</span>
               {recipesOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
                     <Link to="/ingredients" style={styles.dropdownLink}>Ingredients</Link>
                     <Link to="/recipes" style={styles.dropdownLink}>Recipes</Link>
                     <Link to="/dishes" style={styles.dropdownLink}>Dishes</Link>
+                    <Link to="/menus" style={styles.dropdownLink}>Menus</Link>
                     <Link to="/allergens" style={styles.dropdownLink}>Allergens</Link>
                     <Link to="/event-orders" style={styles.dropdownLink}>Event Orders</Link>
                   </div>
@@ -433,7 +468,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
               onMouseEnter={() => setReportsOpen(true)}
               onMouseLeave={() => setReportsOpen(false)}
             >
-              <span style={styles.navLink}>Reports ▾</span>
+              <span style={styles.navLink} onClick={() => toggleDropdown(setReportsOpen, reportsOpen)}>Reports ▾</span>
               {reportsOpen && (
                 <div style={styles.dropdown}>
                   <div style={styles.dropdownContent}>
@@ -447,21 +482,6 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
           )}
           {showNavItem('/kds') && <Link to="/kds" style={styles.navLink}>KDS</Link>}
           {showNavItem('/settings') && <Link to="/settings" style={styles.navLink}>Settings</Link>}
-          <button
-            onClick={async () => {
-              try {
-                const keys = await caches.keys()
-                await Promise.all(keys.map(k => caches.delete(k)))
-                const regs = await navigator.serviceWorker?.getRegistrations()
-                if (regs) await Promise.all(regs.map(r => r.unregister()))
-              } catch { /* ignore */ }
-              window.location.reload()
-            }}
-            style={styles.clearCacheBtn}
-            title="Clear cached files and reload with fresh assets"
-          >
-            ↻ Refresh
-          </button>
         </nav>
       </div>
     </header>
@@ -506,6 +526,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '1.5rem',
     cursor: 'pointer',
     padding: '0.5rem',
+    zIndex: 10,
+    minWidth: '44px',
+    minHeight: '44px',
+    touchAction: 'manipulation' as const,
   },
   nav: {
     display: 'flex',
@@ -550,19 +574,6 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'none',
     whiteSpace: 'nowrap',
   },
-  clearCacheBtn: {
-    color: 'rgba(255,255,255,0.6)',
-    textDecoration: 'none',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-    padding: '0.75rem 1rem',
-    display: 'block',
-    borderRadius: '4px',
-    background: 'none',
-    border: 'none',
-    fontSize: 'inherit',
-    fontFamily: 'inherit',
-  },
   main: {
     maxWidth: '1200px',
     margin: '0 auto',
@@ -593,6 +604,7 @@ styleTag.innerHTML = `
     button[aria-label="Toggle menu"] {
       display: block !important;
       order: 2;
+      z-index: 10;
     }
 
     nav {
@@ -610,6 +622,10 @@ styleTag.innerHTML = `
       display: none !important;
     }
 
+    nav.mobile-open {
+      display: flex !important;
+    }
+
     nav a, nav > div {
       width: 100%;
       padding: 0.5rem;
@@ -621,8 +637,17 @@ styleTag.innerHTML = `
 
     nav > div > div {
       position: static !important;
-      margin-top: 0.5rem;
+      margin-top: 0.25rem;
       padding-top: 0 !important;
+    }
+
+    nav > div > div > div {
+      background: #3d3d5c !important;
+      border-radius: 4px;
+    }
+
+    nav > div > div > div a {
+      padding: 0.5rem 1rem !important;
     }
   }
 

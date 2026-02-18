@@ -20,7 +20,7 @@ ALLERGEN_KEYWORDS = {
         "wheat", "flour", "bread", "pasta", "barley", "rye", "oat", "spelt",
         "couscous", "bulgur", "semolina", "noodle", "crouton", "breadcrumb",
         "panko", "tortilla", "pita", "naan", "sourdough", "brioche",
-        "croissant", "pastry", "biscuit", "cracker", "kamut", "durum",
+        "croissant", "pastry", "pastries", "biscuit", "cracker", "kamut", "durum",
         "farro", "seitan", "malt", "starch",
         # --- Extended grains & derivatives ---
         "einkorn", "emmer", "triticale", "wheat bran", "wheat protein",
@@ -91,8 +91,8 @@ ALLERGEN_KEYWORDS = {
     ],
     "Fish": [
         # --- Common fish species ---
-        "cod", "salmon", "tuna", "haddock", "mackerel", "sardine",
-        "anchovy", "trout", "bass", "bream", "sole", "plaice",
+        "cod", "salmon", "tuna", "haddock", "mackerel", "sardine", "sardines",
+        "anchovy", "anchovies", "trout", "bass", "bream", "sole", "plaice",
         "halibut", "swordfish", "monkfish", "pollock", "herring",
         "whitebait", "fish sauce", "worcestershire", "fish",
         # --- Extended species ---

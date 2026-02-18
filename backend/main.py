@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions, ingredients, recipes, food_flags, event_orders, external
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions, ingredients, recipes, food_flags, event_orders, external, menus
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -60,6 +60,9 @@ from migrations.add_allergen_keywords import migrate as run_allergen_keywords_mi
 from migrations.add_brakes_cache import migrate as run_brakes_cache_migration
 from migrations.add_description_aliases import migrate as run_description_aliases_migration
 from migrations.add_brakes_dietary_info import migrate as run_brakes_dietary_info_migration
+from migrations.add_ingredient_flag_dismissals import migrate as run_ingredient_flag_dismissals_migration
+from migrations.add_menus import migrate as run_menus_migration
+from migrations.add_ingredient_is_free import migrate as run_ingredient_is_free_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -408,6 +411,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Brakes dietary info migration warning (may be expected): {e}")
 
+    # Run ingredient flag dismissals migration
+    try:
+        await run_ingredient_flag_dismissals_migration()
+        logger.info("Ingredient flag dismissals migration completed")
+    except Exception as e:
+        logger.warning(f"Ingredient flag dismissals migration warning (may be expected): {e}")
+
+    # Run menus migration
+    try:
+        await run_menus_migration()
+        logger.info("Menus migration completed")
+    except Exception as e:
+        logger.warning(f"Menus migration warning (may be expected): {e}")
+
+    # Run ingredient is_free migration
+    try:
+        await run_ingredient_is_free_migration()
+        logger.info("Ingredient is_free migration completed")
+    except Exception as e:
+        logger.warning(f"Ingredient is_free migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -470,6 +494,7 @@ app.include_router(ingredients.router, prefix="/api/ingredients", tags=["Ingredi
 app.include_router(recipes.router, prefix="/api/recipes", tags=["Recipes"])
 app.include_router(food_flags.router, prefix="/api/food-flags", tags=["Food Flags"])
 app.include_router(event_orders.router, prefix="/api/event-orders", tags=["Event Orders"])
+app.include_router(menus.router, prefix="/api/menus", tags=["Menus"])
 app.include_router(external.router, prefix="/api/external", tags=["External API"])
 
 

@@ -6,6 +6,7 @@ interface MatrixCell {
   has_flag: boolean
   is_unassessed: boolean
   is_none: boolean
+  has_open_suggestion?: boolean
 }
 
 interface MatrixIngredient {
@@ -148,18 +149,29 @@ export default function RecipeFlagMatrix({ recipeId, categoryId }: Props) {
     toggleMutation.mutate({ ingredientId, flagId, hasFlag: !currentHasFlag })
   }
 
-  const renderCell = (ingredientId: number, flagId: number, cell: MatrixCell | undefined, propagation: string) => {
+  const renderCell = (ingredientId: number, flagId: number, cell: MatrixCell | undefined, propagation: string, flagName?: string) => {
     const isPending = pendingCells.has(`${ingredientId}-${flagId}`)
     const hasFlag = cell?.has_flag ?? false
     const isUnassessed = cell?.is_unassessed ?? false
     const isNone = cell?.is_none ?? false
+    const hasOpenSuggestion = cell?.has_open_suggestion ?? false
 
     const cellStyle: React.CSSProperties = {
       ...styles.cell,
       cursor: 'pointer',
       opacity: isPending ? 0.5 : 1,
       transition: 'background 0.15s',
+      position: 'relative' as const,
     }
+
+    // Small amber dot for open suggestions (not already flagged or unassessed)
+    const suggestionDot = hasOpenSuggestion && !hasFlag && !isUnassessed ? (
+      <span style={{
+        position: 'absolute', top: '2px', right: '2px',
+        width: '6px', height: '6px', borderRadius: '50%',
+        background: '#f59e0b',
+      }} title="Unreviewed allergen suggestion" />
+    ) : null
 
     const handleClick = () => {
       if (isPending) return
@@ -171,37 +183,37 @@ export default function RecipeFlagMatrix({ recipeId, categoryId }: Props) {
     }
 
     if (isUnassessed) {
-      return <td style={{ ...cellStyle, color: '#f59e0b' }} title="Unassessed \u2014 click to assess" onClick={handleClick}>{'\u2753'}</td>
+      return <td style={{ ...cellStyle, color: '#f59e0b' }} title="Unassessed \u2014 click to assess" onClick={handleClick}>{'\u2753'}{suggestionDot}</td>
     }
     if (isNone) {
       return (
         <td
           style={{ ...cellStyle, color: '#94a3b8', background: '#f8fafc' }}
-          title="None apply \u2014 click to set this flag"
+          title={`None apply \u2014 click to set ${flagName || 'this flag'}`}
           onClick={handleClick}
         >
-          {'\u2014'}
+          {'\u2014'}{suggestionDot}
         </td>
       )
     }
     if (propagation === 'contains') {
       return (
         <td
-          style={{ ...cellStyle, color: hasFlag ? '#dc3545' : '#ccc', background: hasFlag ? '#fef2f2' : undefined }}
-          title={hasFlag ? 'Contains \u2014 click to remove' : 'Click to mark as contains'}
+          style={{ ...cellStyle, color: hasFlag ? '#dc3545' : '#ccc', background: hasFlag ? '#fef2f2' : hasOpenSuggestion ? '#fffbeb' : undefined }}
+          title={hasFlag ? `Contains ${flagName || ''} \u2014 click to remove` : hasOpenSuggestion ? `Unreviewed suggestion: ${flagName || ''} \u2014 click to set` : `Click to mark as contains ${flagName || ''}`}
           onClick={handleClick}
         >
-          {hasFlag ? '\u2713' : '\u00B7'}
+          {hasFlag ? '\u2713' : '\u00B7'}{suggestionDot}
         </td>
       )
     } else {
       return (
         <td
           style={{ ...cellStyle, color: hasFlag ? '#22c55e' : '#dc3545', background: hasFlag ? '#f0fdf4' : undefined }}
-          title={hasFlag ? 'Suitable \u2014 click to remove' : 'Click to mark as suitable'}
+          title={hasFlag ? `${flagName || 'Suitable'} \u2014 click to remove` : `Click to mark as ${flagName || 'suitable'}`}
           onClick={handleClick}
         >
-          {hasFlag ? '\u2713' : '\u2717'}
+          {hasFlag ? '\u2713' : '\u2717'}{suggestionDot}
         </td>
       )
     }
@@ -257,7 +269,7 @@ export default function RecipeFlagMatrix({ recipeId, categoryId }: Props) {
                   <td style={{ ...styles.td, fontWeight: ing.is_sub_recipe ? 400 : 500 }}>{row.label}</td>
                   {Object.entries(categories).map(([catId, cat]) => (
                     <>
-                      {cat.flags.map(f => renderCell(ing.ingredient_id, f.id, ing.flags[f.id], cat.propagation))}
+                      {cat.flags.map(f => renderCell(ing.ingredient_id, f.id, ing.flags[f.id], cat.propagation, f.name))}
                       {cat.required && (
                         <td
                           key={`none-${catId}-${ing.ingredient_id}`}

@@ -2623,6 +2623,32 @@ export default function Settings() {
             )
           })}
         </nav>
+        <button
+          onClick={async () => {
+            try {
+              const keys = await caches.keys()
+              await Promise.all(keys.map(k => caches.delete(k)))
+              const regs = await navigator.serviceWorker?.getRegistrations()
+              if (regs) await Promise.all(regs.map(r => r.unregister()))
+            } catch { /* ignore */ }
+            window.location.reload()
+          }}
+          title="Clear cached files and reload with fresh assets"
+          style={{
+            marginTop: '1rem',
+            padding: '0.6rem 1rem',
+            border: '1px solid #ddd',
+            borderRadius: '6px',
+            background: '#f9fafb',
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+            color: '#666',
+            textAlign: 'left',
+            width: '100%',
+          }}
+        >
+          ↻ Refresh App
+        </button>
       </div>
 
       {/* Content */}

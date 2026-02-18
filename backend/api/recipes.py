@@ -679,8 +679,10 @@ async def get_recipe(
                 latest = max(priced, key=lambda s: s.latest_invoice_date or date.min)
                 raw = float(latest.price_per_std_unit)
                 eff_price = raw / (yld / 100) if yld > 0 else raw
+        is_manual_price = False
         if eff_price is None and ing.manual_price:
             eff_price = float(ing.manual_price) / (yld / 100) if yld > 0 else float(ing.manual_price)
+            is_manual_price = True
 
         # Convert quantity to standard unit for cost calculation
         qty_in_std = _convert_unit(float(ri.quantity), display_unit, ing.standard_unit)
@@ -697,6 +699,8 @@ async def get_recipe(
             "yield_percent": yld,
             "effective_price": round(eff_price, 6) if eff_price else None,
             "cost": round(cost, 4) if cost else None,
+            "is_manual_price": is_manual_price if not (hasattr(ing, 'is_free') and ing.is_free) else False,
+            "has_no_price": (eff_price is None) if not (hasattr(ing, 'is_free') and ing.is_free) else False,
             "notes": ri.notes,
             "sort_order": ri.sort_order,
         })
@@ -719,6 +723,24 @@ async def get_recipe(
         if child_cost_per_portion and sr.portions_needed:
             cost_contribution = needed_in_output_unit * child_cost_per_portion
 
+        # Check if child recipe has any manual-priced or no-price ingredients
+        child_has_manual = any(ci.get("is_manual_price") for ci in child_cost_data.get("ingredients", []))
+        child_has_no_price = any(ci.get("has_no_price") for ci in child_cost_data.get("ingredients", []))
+        # Also check nested sub-recipe child ingredients recursively
+        def _check_subs(subs):
+            m, n = False, False
+            for s in (subs or []):
+                for ci in s.get("child_ingredients", []):
+                    if ci.get("is_manual_price"): m = True
+                    if ci.get("has_no_price"): n = True
+                sm, sn = _check_subs(s.get("child_sub_recipes", []))
+                m = m or sm
+                n = n or sn
+            return m, n
+        sub_m, sub_n = _check_subs(child_cost_data.get("sub_recipes", []))
+        child_has_manual = child_has_manual or sub_m
+        child_has_no_price = child_has_no_price or sub_n
+
         sub_recipes.append({
             "id": sr.id,
             "child_recipe_id": child.id,
@@ -735,6 +757,8 @@ async def get_recipe(
             "compatible_units": _get_compatible_units(child_output_unit),
             "cost_per_portion": child_cost_per_portion,
             "cost_contribution": round(cost_contribution, 4) if cost_contribution else None,
+            "has_manual_price_ingredients": child_has_manual,
+            "has_no_price_ingredients": child_has_no_price,
             "notes": sr.notes,
             "sort_order": sr.sort_order,
         })
@@ -1433,6 +1457,8 @@ def _scale_child_sub_recipes(sub_recipes: list, scale: float) -> list:
                     "cost_recent": round(ci["cost_recent"] * scale, 4) if ci.get("cost_recent") else None,
                     "cost_min": round(ci["cost_min"] * scale, 4) if ci.get("cost_min") else None,
                     "cost_max": round(ci["cost_max"] * scale, 4) if ci.get("cost_max") else None,
+                    "is_manual_price": ci.get("is_manual_price", False),
+                    "has_no_price": ci.get("has_no_price", False),
                 }
                 for ci in sr.get("child_ingredients", [])
             ],
@@ -1502,6 +1528,10 @@ async def _calc_recipe_cost(recipe_id: int, db: AsyncSession, scale_to: Optional
         elif ing.manual_price:
             recent_price = min_price = max_price = float(ing.manual_price)
 
+        ing_is_free = getattr(ing, 'is_free', False)
+        is_manual_price = (not source_prices and ing.manual_price is not None) if not ing_is_free else False
+        has_no_price = (recent_price is None) if not ing_is_free else False
+
         # Apply yield adjustment
         if recent_price and yld > 0:
             recent_eff = recent_price / (yld / 100)
@@ -1541,6 +1571,8 @@ async def _calc_recipe_cost(recipe_id: int, db: AsyncSession, scale_to: Optional
             "cost_min": cost_min,
             "cost_max": cost_max,
             "sources": source_prices,
+            "is_manual_price": is_manual_price,
+            "has_no_price": has_no_price,
         })
 
     # Sub-recipe costs
@@ -1589,6 +1621,8 @@ async def _calc_recipe_cost(recipe_id: int, db: AsyncSession, scale_to: Optional
                 "cost_recent": round(ci["cost_recent"] * child_scale, 4) if ci.get("cost_recent") else None,
                 "cost_min": round(ci["cost_min"] * child_scale, 4) if ci.get("cost_min") else None,
                 "cost_max": round(ci["cost_max"] * child_scale, 4) if ci.get("cost_max") else None,
+                "is_manual_price": ci.get("is_manual_price", False),
+                "has_no_price": ci.get("has_no_price", False),
             })
         # Build hierarchical child_sub_recipes from the child's own sub-recipes
         child_sub_recipes = _scale_child_sub_recipes(

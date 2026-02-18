@@ -4,6 +4,7 @@ allergen keyword suggestions, and label OCR scanning.
 """
 import logging
 import os
+import re
 import uuid
 from typing import Optional
 
@@ -17,7 +18,7 @@ from pydantic import BaseModel
 from database import get_db
 from models.user import User
 from models.food_flag import FoodFlagCategory, FoodFlag, LineItemFlag, RecipeFlag, RecipeFlagOverride, AllergenKeyword, BrakesProductCache
-from models.ingredient import Ingredient, IngredientFlag, IngredientFlagNone
+from models.ingredient import Ingredient, IngredientFlag, IngredientFlagNone, IngredientFlagDismissal
 from models.line_item import LineItem
 from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe
 from models.settings import KitchenSettings
@@ -118,6 +119,7 @@ class MatrixCell(BaseModel):
     has_flag: bool = False
     is_unassessed: bool = False
     is_none: bool = False  # "None apply" set for this flag's category
+    has_open_suggestion: bool = False  # unreviewed allergen suggestion exists
 
 class MatrixIngredient(BaseModel):
     ingredient_id: int
@@ -242,14 +244,12 @@ async def seed_default_flags(
                 )
             )
             existing_keywords = {row[0] for row in existing_result.all()}
-            if existing_keywords:
-                continue
 
-            # Deduplicate keyword list and add only new ones
+            # Add only keywords that don't already exist (preserves manual entries)
             seen: set[str] = set()
             for kw_str in keywords:
                 kw = kw_str.lower()
-                if kw in seen:
+                if kw in seen or kw in existing_keywords:
                     continue
                 seen.add(kw)
                 db.add(AllergenKeyword(
@@ -794,7 +794,69 @@ async def get_recipe_flags(
                     unassessed.append({"id": ing_id, "name": name, "category": cat_name})
                     break  # One missing category is enough to flag the ingredient
 
-    return {"flags": [f.model_dump() for f in flags], "unassessed_ingredients": unassessed}
+    # Find ingredients with open (undismissed, unapplied) allergen suggestions
+    open_suggestion_ings = []
+    if unique_ids:
+        # Load allergen keywords once
+        kw_result = await db.execute(
+            select(AllergenKeyword)
+            .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+            .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+        )
+        all_keywords = kw_result.scalars().all()
+
+        if all_keywords:
+            for ing_id in unique_ids:
+                # Get ingredient name + product_ingredients
+                ing_result = await db.execute(
+                    select(Ingredient.name, Ingredient.product_ingredients).where(Ingredient.id == ing_id)
+                )
+                ing_row = ing_result.first()
+                if not ing_row:
+                    continue
+
+                # Match keywords against name + product ingredients
+                texts_to_check = [ing_row.name or ""]
+                if ing_row.product_ingredients:
+                    texts_to_check.append(ing_row.product_ingredients)
+                combined_text = " ".join(texts_to_check)
+
+                keyword_matches = match_allergen_keywords(combined_text, all_keywords)
+                if not keyword_matches:
+                    continue
+
+                matched_flag_ids = set(m["flag_id"] for m in keyword_matches)
+
+                # Subtract active flags
+                active_result = await db.execute(
+                    select(IngredientFlag.food_flag_id).where(
+                        IngredientFlag.ingredient_id == ing_id,
+                    )
+                )
+                active_ids = set(active_result.scalars().all())
+                matched_flag_ids -= active_ids
+
+                # Subtract dismissed flags
+                dismissed_result = await db.execute(
+                    select(IngredientFlagDismissal.food_flag_id).where(
+                        IngredientFlagDismissal.ingredient_id == ing_id,
+                    )
+                )
+                dismissed_ids = set(dismissed_result.scalars().all())
+                matched_flag_ids -= dismissed_ids
+
+                if matched_flag_ids:
+                    open_suggestion_ings.append({
+                        "ingredient_id": ing_id,
+                        "ingredient_name": ing_row.name,
+                        "suggestion_count": len(matched_flag_ids),
+                    })
+
+    return {
+        "flags": [f.model_dump() for f in flags],
+        "unassessed_ingredients": unassessed,
+        "open_suggestion_ingredients": open_suggestion_ings,
+    }
 
 
 @router.post("/recipes/{recipe_id}/flags/{flag_id}/deactivate")
@@ -1030,6 +1092,49 @@ async def get_flag_matrix(
                 ingredient_nones[ing_id] = set()
             ingredient_nones[ing_id].add(cat_id)
 
+    # Compute open suggestion flag IDs per ingredient
+    ingredient_open_suggestions: dict[int, set[int]] = {}  # ing_id -> set of flag_ids with open suggestions
+    if all_ingredient_ids:
+        # Load allergen keywords
+        kw_result = await db.execute(
+            select(AllergenKeyword)
+            .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+            .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+        )
+        all_keywords = kw_result.scalars().all()
+
+        if all_keywords:
+            # Batch-fetch dismissed flag IDs per ingredient
+            ingredient_dismissed: dict[int, set[int]] = {}
+            dismiss_result = await db.execute(
+                select(IngredientFlagDismissal.ingredient_id, IngredientFlagDismissal.food_flag_id)
+                .where(IngredientFlagDismissal.ingredient_id.in_(list(all_ingredient_ids)))
+            )
+            for ing_id, flag_id in dismiss_result.all():
+                if ing_id not in ingredient_dismissed:
+                    ingredient_dismissed[ing_id] = set()
+                ingredient_dismissed[ing_id].add(flag_id)
+
+            # Batch-fetch ingredient names and product_ingredients
+            ing_data_result = await db.execute(
+                select(Ingredient.id, Ingredient.name, Ingredient.product_ingredients)
+                .where(Ingredient.id.in_(list(all_ingredient_ids)))
+            )
+            for ing_id, ing_name, prod_ing in ing_data_result.all():
+                texts = [ing_name or ""]
+                if prod_ing:
+                    texts.append(prod_ing)
+                combined = " ".join(texts)
+                matches = match_allergen_keywords(combined, all_keywords)
+                if matches:
+                    matched_flag_ids = set(m["flag_id"] for m in matches)
+                    # Subtract active flags (from the ingredient's loaded flags)
+                    # We'll do this per-row below since we already have ing_flag_ids there
+                    # For now, subtract dismissed
+                    matched_flag_ids -= ingredient_dismissed.get(ing_id, set())
+                    if matched_flag_ids:
+                        ingredient_open_suggestions[ing_id] = matched_flag_ids
+
     # Build matrix rows for direct ingredients
     for ri in direct_ris:
         ing = ri.ingredient
@@ -1046,6 +1151,7 @@ async def get_flag_matrix(
         assessed_cats |= ingredient_nones.get(ing.id, set())
 
         none_cats = ingredient_nones.get(ing.id, set())
+        open_sugg = ingredient_open_suggestions.get(ing.id, set()) - ing_flag_ids
         flags_map = {}
         for flag_info in all_flags:
             fid = flag_info["id"]
@@ -1056,6 +1162,7 @@ async def get_flag_matrix(
                 has_flag=fid in ing_flag_ids,
                 is_unassessed=is_unassessed,
                 is_none=cat_id in none_cats,
+                has_open_suggestion=fid in open_sugg,
             ).model_dump()
 
         matrix_rows.append(MatrixIngredient(
@@ -1083,6 +1190,7 @@ async def get_flag_matrix(
             assessed_cats |= ingredient_nones.get(cing.id, set())
 
             none_cats = ingredient_nones.get(cing.id, set())
+            open_sugg = ingredient_open_suggestions.get(cing.id, set()) - ing_flag_ids
             flags_map = {}
             for flag_info in all_flags:
                 fid = flag_info["id"]
@@ -1092,6 +1200,7 @@ async def get_flag_matrix(
                     has_flag=fid in ing_flag_ids,
                     is_unassessed=is_unassessed,
                     is_none=cat_id in none_cats,
+                    has_open_suggestion=fid in open_sugg,
                 ).model_dump()
 
             matrix_rows.append(MatrixIngredient(
@@ -1253,11 +1362,14 @@ async def toggle_matrix_none(
 # ── Shared allergen keyword matching ─────────────────────────────────────────
 
 def match_allergen_keywords(text: str, keywords: list) -> list[dict]:
-    """Match text against allergen keywords. Returns suggested flags with matched keywords."""
+    """Match text against allergen keywords using word boundary matching.
+    Allows optional plural suffixes (s, es, 's) so 'almond' matches 'almonds' etc."""
     text_lower = text.lower()
     matches: dict[int, dict] = {}
     for kw in keywords:
-        if kw.keyword in text_lower:
+        # Word boundary + optional plural/possessive suffix to catch almonds, walnuts, etc.
+        pattern = r'\b' + re.escape(kw.keyword) + r"(?:'?e?s)?\b"
+        if re.search(pattern, text_lower):
             fid = kw.food_flag_id
             if fid not in matches:
                 flag = kw.food_flag
@@ -1278,12 +1390,12 @@ def match_allergen_keywords(text: str, keywords: list) -> list[dict]:
 async def suggest_allergens(
     name: str = Query("", description="Ingredient name to check"),
     text: str = Query("", description="Product ingredients text to check"),
+    line_item: str = Query("", description="Line item description to check"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Suggest allergen flags based on ingredient name and/or product ingredients text."""
-    combined = f"{name} {text}".strip()
-    if len(combined) < 2:
+    """Suggest allergen flags based on ingredient name, line item description, and/or product ingredients text."""
+    if not any(len(s.strip()) >= 2 for s in [name, text, line_item]):
         return []
 
     result = await db.execute(
@@ -1292,7 +1404,32 @@ async def suggest_allergens(
         .where(AllergenKeyword.kitchen_id == user.kitchen_id)
     )
     keywords = result.scalars().all()
-    return match_allergen_keywords(combined, keywords)
+
+    # Match each source separately and annotate keywords with their origin
+    sources = [
+        (name, "name"),
+        (line_item, "line item"),
+        (text, "ingredients"),
+    ]
+    merged: dict[int, dict] = {}
+    for input_text, source_label in sources:
+        if not input_text or len(input_text.strip()) < 2:
+            continue
+        matches = match_allergen_keywords(input_text, keywords)
+        for m in matches:
+            fid = m["flag_id"]
+            if fid not in merged:
+                merged[fid] = {
+                    "flag_id": m["flag_id"],
+                    "flag_name": m["flag_name"],
+                    "flag_code": m["flag_code"],
+                    "category_name": m["category_name"],
+                    "matched_keywords": [],
+                }
+            for kw in m["matched_keywords"]:
+                merged[fid]["matched_keywords"].append(f"{kw} ({source_label})")
+
+    return list(merged.values())
 
 
 # ── Allergen keyword CRUD (Settings) ────────────────────────────────────────
@@ -1593,12 +1730,12 @@ async def brakes_lookup(
     if cached and not force:
         age = now - cached.fetched_at
         if cached.not_found and age < not_found_ttl:
-            return {"found": False, "product_code": clean_code, "suggested_flags": []}
+            return {"found": False, "product_code": clean_code, "suggested_flags": [], "none_category_ids": []}
         if not cached.not_found and age < cache_ttl:
             # Serve from cache — build suggestions
             contains = json.loads(cached.contains_allergens) if cached.contains_allergens else []
             dietary = json.loads(cached.dietary_info) if cached.dietary_info else []
-            suggestions = await _build_brakes_suggestions(
+            suggestions, none_cat_ids = await _build_brakes_suggestions(
                 db, user.kitchen_id, contains, cached.ingredients_text or "", dietary
             )
             return {
@@ -1609,6 +1746,7 @@ async def brakes_lookup(
                 "contains_allergens": contains,
                 "suitable_for": dietary,
                 "suggested_flags": suggestions,
+                "none_category_ids": none_cat_ids,
             }
 
     # Cache miss or stale — fetch from website
@@ -1626,7 +1764,7 @@ async def brakes_lookup(
                 fetched_at=now,
             ))
         await db.commit()
-        return {"found": False, "product_code": clean_code, "suggested_flags": []}
+        return {"found": False, "product_code": clean_code, "suggested_flags": [], "none_category_ids": []}
 
     # Store in cache
     contains_json = json.dumps(product.contains_allergens)
@@ -1651,7 +1789,7 @@ async def brakes_lookup(
     await db.commit()
 
     # Build suggestions
-    suggestions = await _build_brakes_suggestions(
+    suggestions, none_cat_ids = await _build_brakes_suggestions(
         db, user.kitchen_id, product.contains_allergens, product.ingredients_text, product.suitable_for
     )
 
@@ -1663,6 +1801,7 @@ async def brakes_lookup(
         "contains_allergens": product.contains_allergens,
         "suitable_for": product.suitable_for,
         "suggested_flags": suggestions,
+        "none_category_ids": none_cat_ids,
     }
 
 
@@ -1747,4 +1886,16 @@ async def _build_brakes_suggestions(
                 # Already matched via "contains" — append keyword info
                 suggestions[fid]["matched_keywords"] = km.get("matched_keywords", [])
 
-    return list(suggestions.values())
+    # 3. Determine none_category_ids: when Brakes says "Contains: None of the 14 Food Allergens"
+    # (empty contains_allergens but non-empty ingredients_text = product found with no allergens)
+    none_category_ids = []
+    if not contains_allergens and ingredients_text:
+        cat_result = await db.execute(
+            select(FoodFlagCategory.id).where(
+                FoodFlagCategory.kitchen_id == kitchen_id,
+                FoodFlagCategory.propagation_type == "contains",
+            )
+        )
+        none_category_ids = [r for r in cat_result.scalars().all()]
+
+    return list(suggestions.values()), none_category_ids

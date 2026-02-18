@@ -21,6 +21,7 @@ from .recipe import (
     Recipe, MenuSection, RecipeIngredient, RecipeSubRecipe,
     RecipeStep, RecipeImage, RecipeChangeLog, RecipeCostSnapshot
 )
+from .menu import Menu, MenuDivision, MenuItem
 from .event_order import EventOrder, EventOrderItem
 
 __all__ = [
@@ -36,5 +37,6 @@ __all__ = [
     "FoodFlagCategory", "FoodFlag", "LineItemFlag", "RecipeFlag", "RecipeFlagOverride",
     "Recipe", "MenuSection", "RecipeIngredient", "RecipeSubRecipe",
     "RecipeStep", "RecipeImage", "RecipeChangeLog", "RecipeCostSnapshot",
+    "Menu", "MenuDivision", "MenuItem",
     "EventOrder", "EventOrderItem",
 ]

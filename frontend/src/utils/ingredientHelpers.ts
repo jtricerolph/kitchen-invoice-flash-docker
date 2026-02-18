@@ -40,6 +40,7 @@ export interface EditingIngredient {
   manual_price: number | null
   notes: string | null
   is_prepackaged: boolean
+  is_free: boolean
   product_ingredients: string | null
   has_label_image: boolean
 }
