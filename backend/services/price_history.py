@@ -542,19 +542,16 @@ class PriceHistoryService:
         Returns:
             (list of consolidated items, total count)
         """
-        # Default date range: 30 days
-        if date_to is None:
-            date_to = date.today()
-        if date_from is None:
-            date_from = date_to - timedelta(days=30)
-
-        # Build base conditions
+        # Build base conditions — search all history unless dates explicitly provided
         conditions = [
             Invoice.kitchen_id == self.kitchen_id,
             LineItem.invoice_id == Invoice.id,
-            Invoice.invoice_date >= date_from,
-            Invoice.invoice_date <= date_to,
         ]
+
+        if date_from is not None:
+            conditions.append(Invoice.invoice_date >= date_from)
+        if date_to is not None:
+            conditions.append(Invoice.invoice_date <= date_to)
 
         if supplier_id:
             conditions.append(Invoice.supplier_id == supplier_id)
