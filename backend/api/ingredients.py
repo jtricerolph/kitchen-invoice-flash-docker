@@ -990,26 +990,59 @@ async def create_source(
         inv_result = await db.execute(select(Invoice.invoice_date).where(Invoice.id == data.invoice_id))
         invoice_date = inv_result.scalar_one_or_none()
 
-    source = IngredientSource(
-        kitchen_id=user.kitchen_id,
-        ingredient_id=ingredient_id,
-        supplier_id=data.supplier_id,
-        product_code=data.product_code,
-        description_pattern=data.description_pattern,
-        pack_quantity=data.pack_quantity or 1,
-        unit_size=Decimal(str(data.unit_size)) if data.unit_size else None,
-        unit_size_type=data.unit_size_type,
-        latest_unit_price=Decimal(str(data.latest_unit_price)) if data.latest_unit_price else None,
-        latest_invoice_id=data.invoice_id,
-        latest_invoice_date=invoice_date,
-        price_per_std_unit=price_per_std,
-    )
-    db.add(source)
-    try:
+    # Check for existing source (upsert: update pack data if already mapped)
+    existing_conditions = [
+        IngredientSource.kitchen_id == user.kitchen_id,
+        IngredientSource.ingredient_id == ingredient_id,
+        IngredientSource.supplier_id == data.supplier_id,
+    ]
+    if data.product_code:
+        existing_conditions.append(IngredientSource.product_code == data.product_code)
+    else:
+        existing_conditions.append(IngredientSource.product_code.is_(None))
+        if data.description_pattern:
+            existing_conditions.append(func.lower(IngredientSource.description_pattern) == data.description_pattern.lower())
+
+    existing_src = await db.execute(select(IngredientSource).where(and_(*existing_conditions)))
+    source = existing_src.scalar_one_or_none()
+
+    if source:
+        # Update existing source with new pack/price data
+        source.pack_quantity = data.pack_quantity or 1
+        if data.unit_size is not None:
+            source.unit_size = Decimal(str(data.unit_size))
+        if data.unit_size_type:
+            source.unit_size_type = data.unit_size_type
+        if data.latest_unit_price is not None:
+            source.latest_unit_price = Decimal(str(data.latest_unit_price))
+        if data.invoice_id:
+            source.latest_invoice_id = data.invoice_id
+        if invoice_date:
+            source.latest_invoice_date = invoice_date
+        if price_per_std is not None:
+            source.price_per_std_unit = price_per_std
         await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(409, "This supplier product is already mapped to this ingredient")
+    else:
+        source = IngredientSource(
+            kitchen_id=user.kitchen_id,
+            ingredient_id=ingredient_id,
+            supplier_id=data.supplier_id,
+            product_code=data.product_code,
+            description_pattern=data.description_pattern,
+            pack_quantity=data.pack_quantity or 1,
+            unit_size=Decimal(str(data.unit_size)) if data.unit_size else None,
+            unit_size_type=data.unit_size_type,
+            latest_unit_price=Decimal(str(data.latest_unit_price)) if data.latest_unit_price else None,
+            latest_invoice_id=data.invoice_id,
+            latest_invoice_date=invoice_date,
+            price_per_std_unit=price_per_std,
+        )
+        db.add(source)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(409, "This supplier product is already mapped to this ingredient")
     await db.refresh(source)
 
     # Bulk-set ingredient_id on matching line items if requested
@@ -1523,6 +1556,7 @@ class DismissalResponse(BaseModel):
     id: int
     ingredient_id: int
     food_flag_id: int
+    flag_name: Optional[str] = None
     dismissed_by_name: str
     reason: Optional[str] = None
     matched_keyword: Optional[str] = None
@@ -1553,6 +1587,7 @@ async def get_dismissals(
 
     result = await db.execute(
         select(IngredientFlagDismissal)
+        .options(selectinload(IngredientFlagDismissal.food_flag))
         .where(IngredientFlagDismissal.ingredient_id == ingredient_id)
         .order_by(IngredientFlagDismissal.created_at.desc())
     )
@@ -1562,6 +1597,7 @@ async def get_dismissals(
             id=d.id,
             ingredient_id=d.ingredient_id,
             food_flag_id=d.food_flag_id,
+            flag_name=d.food_flag.name if d.food_flag else None,
             dismissed_by_name=d.dismissed_by_name,
             reason=d.reason,
             matched_keyword=d.matched_keyword,

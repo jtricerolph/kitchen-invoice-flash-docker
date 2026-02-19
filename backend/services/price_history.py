@@ -684,54 +684,56 @@ class PriceHistoryService:
             most_recent_unit_size_type = recent_row[9] if recent_row else None
 
             # Get earliest price in period for change detection
-            # Match by first line of description only
-            earliest_conditions = [
-                Invoice.kitchen_id == self.kitchen_id,
-                LineItem.invoice_id == Invoice.id,
-                Invoice.supplier_id == supplier_id_val,
-                Invoice.invoice_date >= date_from,
-                Invoice.invoice_date <= date_to,
-                LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
-            ]
-            if description:
-                earliest_conditions.append(
-                    func.split_part(LineItem.description, '\n', 1) == description
-                )
-
-            earliest_query = (
-                select(LineItem.unit_price)
-                .where(and_(*earliest_conditions))
-                .order_by(Invoice.invoice_date)
-                .limit(1)
-            )
-            earliest_result = await self.db.execute(earliest_query)
-            earliest_row = earliest_result.fetchone()
-            earliest_price = earliest_row[0] if earliest_row else None
-
-            # Calculate price change
+            # Only when date range is provided (skip for undated searches like IngredientModal)
             price_change_percent = None
             price_change_status = "no_history"
+            earliest_price = None
 
-            if most_recent_price is not None and earliest_price is not None:
-                if earliest_price != 0:
-                    price_change_percent = float(
-                        (most_recent_price - earliest_price) / earliest_price * 100
+            if date_from is not None and date_to is not None:
+                # Match by first line of description only
+                earliest_conditions = [
+                    Invoice.kitchen_id == self.kitchen_id,
+                    LineItem.invoice_id == Invoice.id,
+                    Invoice.supplier_id == supplier_id_val,
+                    Invoice.invoice_date >= date_from,
+                    Invoice.invoice_date <= date_to,
+                    LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
+                ]
+                if description:
+                    earliest_conditions.append(
+                        func.split_part(LineItem.description, '\n', 1) == description
                     )
 
-                # Get price status
-                # Extend lookback to ensure we have history beyond the search period
-                if most_recent_price:
-                    # Calculate extended lookback: search period + configured lookback days
-                    search_period_days = (date_to - date_from).days
-                    extended_lookback = search_period_days + 30  # Add configured lookback on top
+                earliest_query = (
+                    select(LineItem.unit_price)
+                    .where(and_(*earliest_conditions))
+                    .order_by(Invoice.invoice_date)
+                    .limit(1)
+                )
+                earliest_result = await self.db.execute(earliest_query)
+                earliest_row = earliest_result.fetchone()
+                earliest_price = earliest_row[0] if earliest_row else None
 
-                    status = await self.get_price_status(
-                        supplier_id_val, product_code, description, most_recent_price,
-                        unit=unit,
-                        lookback_days=extended_lookback,
-                        current_invoice_id=most_recent_invoice_id  # Exclude most recent invoice from comparison
-                    )
-                    price_change_status = status.status
+                if most_recent_price is not None and earliest_price is not None:
+                    if earliest_price != 0:
+                        price_change_percent = float(
+                            (most_recent_price - earliest_price) / earliest_price * 100
+                        )
+
+                    # Get price status
+                    # Extend lookback to ensure we have history beyond the search period
+                    if most_recent_price:
+                        # Calculate extended lookback: search period + configured lookback days
+                        search_period_days = (date_to - date_from).days
+                        extended_lookback = search_period_days + 30  # Add configured lookback on top
+
+                        status = await self.get_price_status(
+                            supplier_id_val, product_code, description, most_recent_price,
+                            unit=unit,
+                            lookback_days=extended_lookback,
+                            current_invoice_id=most_recent_invoice_id  # Exclude most recent invoice from comparison
+                        )
+                        price_change_status = status.status
 
             # Check if has definition
             from models.product_definition import ProductDefinition

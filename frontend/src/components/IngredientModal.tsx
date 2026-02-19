@@ -185,6 +185,29 @@ export default function IngredientModal({
     enabled: !!token && open,
   })
 
+  // Fetch existing linked sources in edit mode so they always appear
+  const { data: existingSources } = useQuery<Array<{
+    id: number
+    supplier_id: number
+    supplier_name: string
+    product_code: string | null
+    description_pattern: string | null
+    pack_quantity: number | null
+    unit_size: number | null
+    unit_size_type: string | null
+    latest_unit_price: number | null
+  }>>({
+    queryKey: ['ingredient-sources', editingIngredient?.id],
+    queryFn: async () => {
+      const res = await fetch(`/api/ingredients/${editingIngredient!.id}/sources`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && open && !!editingIngredient,
+  })
+
   const debouncedLiSearch = useDebounce(liSearch, 300)
   const { data: liResults, isLoading: liSearching } = useQuery<{ items: LineItemResult[]; total_count: number }>({
     queryKey: ['ing-modal-li-search', debouncedLiSearch, liSupplierId],
@@ -192,7 +215,7 @@ export default function IngredientModal({
       const params = new URLSearchParams()
       if (debouncedLiSearch) params.set('q', debouncedLiSearch)
       if (liSupplierId) params.set('supplier_id', liSupplierId)
-      params.set('limit', '20')
+      params.set('limit', '100')
       const res = await fetch(`/api/search/line-items?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -882,6 +905,29 @@ export default function IngredientModal({
                 {liSuppliers?.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
+
+            {/* Existing linked sources (edit mode) */}
+            {editingIngredient && existingSources && existingSources.length > 0 && !selectedLi && (
+              <div style={{ border: '1px solid #c8e6c9', borderRadius: '6px', marginBottom: '0.5rem', background: '#f1f8e9' }}>
+                <div style={{ padding: '0.3rem 0.5rem', fontSize: '0.7rem', fontWeight: 600, color: '#558b2f', borderBottom: '1px solid #c8e6c9' }}>Linked Sources</div>
+                {existingSources.map(src => (
+                  <div
+                    key={src.id}
+                    style={{ padding: '0.3rem 0.5rem', fontSize: '0.78rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e8f5e9' }}
+                  >
+                    <span>
+                      <span style={{ color: '#666', fontSize: '0.73rem', marginRight: '0.3rem' }}>{src.supplier_name}</span>
+                      {src.product_code && <span style={{ color: '#888', fontSize: '0.68rem', marginRight: '0.25rem' }}>{src.product_code}</span>}
+                      {src.description_pattern || '-'}
+                    </span>
+                    <span style={{ fontSize: '0.73rem', color: '#666' }}>
+                      {src.latest_unit_price != null ? `\u00a3${Number(src.latest_unit_price).toFixed(2)}` : ''}
+                      {src.pack_quantity ? ` (${src.pack_quantity}x${src.unit_size || '?'}${src.unit_size_type || ''})` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Results table */}
             {debouncedLiSearch.length >= 2 && (
