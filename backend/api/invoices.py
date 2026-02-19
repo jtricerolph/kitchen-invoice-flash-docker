@@ -3625,3 +3625,216 @@ async def resend_to_azure(
         "message": "Invoice re-sent to Azure for processing",
         "status": "pending"
     }
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+@router.post("/{invoice_id}/ai-assist")
+async def ai_assist_invoice(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Run AI analysis on an invoice to suggest corrections and enhancements.
+    Returns suggestions for: supplier matching, line item corrections,
+    description recommendations, subtotal detection, total mismatch analysis.
+    """
+    from services.llm_service import assist_invoice_ocr, reconcile_line_items
+
+    # Load invoice
+    result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id
+        )
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Load line items
+    li_result = await db.execute(
+        select(LineItem).where(LineItem.invoice_id == invoice_id).order_by(LineItem.line_number)
+    )
+    line_items_db = li_result.scalars().all()
+
+    # Build data for LLM
+    invoice_data = {
+        "invoice_number": invoice.invoice_number,
+        "invoice_date": str(invoice.invoice_date) if invoice.invoice_date else None,
+        "total": str(invoice.total) if invoice.total else None,
+        "net_total": str(invoice.net_total) if invoice.net_total else None,
+        "vendor_name": invoice.vendor_name,
+        "raw_text": invoice.ocr_raw_text[:3000] if invoice.ocr_raw_text else "",
+    }
+
+    items_for_llm = [
+        {
+            "idx": i,
+            "product_code": li.product_code,
+            "description": li.description,
+            "description_alt": li.description_alt,
+            "quantity": float(li.quantity) if li.quantity else None,
+            "unit_price": float(li.unit_price) if li.unit_price else None,
+            "amount": float(li.amount) if li.amount else None,
+            "raw_content": li.raw_content,
+            "ocr_warnings": li.ocr_warnings,
+        }
+        for i, li in enumerate(line_items_db)
+    ]
+
+    # Load suppliers for matching
+    from models.supplier import Supplier
+    sup_result = await db.execute(
+        select(Supplier.id, Supplier.name).where(
+            Supplier.kitchen_id == current_user.kitchen_id,
+        )
+    )
+    supplier_list = [{"id": s.id, "name": s.name} for s in sup_result.all()]
+
+    # Run OCR assist
+    ocr_result = await assist_invoice_ocr(
+        db=db,
+        kitchen_id=current_user.kitchen_id,
+        invoice_data=invoice_data,
+        line_items=items_for_llm,
+        supplier_list=supplier_list,
+    )
+
+    # Run line item reconciliation for unmatched items
+    reconciliation_result = {"status": "unavailable", "matches": None, "error": None}
+    if invoice.supplier_id:
+        unmatched = [
+            {"idx": i, "description": li.description, "product_code": li.product_code}
+            for i, li in enumerate(line_items_db)
+            if not li.ingredient_id and li.description
+        ]
+
+        if unmatched:
+            # Get supplier history: past line items mapped to ingredients (last 90 days)
+            from datetime import timedelta
+            cutoff = date.today() - timedelta(days=90)
+            history_result = await db.execute(
+                select(
+                    LineItem.description,
+                    LineItem.ingredient_id,
+                ).select_from(LineItem).join(
+                    Invoice, LineItem.invoice_id == Invoice.id
+                ).where(
+                    Invoice.kitchen_id == current_user.kitchen_id,
+                    Invoice.supplier_id == invoice.supplier_id,
+                    Invoice.invoice_date >= cutoff,
+                    LineItem.ingredient_id.isnot(None),
+                    LineItem.description.isnot(None),
+                ).distinct()
+            )
+            history_rows = history_result.all()
+
+            if history_rows:
+                # Resolve ingredient names
+                ingredient_ids = list({r.ingredient_id for r in history_rows})
+                from models.ingredient import Ingredient
+                ing_result = await db.execute(
+                    select(Ingredient.id, Ingredient.name).where(Ingredient.id.in_(ingredient_ids))
+                )
+                ing_names = {r.id: r.name for r in ing_result.all()}
+
+                supplier_history = [
+                    {
+                        "description": r.description,
+                        "ingredient_id": r.ingredient_id,
+                        "ingredient_name": ing_names.get(r.ingredient_id, "Unknown"),
+                    }
+                    for r in history_rows
+                    if r.ingredient_id in ing_names
+                ]
+
+                reconciliation_result = await reconcile_line_items(
+                    db=db,
+                    kitchen_id=current_user.kitchen_id,
+                    unmatched_items=unmatched,
+                    supplier_history=supplier_history,
+                )
+
+    return {
+        "llm_status": ocr_result["status"],
+        "suggestions": ocr_result.get("suggestions"),
+        "reconciliation_status": reconciliation_result["status"],
+        "reconciliation_matches": reconciliation_result.get("matches"),
+        "error": ocr_result.get("error") or reconciliation_result.get("error"),
+    }
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+@router.get("/{invoice_id}/line-items/{item_id}/ai-pack-size")
+async def ai_deduce_pack_size(
+    invoice_id: int,
+    item_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Deduce pack size for a line item using regex first, then LLM fallback.
+    Returns pack_quantity, unit_size, unit_size_type.
+    """
+    # Load line item
+    result = await db.execute(
+        select(LineItem).join(Invoice).where(
+            LineItem.id == item_id,
+            LineItem.invoice_id == invoice_id,
+            Invoice.kitchen_id == current_user.kitchen_id,
+        )
+    )
+    line_item = result.scalar_one_or_none()
+    if not line_item:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    # Tier 1: Regex parse (free, instant)
+    parsed = parse_pack_size(line_item.raw_content or line_item.description or "")
+    if parsed["pack_quantity"]:
+        return {
+            "source": "regex",
+            "pack_quantity": parsed["pack_quantity"],
+            "unit_size": parsed["unit_size"],
+            "unit_size_type": parsed["unit_size_type"],
+            "reason": "Parsed from product description",
+        }
+
+    # Tier 2: Infer from invoice unit field
+    unit_str = (line_item.unit or "").strip().lower()
+    std_unit = UNIT_FIELD_MAP.get(unit_str)
+    if std_unit and line_item.quantity:
+        return {
+            "source": "unit_field",
+            "pack_quantity": 1,
+            "unit_size": float(line_item.quantity),
+            "unit_size_type": std_unit,
+            "reason": f"Inferred from invoice unit field ({line_item.unit})",
+        }
+
+    # Tier 3: LLM deduction (cached, uses product knowledge)
+    from services.llm_service import deduce_pack_size
+    llm_result = await deduce_pack_size(
+        db=db,
+        kitchen_id=current_user.kitchen_id,
+        description=line_item.description or "",
+        raw_content=line_item.raw_content,
+        unit=line_item.unit,
+    )
+
+    if llm_result["status"] in ("success", "cached") and llm_result["pack_quantity"]:
+        return {
+            "source": "ai",
+            "pack_quantity": llm_result["pack_quantity"],
+            "unit_size": llm_result["unit_size"],
+            "unit_size_type": llm_result["unit_size_type"],
+            "reason": llm_result.get("reason", "AI deduction"),
+        }
+
+    return {
+        "source": None,
+        "pack_quantity": None,
+        "unit_size": None,
+        "unit_size_type": None,
+        "reason": llm_result.get("error") or "Could not determine pack size",
+    }

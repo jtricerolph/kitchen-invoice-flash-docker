@@ -105,13 +105,42 @@ async def process_invoice_image(
                 result
             )
 
-        logger.info(f"Processed invoice: number={result.get('invoice_number')}, "
+        # LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+        # Feature E: LLM fallback when Azure returns null for header fields
+        invoice_number = result.get("invoice_number")
+        invoice_date = result.get("invoice_date")
+        total = result.get("total")
+        any_null = invoice_number is None or invoice_date is None or total is None
+
+        if any_null and result.get("raw_text"):
+            try:
+                from services.llm_service import extract_invoice_fields_llm
+                llm_result = await extract_invoice_fields_llm(
+                    db=db,
+                    kitchen_id=kitchen_id,
+                    raw_text=result["raw_text"],
+                )
+                if llm_result["status"] in ("success", "cached") and llm_result.get("fields"):
+                    fields = llm_result["fields"]
+                    if invoice_number is None and fields.get("invoice_number"):
+                        invoice_number = fields["invoice_number"]
+                        logger.info(f"LLM extracted invoice_number: {invoice_number}")
+                    if invoice_date is None and fields.get("invoice_date"):
+                        invoice_date = fields["invoice_date"]
+                        logger.info(f"LLM extracted invoice_date: {invoice_date}")
+                    if total is None and fields.get("total"):
+                        total = fields["total"]
+                        logger.info(f"LLM extracted total: {total}")
+            except Exception as llm_err:
+                logger.warning(f"LLM field extraction fallback failed (non-fatal): {llm_err}")
+
+        logger.info(f"Processed invoice: number={invoice_number}, "
                     f"type={document_type}, supplier_id={supplier_id}, match_type={supplier_match_type}")
 
         return {
-            "invoice_number": result.get("invoice_number"),
-            "invoice_date": result.get("invoice_date"),
-            "total": result.get("total"),
+            "invoice_number": invoice_number,
+            "invoice_date": invoice_date,
+            "total": total,
             "net_total": result.get("net_total"),
             "supplier_id": supplier_id,
             "supplier_match_type": supplier_match_type,

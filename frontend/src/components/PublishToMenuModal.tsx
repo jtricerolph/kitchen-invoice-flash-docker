@@ -53,6 +53,35 @@ export default function PublishToMenuModal({
   const [price, setPrice] = useState(recipePrice ? String(recipePrice) : '')
   const [confirmedBy, setConfirmedBy] = useState(user?.name || '')
   const [dishSearch, setDishSearch] = useState('')
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  const [aiDescLoading, setAiDescLoading] = useState(false)
+  const { data: llmSettings } = useQuery<{ llm_enabled: boolean; anthropic_api_key_set: boolean }>({
+    queryKey: ['settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/', { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) return { llm_enabled: false, anthropic_api_key_set: false }
+      return res.json()
+    },
+    staleTime: 60000,
+  })
+
+  const handleGenerateDescription = async () => {
+    const recipeIdToUse = selectedRecipeId || propRecipeId
+    if (!recipeIdToUse) return
+    setAiDescLoading(true)
+    try {
+      const res = await fetch('/api/menus/generate-description', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipe_id: recipeIdToUse, recipe_name: displayName || recipeName || '', ingredients: [], allergen_flags: [] }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.description) setDescription(data.description)
+      }
+    } catch { /* ignore */ }
+    setAiDescLoading(false)
+  }
 
   // Fetch dishes list (when opened from MenuEditor, need to pick a dish)
   const { data: dishes } = useQuery<Array<{ id: number; name: string; description: string | null; gross_sell_price: number | null }>>({
@@ -273,7 +302,19 @@ export default function PublishToMenuModal({
                 <label style={styles.label}>Display Name *</label>
                 <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={styles.input} />
 
-                <label style={styles.label}>Description</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label style={styles.label}>Description</label>
+                  {/* LLM FEATURE — see LLM-MANIFEST.md for removal instructions */}
+                  {llmSettings?.llm_enabled && llmSettings?.anthropic_api_key_set && (
+                    <button
+                      onClick={handleGenerateDescription}
+                      disabled={aiDescLoading}
+                      style={{ padding: '0.2rem 0.6rem', background: '#7952b3', color: 'white', border: 'none', borderRadius: '4px', cursor: aiDescLoading ? 'wait' : 'pointer', fontSize: '0.75rem', opacity: aiDescLoading ? 0.7 : 1 }}
+                    >
+                      {aiDescLoading ? 'Generating...' : '\u2728 Generate'}
+                    </button>
+                  )}
+                </div>
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}

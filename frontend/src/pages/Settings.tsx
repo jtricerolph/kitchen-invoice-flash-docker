@@ -34,6 +34,13 @@ interface SettingsData {
   ocr_use_weight_as_quantity: boolean
   // Cost distribution settings
   cost_distribution_max_days: number
+  // LLM settings — LLM FEATURE
+  llm_enabled: boolean
+  anthropic_api_key_set: boolean
+  llm_model: string | null
+  llm_confidence_threshold: number | null
+  llm_monthly_token_limit: number
+  llm_features_enabled: Record<string, boolean> | null
 }
 
 interface NewbookSettingsData {
@@ -104,7 +111,7 @@ interface UserData {
   created_at: string
 }
 
-type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'food_flags' | 'allergen_keywords' | 'ingredient_categories' | 'recipe_sections' | 'dish_courses' | 'api_access' | 'data'
+type SettingsSection = 'account' | 'users' | 'access' | 'display' | 'azure' | 'email' | 'inbox' | 'dext' | 'newbook' | 'resos' | 'sambapos' | 'kds' | 'budget' | 'kitchen' | 'suppliers' | 'search' | 'nextcloud' | 'backup' | 'food_flags' | 'allergen_keywords' | 'ingredient_categories' | 'recipe_sections' | 'dish_courses' | 'api_access' | 'llm' | 'data'
 
 interface SambaPOSSettingsData {
   sambapos_db_host: string | null
@@ -505,6 +512,20 @@ export default function Settings() {
   const [apiKeyRevealed, setApiKeyRevealed] = useState(false)
   const [apiAccessMessage, setApiAccessMessage] = useState<string | null>(null)
 
+  // LLM / AI Features state — LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  const [llmEnabled, setLlmEnabled] = useState(false)
+  const [llmApiKey, setLlmApiKey] = useState('')
+  const [llmModel, setLlmModel] = useState('claude-haiku-4-5-20251001')
+  const [llmConfidenceThreshold, setLlmConfidenceThreshold] = useState(0.80)
+  const [llmMonthlyTokenLimit, setLlmMonthlyTokenLimit] = useState(500000)
+  const [llmFeaturesEnabled, setLlmFeaturesEnabled] = useState<Record<string, boolean>>({
+    label_parsing: true, invoice_assist: true, ingredient_match: true,
+    recipe_scanning: true, line_item_reconciliation: true, menu_description: true,
+    dispute_email: true, duplicate_detection: true, supplier_alias: true, yield_estimation: true,
+  })
+  const [llmSaveMessage, setLlmSaveMessage] = useState<string | null>(null)
+  const [llmTestStatus, setLlmTestStatus] = useState<string | null>(null)
+
   // Fetch settings
   const { data: settings, isLoading } = useQuery<SettingsData>({
     queryKey: ['settings'],
@@ -885,6 +906,12 @@ export default function Settings() {
       setOcrUseWeightAsQuantity(settings.ocr_use_weight_as_quantity || false)
       // Cost distribution
       setCostDistMaxDays(settings.cost_distribution_max_days ?? 90)
+      // LLM settings — LLM FEATURE
+      setLlmEnabled(settings.llm_enabled ?? false)
+      setLlmModel(settings.llm_model || 'claude-haiku-4-5-20251001')
+      setLlmConfidenceThreshold(settings.llm_confidence_threshold ?? 0.80)
+      setLlmMonthlyTokenLimit(settings.llm_monthly_token_limit ?? 500000)
+      if (settings.llm_features_enabled) setLlmFeaturesEnabled(settings.llm_features_enabled)
     }
   }, [settings])
 
@@ -1437,6 +1464,97 @@ export default function Settings() {
     },
     onError: () => setApiAccessMessage('Error regenerating API key'),
   })
+
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  // LLM usage stats query
+  const { data: llmUsageStats, refetch: refetchLlmUsage } = useQuery<{
+    total_calls: number; successful_calls: number; failed_calls: number
+    total_input_tokens: number; total_output_tokens: number; total_tokens: number
+    estimated_cost_usd: number; cache_entries_this_month: number
+  }>({
+    queryKey: ['llm-usage'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/llm-usage', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return { total_calls: 0, successful_calls: 0, failed_calls: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0, estimated_cost_usd: 0, cache_entries_this_month: 0 }
+      return res.json()
+    },
+    enabled: !!settings?.llm_enabled,
+  })
+
+  // LLM FEATURE — fetch available models from Anthropic API
+  const { data: llmModelsData, isLoading: llmModelsLoading, refetch: refetchLlmModels, isFetching: llmModelsFetching } = useQuery<{
+    models: { id: string; display_name: string; created_at: string | null }[]
+    default: string
+    current: string
+    error?: string
+  }>({
+    queryKey: ['llm-models'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/llm-models', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return { models: [], default: 'claude-haiku-4-5-20251001', current: 'claude-haiku-4-5-20251001' }
+      return res.json()
+    },
+    enabled: !!settings?.llm_enabled && !!settings?.anthropic_api_key_set,
+    staleTime: 300000, // cache for 5 minutes
+  })
+
+  const saveLlmSettingsMutation = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const res = await fetch('/api/settings/', {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) throw new Error('Failed to save LLM settings')
+      return res.json()
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      setLlmApiKey('')
+      setLlmSaveMessage('AI settings saved successfully')
+      setTimeout(() => setLlmSaveMessage(null), 3000)
+    },
+    onError: (error) => setLlmSaveMessage(`Error: ${error.message}`),
+  })
+
+  const llmTestMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/settings/test-llm', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Connection test failed')
+      }
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setLlmTestStatus(data.message || 'Connection successful')
+      setTimeout(() => setLlmTestStatus(null), 5000)
+    },
+    onError: (error) => {
+      setLlmTestStatus(`Error: ${error.message}`)
+      setTimeout(() => setLlmTestStatus(null), 8000)
+    },
+  })
+
+  const handleSaveLlmSettings = () => {
+    const data: Record<string, unknown> = {
+      llm_enabled: llmEnabled,
+      llm_model: llmModel,
+      llm_confidence_threshold: llmConfidenceThreshold,
+      llm_monthly_token_limit: llmMonthlyTokenLimit,
+      llm_features_enabled: llmFeaturesEnabled,
+    }
+    if (llmApiKey) data.anthropic_api_key = llmApiKey
+    saveLlmSettingsMutation.mutate(data)
+  }
+  // END LLM FEATURE
 
   // Mutations
   const updateMutation = useMutation({
@@ -2586,6 +2704,7 @@ export default function Settings() {
     { id: 'recipe_sections', label: 'Recipe Sections', restrictPath: '/settings-recipe-sections' },
     { id: 'dish_courses', label: 'Dish Courses', restrictPath: '/settings-dish-courses' },
     { id: 'api_access', label: 'API Access', restrictPath: '/settings-api-access' },
+    { id: 'llm', label: 'AI Features', adminOnly: true, restrictPath: '/settings-llm' },  // LLM FEATURE
     { id: 'data', label: 'Data Management', restrictPath: '/settings-data' },
   ]
 
@@ -7242,6 +7361,247 @@ export default function Settings() {
                 Include the header <code style={{ background: '#f0f0f5', padding: '0.1rem 0.3rem', borderRadius: '3px' }}>X-API-Key: your-key-here</code> with every request.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* LLM FEATURE — AI Features Section — see LLM-MANIFEST.md for removal instructions */}
+        {activeSection === 'llm' && (
+          <div style={styles.section}>
+            <h2 style={styles.sectionTitle}>AI Features (Claude)</h2>
+            <p style={styles.hint}>
+              Configure Anthropic Claude integration for allergen detection, ingredient matching, and more.
+            </p>
+
+            {llmSaveMessage && (
+              <div style={{ ...styles.statusMessage, background: llmSaveMessage.startsWith('Error') ? '#fee' : '#efe', marginBottom: '1rem' }}>
+                {llmSaveMessage}
+              </div>
+            )}
+
+            {/* Master Enable/Disable */}
+            <div style={styles.settingsBlock}>
+              <h3 style={styles.blockTitle}>Master Switch</h3>
+              <label style={{ ...styles.checkboxLabel, marginTop: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={llmEnabled}
+                  onChange={(e) => setLlmEnabled(e.target.checked)}
+                />
+                <span>Enable AI Features</span>
+              </label>
+              <p style={{ ...styles.hint, marginTop: '0.5rem', marginBottom: 0 }}>
+                {llmEnabled
+                  ? 'AI features are active. Allergen analysis, smart matching, and other AI tools will appear throughout the app.'
+                  : 'All AI features are hidden. No API calls are made, and no AI elements are shown anywhere in the app.'}
+              </p>
+            </div>
+
+            {/* Expanded settings - only shown when enabled */}
+            {llmEnabled && (
+              <>
+                {/* API Configuration */}
+                <div style={styles.settingsBlock}>
+                  <h3 style={styles.blockTitle}>API Configuration</h3>
+                  <div style={styles.form}>
+                    <label style={styles.label}>
+                      Anthropic API Key
+                      <input
+                        type="password"
+                        value={llmApiKey}
+                        onChange={(e) => setLlmApiKey(e.target.value)}
+                        style={styles.input}
+                        placeholder={settings?.anthropic_api_key_set ? '••••••••••••••••' : 'Enter your Anthropic API key'}
+                      />
+                      {settings?.anthropic_api_key_set && !llmApiKey && <span style={styles.keyStatus}>Key is configured</span>}
+                      <span style={styles.fieldHint}>Get your key from console.anthropic.com. Stored securely in your database.</span>
+                    </label>
+                    <div style={styles.label}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>Model</span>
+                        <button
+                          type="button"
+                          onClick={() => refetchLlmModels()}
+                          disabled={llmModelsFetching}
+                          style={{ background: 'none', border: '1px solid #ccc', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.75rem', cursor: 'pointer', color: '#666' }}
+                        >
+                          {llmModelsFetching ? 'Fetching...' : 'Refresh Models'}
+                        </button>
+                      </div>
+                      {llmModelsData && llmModelsData.models.length > 0 ? (
+                        <select
+                          value={llmModel}
+                          onChange={(e) => setLlmModel(e.target.value)}
+                          style={styles.input}
+                        >
+                          {llmModelsData.models.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.display_name}{m.id === llmModelsData.default ? ' (default)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={llmModel}
+                          onChange={(e) => setLlmModel(e.target.value)}
+                          style={styles.input}
+                          placeholder={llmModelsLoading ? 'Loading models...' : 'e.g. claude-haiku-4-5-20251001'}
+                        />
+                      )}
+                      <span style={styles.fieldHint}>
+                        {llmModelsData?.models.length ? `${llmModelsData.models.length} models available.` : 'Save your API key first to see available models.'}{' '}
+                        Haiku is recommended — Sonnet costs ~10x more.
+                      </span>
+                    </div>
+                    <label style={styles.label}>
+                      Confidence Threshold
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <input
+                          type="range"
+                          min="0.50"
+                          max="0.99"
+                          step="0.01"
+                          value={llmConfidenceThreshold}
+                          onChange={(e) => setLlmConfidenceThreshold(parseFloat(e.target.value))}
+                          style={{ flex: 1 }}
+                        />
+                        <span style={{ fontFamily: 'monospace', minWidth: '3.5rem' }}>{(llmConfidenceThreshold * 100).toFixed(0)}%</span>
+                      </div>
+                      <span style={styles.fieldHint}>Minimum confidence for AI suggestions to be shown. Lower = more suggestions, higher = more precise.</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Cost Controls */}
+                <div style={styles.settingsBlock}>
+                  <h3 style={styles.blockTitle}>Cost Controls</h3>
+                  <div style={styles.form}>
+                    <label style={styles.label}>
+                      Monthly Token Budget
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <input
+                          type="number"
+                          value={llmMonthlyTokenLimit}
+                          onChange={(e) => setLlmMonthlyTokenLimit(parseInt(e.target.value) || 0)}
+                          style={{ ...styles.input, flex: 1 }}
+                          min="0"
+                          step="50000"
+                        />
+                        <span style={{ fontFamily: 'monospace', minWidth: '5rem', color: '#666', fontSize: '0.85rem' }}>
+                          ~${((llmMonthlyTokenLimit / 1000000) * 1.25).toFixed(2)}/mo
+                        </span>
+                      </div>
+                      <span style={styles.fieldHint}>Set to 0 to pause all AI features without removing the API key. 500,000 tokens ~= $0.63/month on Haiku.</span>
+                    </label>
+                  </div>
+
+                  {/* Usage stats */}
+                  {llmUsageStats && (llmUsageStats.total_calls > 0 || settings?.anthropic_api_key_set) && (
+                    <div style={{ marginTop: '1rem', background: 'white', padding: '1rem', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                        <strong style={{ fontSize: '0.9rem' }}>This Month&apos;s Usage</strong>
+                        <button onClick={() => refetchLlmUsage()} style={{ ...styles.smallBtn, width: 'auto', padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}>Refresh</button>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+                        <div>
+                          <div style={{ fontSize: '0.75rem', color: '#888' }}>API Calls</div>
+                          <div style={{ fontWeight: '600' }}>{llmUsageStats.successful_calls} / {llmUsageStats.total_calls}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.75rem', color: '#888' }}>Tokens Used</div>
+                          <div style={{ fontWeight: '600' }}>{llmUsageStats.total_tokens.toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.75rem', color: '#888' }}>Est. Cost</div>
+                          <div style={{ fontWeight: '600' }}>${llmUsageStats.estimated_cost_usd.toFixed(4)}</div>
+                        </div>
+                      </div>
+                      {/* Budget progress bar */}
+                      {llmMonthlyTokenLimit > 0 && (
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#888', marginBottom: '0.25rem' }}>
+                            <span>Budget</span>
+                            <span>{((llmUsageStats.total_tokens / llmMonthlyTokenLimit) * 100).toFixed(1)}%</span>
+                          </div>
+                          <div style={{ height: '6px', background: '#e9ecef', borderRadius: '3px', overflow: 'hidden' }}>
+                            <div style={{
+                              height: '100%',
+                              width: `${Math.min(100, (llmUsageStats.total_tokens / llmMonthlyTokenLimit) * 100)}%`,
+                              background: (llmUsageStats.total_tokens / llmMonthlyTokenLimit) > 0.8 ? '#e94560' : '#28a745',
+                              borderRadius: '3px',
+                              transition: 'width 0.3s',
+                            }} />
+                          </div>
+                        </div>
+                      )}
+                      {llmUsageStats.cache_entries_this_month > 0 && (
+                        <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.5rem' }}>
+                          {llmUsageStats.cache_entries_this_month} cached results this month
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Per-Feature Toggles */}
+                <div style={styles.settingsBlock}>
+                  <h3 style={styles.blockTitle}>Feature Toggles</h3>
+                  <p style={{ ...styles.hint, marginBottom: '0.75rem' }}>Enable or disable individual AI features. Disabled features fall back to existing keyword/trigram matching.</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem' }}>
+                    {[
+                      { key: 'label_parsing', label: 'Label Allergen Parsing', desc: 'Auto-analyse product ingredient labels' },
+                      { key: 'recipe_scanning', label: 'Recipe Text Scanning', desc: 'Detect allergens in recipe text' },
+                      { key: 'invoice_assist', label: 'Invoice AI Assist', desc: 'Smart OCR correction suggestions' },
+                      { key: 'ingredient_match', label: 'Ingredient Matching', desc: 'AI-powered ingredient suggestions' },
+                      { key: 'line_item_reconciliation', label: 'Line Item Reconciliation', desc: 'Match items from supplier history' },
+                      { key: 'duplicate_detection', label: 'Duplicate Detection', desc: 'Find semantic duplicates' },
+                      { key: 'menu_description', label: 'Menu Descriptions', desc: 'Generate dish descriptions' },
+                      { key: 'dispute_email', label: 'Dispute Email Drafting', desc: 'Draft supplier dispute emails' },
+                      { key: 'supplier_alias', label: 'Supplier Alias Resolution', desc: 'Match unknown vendor names' },
+                      { key: 'yield_estimation', label: 'Yield Estimation', desc: 'Suggest ingredient yields' },
+                    ].map(({ key, label, desc }) => (
+                      <label key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', padding: '0.5rem', cursor: 'pointer', borderRadius: '4px' }}>
+                        <input
+                          type="checkbox"
+                          checked={llmFeaturesEnabled[key] ?? true}
+                          onChange={(e) => setLlmFeaturesEnabled(prev => ({ ...prev, [key]: e.target.checked }))}
+                          style={{ marginTop: '0.15rem' }}
+                        />
+                        <div>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 500 }}>{label}</div>
+                          <div style={{ fontSize: '0.75rem', color: '#888' }}>{desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Actions */}
+            <div style={styles.buttonRow}>
+              {llmEnabled && settings?.anthropic_api_key_set && (
+                <button
+                  onClick={() => llmTestMutation.mutate()}
+                  style={styles.testBtn}
+                  disabled={llmTestMutation.isPending}
+                >
+                  {llmTestMutation.isPending ? 'Testing...' : 'Test Connection'}
+                </button>
+              )}
+              <button
+                onClick={handleSaveLlmSettings}
+                style={styles.saveBtn}
+                disabled={saveLlmSettingsMutation.isPending}
+              >
+                {saveLlmSettingsMutation.isPending ? 'Saving...' : 'Save AI Settings'}
+              </button>
+            </div>
+            {llmTestStatus && (
+              <div style={{ ...styles.statusMessage, background: llmTestStatus.startsWith('Error') ? '#fee' : '#efe' }}>
+                {llmTestStatus}
+              </div>
+            )}
           </div>
         )}
 

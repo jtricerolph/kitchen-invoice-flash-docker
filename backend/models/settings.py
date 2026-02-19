@@ -202,6 +202,18 @@ class KitchenSettings(Base):
     # Cost distribution settings
     cost_distribution_max_days: Mapped[int] = mapped_column(Integer, default=90)
 
+    # LLM integration (Claude) — see LLM-MANIFEST.md for removal instructions
+    llm_enabled: Mapped[bool] = mapped_column(Boolean, default=False)  # Master kill switch — False = zero AI footprint
+    anthropic_api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default="claude-haiku-4-5-20251001")
+    llm_confidence_threshold: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True, default=Decimal("0.80"))
+    llm_monthly_token_limit: Mapped[int] = mapped_column(Integer, default=500000)  # ~$1.25/month on Haiku
+    llm_features_enabled: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default={
+        "label_parsing": True, "invoice_assist": True, "ingredient_match": True,
+        "recipe_scanning": True, "line_item_reconciliation": True, "menu_description": True,
+        "dispute_email": True, "duplicate_detection": True, "supplier_alias": True, "yield_estimation": True
+    })
+
     # Internal API key (for in-house apps like menu display plugin)
     api_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     api_key_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

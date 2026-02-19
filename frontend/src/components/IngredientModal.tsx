@@ -95,6 +95,14 @@ export default function IngredientModal({
   const { token } = useAuth()
   const queryClient = useQueryClient()
 
+  // Unit metric type helper — used to sync unit dropdowns on type change
+  const getMetricType = (unit: string) => {
+    if (unit === 'each') return 'count'
+    if (['g', 'kg', 'oz'].includes(unit)) return 'weight'
+    if (['ml', 'ltr', 'cl'].includes(unit)) return 'volume'
+    return 'unknown'
+  }
+
   // Form state
   const [formName, setFormName] = useState('')
   const [formCategory, setFormCategory] = useState<string>('')
@@ -139,6 +147,19 @@ export default function IngredientModal({
   // Track if initial supplier fetch is needed (set during init, consumed by separate effect)
   const [pendingSupplierFetch, setPendingSupplierFetch] = useState<string | null>(null)
 
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  const [llmAnalysing, setLlmAnalysing] = useState(false)
+  const [llmSuggestions, setLlmSuggestions] = useState<AllergenSuggestion[]>([])
+  const debouncedProductIngredients = useDebounce(formProductIngredients, 1000)
+  // LLM FEATURE — AI pack size deduction state
+  const [aiPackLoading, setAiPackLoading] = useState(false)
+  const [aiPackSource, setAiPackSource] = useState<string | null>(null)
+
+  // LLM FEATURE — yield estimation hint
+  const [yieldHint, setYieldHint] = useState<{ percent: number; reason: string } | null>(null)
+  const [yieldHintLoading, setYieldHintLoading] = useState(false)
+  const debouncedFormName = useDebounce(formName, 1200)
+
   // ---- Queries ----
 
   const { data: categories } = useQuery<IngredientCategory[]>({
@@ -180,6 +201,94 @@ export default function IngredientModal({
     },
     enabled: !!token && open && debouncedLiSearch.length >= 2,
   })
+
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  // Fetch settings to check if LLM is enabled
+  const { data: settingsData } = useQuery<{ llm_enabled: boolean }>({
+    queryKey: ['settings-llm-check'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings/', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return { llm_enabled: false }
+      return res.json()
+    },
+    enabled: !!token && open,
+    staleTime: 60000, // cache for 60s
+  })
+  const llmEnabled = settingsData?.llm_enabled ?? false
+
+  // Auto-trigger LLM label analysis when product ingredients text changes
+  useEffect(() => {
+    if (!llmEnabled || !debouncedProductIngredients || debouncedProductIngredients.trim().length < 10) {
+      setLlmSuggestions([])
+      return
+    }
+
+    let cancelled = false
+    const runAnalysis = async () => {
+      setLlmAnalysing(true)
+      try {
+        const res = await fetch('/api/food-flags/analyse-label', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ ingredients_text: debouncedProductIngredients }),
+        })
+        if (res.ok && !cancelled) {
+          const data = await res.json()
+          if (data.suggestions?.length > 0) {
+            // Convert LLM suggestions to AllergenSuggestion format
+            setLlmSuggestions(data.suggestions.map((s: { flag_id: number; flag_name: string; flag_code: string | null; category_name: string; reason: string; status: string }) => ({
+              flag_id: s.flag_id,
+              flag_name: s.flag_name,
+              flag_code: s.flag_code,
+              category_name: s.category_name,
+              matched_keywords: [s.status === 'may_contain' ? `may contain: ${s.reason}` : s.reason],
+            })))
+          } else {
+            setLlmSuggestions([])
+          }
+        }
+      } catch { /* ignore LLM failures */ }
+      if (!cancelled) setLlmAnalysing(false)
+    }
+
+    runAnalysis()
+    return () => { cancelled = true }
+  }, [llmEnabled, debouncedProductIngredients, token])
+
+  // LLM FEATURE — auto-trigger yield estimation when ingredient name changes (new ingredients only)
+  useEffect(() => {
+    if (!llmEnabled || editingIngredient || !debouncedFormName || debouncedFormName.trim().length < 3) {
+      setYieldHint(null)
+      return
+    }
+
+    let cancelled = false
+    const fetchYield = async () => {
+      setYieldHintLoading(true)
+      try {
+        const res = await fetch(`/api/ingredients/ai-estimate-yield?name=${encodeURIComponent(debouncedFormName.trim())}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok && !cancelled) {
+          const data = await res.json()
+          if ((data.llm_status === 'success' || data.llm_status === 'cached') && data.yield_percent) {
+            setYieldHint({ percent: data.yield_percent, reason: data.reason || '' })
+          } else {
+            setYieldHint(null)
+          }
+        }
+      } catch { /* ignore */ }
+      if (!cancelled) setYieldHintLoading(false)
+    }
+
+    fetchYield()
+    return () => { cancelled = true }
+  }, [llmEnabled, editingIngredient, debouncedFormName, token])
 
   // ---- Helpers ----
 
@@ -233,6 +342,11 @@ export default function IngredientModal({
     setSupplierProductName(null)
     setPendingDismissals([])
     setPendingSupplierFetch(null)
+    // LLM FEATURE
+    setLlmAnalysing(false)
+    setLlmSuggestions([])
+    setYieldHint(null)
+    setYieldHintLoading(false)
   }
 
   const handleClose = () => {
@@ -380,6 +494,8 @@ export default function IngredientModal({
   // Initialize form when modal opens
   useEffect(() => {
     if (!open) return
+    setAiPackLoading(false)
+    setAiPackSource(null)
     if (editingIngredient) {
       setFormName(editingIngredient.name)
       setFormCategory(editingIngredient.category_id?.toString() || '')
@@ -408,6 +524,20 @@ export default function IngredientModal({
             setLiPackQty(parsed.qty)
             setLiUnitSize(parsed.size)
             setLiUnitSizeType(parsed.type)
+          } else if (preSelectLineItem.description) {
+            // LLM FEATURE — AI pack size deduction when regex can't parse
+            setAiPackLoading(true)
+            fetch(`/api/ingredients/ai-pack-size?description=${encodeURIComponent(preSelectLineItem.description)}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            }).then(res => res.ok ? res.json() : null).then(data => {
+              if (data?.pack_quantity && data?.unit_size) {
+                setLiPackQty(data.pack_quantity)
+                setLiUnitSize(String(data.unit_size))
+                setLiUnitSizeType(data.unit_size_type || 'g')
+                setAiPackSource(data.source)
+              }
+            }).catch(() => {}).finally(() => setAiPackLoading(false))
+            // END LLM FEATURE
           }
         }
         const lookup = getSupplierLookup(preSelectLineItem.supplier_name)
@@ -607,7 +737,17 @@ export default function IngredientModal({
             <div style={styles.row}>
               <div style={{ flex: 1 }}>
                 <label style={styles.label}>Standard Unit</label>
-                <select value={formUnit} onChange={(e) => setFormUnit(e.target.value)} style={styles.input}>
+                <select value={formUnit} onChange={(e) => {
+                  const v = e.target.value
+                  setFormUnit(v)
+                  // Sync source unit when metric type changes (weight↔volume↔each)
+                  const newType = getMetricType(v)
+                  const oldType = getMetricType(liUnitSizeType)
+                  if (newType !== oldType) {
+                    setLiUnitSizeType(v)
+                    if (v === 'each') setLiUnitSize('1')
+                  }
+                }} style={styles.input}>
                   <option value="g">g (grams)</option>
                   <option value="kg">kg (kilograms)</option>
                   <option value="ml">ml (millilitres)</option>
@@ -618,6 +758,23 @@ export default function IngredientModal({
               <div style={{ flex: 1 }}>
                 <label style={styles.label}>Yield %</label>
                 <input type="number" value={formYield} onChange={(e) => setFormYield(e.target.value)} style={styles.input} min="1" max="100" step="0.5" />
+                {/* LLM FEATURE — yield estimation hint — see LLM-MANIFEST.md for removal instructions */}
+                {yieldHintLoading && (
+                  <div style={{ fontSize: '0.75rem', color: '#7952b3', marginTop: '0.25rem' }}>Estimating yield...</div>
+                )}
+                {yieldHint && !yieldHintLoading && (
+                  <div style={{ fontSize: '0.75rem', color: '#7952b3', marginTop: '0.25rem' }}>
+                    Typical yield: ~{yieldHint.percent}%{' '}
+                    <button
+                      type="button"
+                      onClick={() => setFormYield(yieldHint.percent.toString())}
+                      style={{ background: 'none', border: 'none', color: '#7952b3', textDecoration: 'underline', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}
+                    >
+                      Apply
+                    </button>
+                    {yieldHint.reason && <span style={{ color: '#999', marginLeft: '0.25rem' }}>({yieldHint.reason})</span>}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -739,9 +896,7 @@ export default function IngredientModal({
                       <tr>
                         <th style={styles.liTh}>Supplier</th>
                         <th style={styles.liTh}>Description</th>
-                        <th style={{ ...styles.liTh, textAlign: 'right' }}>Qty</th>
                         <th style={{ ...styles.liTh, textAlign: 'right' }}>Unit Price</th>
-                        <th style={{ ...styles.liTh, textAlign: 'right' }}>Total</th>
                         <th style={{ ...styles.liTh, textAlign: 'center' }}></th>
                       </tr>
                     </thead>
@@ -759,17 +914,8 @@ export default function IngredientModal({
                             {item.product_code && <span style={{ color: '#888', fontSize: '0.68rem', marginRight: '0.25rem' }}>{item.product_code}</span>}
                             {item.description}
                           </td>
-                          <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', whiteSpace: 'nowrap', color: '#666' }}>
-                            {item.total_quantity != null ? Number(item.total_quantity).toFixed(0) : '-'}
-                            {item.unit ? <span style={{ fontSize: '0.65rem', color: '#999' }}> {item.unit}</span> : ''}
-                          </td>
                           <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
                             {item.most_recent_price != null ? `\u00a3${Number(item.most_recent_price).toFixed(2)}` : '-'}
-                          </td>
-                          <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', whiteSpace: 'nowrap', color: '#666' }}>
-                            {item.most_recent_price != null && item.total_quantity != null
-                              ? `\u00a3${(Number(item.most_recent_price) * Number(item.total_quantity)).toFixed(2)}`
-                              : '-'}
                           </td>
                           <td style={{ padding: '0.35rem 0.5rem', textAlign: 'center' }}>
                             <button
@@ -816,12 +962,27 @@ export default function IngredientModal({
                 </div>
                 <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'flex-end' }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#888', marginBottom: '0.15rem' }}>Contains</div>
+                    <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#888', marginBottom: '0.15rem' }}>
+                      Contains
+                      {/* LLM FEATURE */}
+                      {aiPackLoading && <span style={{ marginLeft: '3px', color: '#7952b3' }}>...</span>}
+                      {aiPackSource === 'ai' && <span style={{ marginLeft: '3px' }} title="Deduced by AI">{'\u2728'}</span>}
+                    </div>
                     <input type="number" value={liUnitSize} onChange={(e) => setLiUnitSize(e.target.value)} style={styles.input} step="0.1" min="0" placeholder="Size" />
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '0.65rem', fontWeight: 600, color: '#888', marginBottom: '0.15rem' }}>Unit</div>
-                    <select value={liUnitSizeType} onChange={(e) => setLiUnitSizeType(e.target.value)} style={styles.input}>
+                    <select value={liUnitSizeType} onChange={(e) => {
+                      const v = e.target.value
+                      setLiUnitSizeType(v)
+                      // Sync standard unit when metric type changes (weight↔volume↔each)
+                      const newType = getMetricType(v)
+                      const oldType = getMetricType(formUnit)
+                      if (newType !== oldType) {
+                        setFormUnit(v === 'cl' ? 'ml' : v === 'oz' ? 'g' : v)
+                        if (v === 'each') setLiUnitSize('1')
+                      }
+                    }} style={styles.input}>
                       <option value="each">each</option>
                       <option value="g">g</option>
                       <option value="kg">kg</option>
@@ -977,6 +1138,8 @@ export default function IngredientModal({
           productIngredients={formPrepackaged ? formProductIngredients : undefined}
           lineItemDescription={selectedLi?.description || undefined}
           scanSuggestions={scanResult?.suggested_flags}
+          llmSuggestions={llmEnabled ? llmSuggestions : undefined}
+          llmAnalysing={llmEnabled ? llmAnalysing : false}
           autoApplyFlagIds={supplierAutoApplyIds}
           autoApplyNoneCategoryIds={supplierNoneCategoryIds}
         />

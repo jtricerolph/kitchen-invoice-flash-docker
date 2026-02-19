@@ -341,6 +341,22 @@ async def identify_supplier(
     if best_match:
         return (best_match, "fuzzy")
 
+    # LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+    # Feature F: LLM fallback when all regex/fuzzy passes fail
+    try:
+        from services.llm_service import match_supplier_llm
+        supplier_list = [{"id": s.id, "name": s.name} for s in suppliers]
+        llm_result = await match_supplier_llm(
+            db=db,
+            kitchen_id=kitchen_id,
+            vendor_text=text[:500],
+            supplier_list=supplier_list,
+        )
+        if llm_result["status"] in ("success", "cached") and llm_result.get("match"):
+            return (llm_result["match"]["id"], "fuzzy")
+    except Exception:
+        pass  # Non-fatal — fall through to None
+
     return (None, None)
 
 

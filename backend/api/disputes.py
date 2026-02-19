@@ -1027,3 +1027,99 @@ async def link_credit_note_to_dispute(
         "credit_note_number": credit_note_ref,
         "resolved_amount": resolved_amount
     }
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+@router.post("/{dispute_id}/draft-email")
+async def draft_email(
+    dispute_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Draft a supplier dispute email using AI."""
+    from services.llm_service import draft_dispute_email
+    from models.settings import KitchenSettings
+
+    # Load dispute with line items
+    result = await db.execute(
+        select(InvoiceDispute)
+        .options(selectinload(InvoiceDispute.line_items))
+        .where(
+            InvoiceDispute.id == dispute_id,
+            InvoiceDispute.kitchen_id == current_user.kitchen_id,
+        )
+    )
+    dispute = result.scalar_one_or_none()
+    if not dispute:
+        raise HTTPException(status_code=404, detail="Dispute not found")
+
+    # Load supplier name via invoice
+    from models.invoice import Invoice
+    from models.supplier import Supplier
+    inv_result = await db.execute(
+        select(Invoice).where(Invoice.id == dispute.invoice_id)
+    )
+    invoice = inv_result.scalar_one_or_none()
+    supplier_name = "Unknown Supplier"
+    if invoice and invoice.supplier_id:
+        sup_result = await db.execute(
+            select(Supplier.name).where(Supplier.id == invoice.supplier_id)
+        )
+        sup_row = sup_result.scalar_one_or_none()
+        if sup_row:
+            supplier_name = sup_row
+
+    # Load kitchen details
+    settings_result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = settings_result.scalar_one_or_none()
+
+    kitchen_details = {
+        "name": getattr(settings, "kitchen_display_name", "") or "",
+        "address": " ".join(filter(None, [
+            getattr(settings, "kitchen_address_line1", ""),
+            getattr(settings, "kitchen_address_line2", ""),
+            getattr(settings, "kitchen_city", ""),
+            getattr(settings, "kitchen_postcode", ""),
+        ])),
+        "email": getattr(settings, "kitchen_email", "") or "",
+        "phone": getattr(settings, "kitchen_phone", "") or "",
+    }
+
+    dispute_data = {
+        "supplier_name": supplier_name,
+        "invoice_number": invoice.invoice_number if invoice else None,
+        "invoice_date": str(invoice.invoice_date) if invoice and invoice.invoice_date else None,
+        "dispute_type": dispute.dispute_type.value if dispute.dispute_type else "price_discrepancy",
+        "title": dispute.title,
+        "description": dispute.description,
+        "disputed_amount": float(dispute.disputed_amount) if dispute.disputed_amount else 0,
+        "line_items": [
+            {
+                "product_name": li.product_name,
+                "product_code": li.product_code,
+                "quantity_ordered": float(li.quantity_ordered) if li.quantity_ordered else None,
+                "quantity_received": float(li.quantity_received) if li.quantity_received else None,
+                "unit_price_quoted": float(li.unit_price_quoted) if li.unit_price_quoted else None,
+                "unit_price_charged": float(li.unit_price_charged) if li.unit_price_charged else None,
+                "total_charged": float(li.total_charged) if li.total_charged else 0,
+                "total_expected": float(li.total_expected) if li.total_expected else None,
+            }
+            for li in (dispute.line_items or [])
+        ],
+    }
+
+    llm_result = await draft_dispute_email(
+        db=db,
+        kitchen_id=current_user.kitchen_id,
+        dispute_data=dispute_data,
+        kitchen_details=kitchen_details,
+    )
+
+    return {
+        "llm_status": llm_result["status"],
+        "email_subject": llm_result.get("email_subject"),
+        "email_body": llm_result.get("email_body"),
+        "error": llm_result.get("error"),
+    }

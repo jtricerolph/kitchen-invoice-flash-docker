@@ -195,6 +195,29 @@ interface Settings {
   high_quantity_threshold: number
   dext_manual_send_enabled: boolean
   pdf_preview_show_annotations: boolean
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  llm_enabled?: boolean
+  anthropic_api_key_set?: boolean
+}
+
+// LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+interface AiAssistSuggestions {
+  supplier_match?: { id: number; name: string; confidence: number; reason: string } | null
+  corrected_date?: string | null
+  line_item_corrections?: Array<{ idx: number; field: string; current: number | string | null; suggested: number | string; reason: string }>
+  description_recommendations?: Array<{ idx: number; recommendation: string; reason: string }>
+  subtotal_flags?: number[]
+  total_mismatch_analysis?: string | null
+  vat_treatment?: string | null
+  pack_size_suggestions?: Array<{ idx: number; pack_quantity: number; unit_size: number; unit_size_type: string }>
+}
+
+interface AiReconciliationMatch {
+  idx: number
+  ingredient_id: number
+  ingredient_name: string
+  confidence: number
+  reason: string
 }
 
 interface SearchResultItem {
@@ -434,6 +457,17 @@ export default function Review() {
     price_difference: number | null
   }>>({})
   const [addingAliasFor, setAddingAliasFor] = useState<string | null>(null)
+
+  // LLM FEATURE — AI Assist state — see LLM-MANIFEST.md for removal instructions
+  const [aiMatchLoading, setAiMatchLoading] = useState(false)
+  const [aiMatchResults, setAiMatchResults] = useState<Array<{ id: number; name: string; confidence: number; reason: string }>>([])
+  const [aiAssistLoading, setAiAssistLoading] = useState(false)
+  const [aiAssistSuggestions, setAiAssistSuggestions] = useState<AiAssistSuggestions | null>(null)
+  const [aiReconciliationMatches, setAiReconciliationMatches] = useState<AiReconciliationMatch[]>([])
+  const [aiAssistError, setAiAssistError] = useState<string | null>(null)
+  const [aiDismissedCorrections, setAiDismissedCorrections] = useState<Set<string>>(new Set())
+  const [aiPackSizeLoading, setAiPackSizeLoading] = useState(false)
+  const [aiPackSizeSource, setAiPackSizeSource] = useState<string | null>(null)
 
   // Price history modal state
   const [historyModal, setHistoryModal] = useState<{
@@ -1624,9 +1658,80 @@ export default function Review() {
     }
   }
 
+  // LLM FEATURE — AI Match handler for ingredient matching — see LLM-MANIFEST.md for removal instructions
+  const handleAiMatch = async (description: string) => {
+    setAiMatchLoading(true)
+    setAiMatchResults([])
+    try {
+      const res = await fetch(`/api/ingredients/ai-match?description=${encodeURIComponent(description)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.ranked?.length > 0) {
+          setAiMatchResults(data.ranked)
+        }
+      }
+    } catch { /* ignore */ }
+    setAiMatchLoading(false)
+  }
+
+  // LLM FEATURE — AI Assist handler — see LLM-MANIFEST.md for removal instructions
+  const handleAiAssist = async () => {
+    setAiAssistLoading(true)
+    setAiAssistError(null)
+    setAiAssistSuggestions(null)
+    setAiReconciliationMatches([])
+    setAiDismissedCorrections(new Set())
+
+    try {
+      const res = await fetch(`/api/invoices/${id}/ai-assist`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        let detail = 'AI analysis failed'
+        try { const err = await res.json(); detail = err.detail || detail } catch { /* non-JSON response */ }
+        throw new Error(detail)
+      }
+      const data = await res.json()
+      if (data.suggestions) setAiAssistSuggestions(data.suggestions)
+      if (data.reconciliation_matches) setAiReconciliationMatches(data.reconciliation_matches)
+      if (data.error) setAiAssistError(data.error)
+    } catch (error) {
+      setAiAssistError(error instanceof Error ? error.message : 'AI analysis failed')
+    } finally {
+      setAiAssistLoading(false)
+    }
+  }
+
+  const handleApplyAiCorrection = async (idx: number, field: string, value: number | string) => {
+    if (!lineItems) return
+    const item = lineItems[idx]
+    if (!item) return
+    try {
+      await updateLineItemMutation.mutateAsync({ itemId: item.id, data: { [field]: value } as Partial<LineItem> })
+      setAiDismissedCorrections(prev => new Set([...prev, `${idx}-${field}`]))
+    } catch (error) {
+      console.error('Failed to apply AI correction:', error)
+    }
+  }
+
+  const handleApplyAiSupplier = async (supplierId: number) => {
+    try {
+      await updateMutation.mutateAsync({ supplier_id: supplierId } as Partial<Invoice>)
+    } catch (error) {
+      console.error('Failed to apply AI supplier match:', error)
+    }
+  }
+  // END LLM FEATURE
+
   const toggleCostBreakdown = async (item: LineItem) => {
     // Open ingredient mapping modal
     setIngredientModalItem(item)
+    setAiPackSizeLoading(false)
+    setAiPackSizeSource(null)
+
     setCostBreakdownEdits({
       pack_quantity: item.pack_quantity,
       unit_size: item.unit_size,
@@ -1674,6 +1779,37 @@ export default function Review() {
     if (item.description && !item.ingredient_id) {
       searchIngredients(item.description)
     }
+
+    // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+    // Auto-deduce pack size if not already set (regex → unit field → AI, all server-side)
+    if (!item.pack_quantity && !item.unit_size) {
+      setAiPackSizeLoading(true)
+      try {
+        const packRes = await fetch(`/api/invoices/${id}/line-items/${item.id}/ai-pack-size`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (packRes.ok) {
+          const packData = await packRes.json()
+          if (packData.pack_quantity && packData.unit_size) {
+            setAiPackSizeSource(packData.source)
+            setCostBreakdownEdits(prev => ({
+              ...prev,
+              pack_quantity: packData.pack_quantity,
+              unit_size: packData.unit_size,
+              unit_size_type: packData.unit_size_type,
+            }))
+            updateConversionDisplay(item.ingredient_unit || undefined, {
+              pack_quantity: packData.pack_quantity,
+              unit_size: packData.unit_size,
+              unit_size_type: packData.unit_size_type,
+              unit_price: item.unit_price,
+            })
+          }
+        }
+      } catch { /* non-blocking */ }
+      setAiPackSizeLoading(false)
+    }
+    // END LLM FEATURE
   }
 
   const searchIngredients = async (query: string) => {
@@ -3108,6 +3244,27 @@ export default function Review() {
               >
                 Log Dispute
               </button>
+              {/* LLM FEATURE — AI Assist button — see LLM-MANIFEST.md for removal instructions */}
+              {settings?.llm_enabled && settings?.anthropic_api_key_set && (
+                <button
+                  onClick={handleAiAssist}
+                  disabled={aiAssistLoading}
+                  style={{
+                    padding: '0.4rem 1.2rem',
+                    fontSize: '0.8rem',
+                    background: aiAssistSuggestions ? '#6f42c1' : '#7952b3',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: aiAssistLoading ? 'wait' : 'pointer',
+                    minWidth: '120px',
+                    whiteSpace: 'nowrap',
+                    opacity: aiAssistLoading ? 0.7 : 1,
+                  }}
+                >
+                  {aiAssistLoading ? 'Analysing...' : aiAssistSuggestions ? '\u2728 AI Results' : '\u2728 AI Assist'}
+                </button>
+              )}
               <button
                 onClick={() => setShowRawOcrModal(true)}
                 style={{
@@ -3237,6 +3394,190 @@ export default function Review() {
           </div>
         </div>
       </div>
+
+      {/* LLM FEATURE — AI Assist suggestions panel — see LLM-MANIFEST.md for removal instructions */}
+      {(aiAssistSuggestions || aiAssistError || aiReconciliationMatches.length > 0) && (
+        <div style={{
+          background: '#f8f5ff',
+          border: '1px solid #d4c5f9',
+          borderRadius: '8px',
+          padding: '1rem',
+          marginBottom: '1rem',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <h3 style={{ margin: 0, color: '#5a32a3', fontSize: '1rem' }}>{'\u2728'} AI Analysis</h3>
+            <button
+              onClick={() => { setAiAssistSuggestions(null); setAiReconciliationMatches([]); setAiAssistError(null) }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#999' }}
+            >{'\u2715'}</button>
+          </div>
+
+          {aiAssistError && (
+            <div style={{ background: '#f8d7da', color: '#721c24', padding: '0.5rem 0.75rem', borderRadius: '4px', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+              {aiAssistError}
+            </div>
+          )}
+
+          {/* Supplier match */}
+          {aiAssistSuggestions?.supplier_match && !invoice.supplier_id && (
+            <div style={{ background: '#d1ecf1', padding: '0.5rem 0.75rem', borderRadius: '4px', marginBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.85rem', color: '#0c5460' }}>
+                Supplier: <strong>{aiAssistSuggestions.supplier_match.name}</strong> ({(aiAssistSuggestions.supplier_match.confidence * 100).toFixed(0)}% confident) — {aiAssistSuggestions.supplier_match.reason}
+              </span>
+              <button
+                onClick={() => handleApplyAiSupplier(aiAssistSuggestions.supplier_match!.id)}
+                style={{ padding: '0.25rem 0.75rem', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' }}
+              >Accept</button>
+            </div>
+          )}
+
+          {/* Total mismatch analysis */}
+          {aiAssistSuggestions?.total_mismatch_analysis && (
+            <div style={{ background: '#fff3cd', padding: '0.5rem 0.75rem', borderRadius: '4px', marginBottom: '0.5rem', fontSize: '0.85rem', color: '#856404' }}>
+              <strong>Total mismatch:</strong> {aiAssistSuggestions.total_mismatch_analysis}
+            </div>
+          )}
+
+          {/* VAT treatment */}
+          {aiAssistSuggestions?.vat_treatment && (
+            <div style={{ background: '#e2e3e5', padding: '0.4rem 0.75rem', borderRadius: '4px', marginBottom: '0.5rem', fontSize: '0.85rem', color: '#383d41' }}>
+              VAT treatment: <strong>{aiAssistSuggestions.vat_treatment}</strong>
+            </div>
+          )}
+
+          {/* Line item corrections */}
+          {aiAssistSuggestions?.line_item_corrections && aiAssistSuggestions.line_item_corrections.length > 0 && (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#5a32a3', marginBottom: '0.35rem' }}>Line Item Corrections</div>
+              {aiAssistSuggestions.line_item_corrections
+                .filter(c => !aiDismissedCorrections.has(`${c.idx}-${c.field}`))
+                .map((c, i) => (
+                <div key={i} style={{ background: '#ffe6e6', padding: '0.4rem 0.75rem', borderRadius: '4px', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                  <span style={{ color: '#721c24' }}>
+                    Line {c.idx + 1}: <strong>{c.field}</strong> {c.current} {'\u2192'} {c.suggested} — {c.reason}
+                  </span>
+                  <div style={{ display: 'flex', gap: '0.35rem' }}>
+                    <button
+                      onClick={() => handleApplyAiCorrection(c.idx, c.field, c.suggested)}
+                      style={{ padding: '0.2rem 0.5rem', background: '#28a745', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.75rem' }}
+                    >Apply</button>
+                    <button
+                      onClick={() => setAiDismissedCorrections(prev => new Set([...prev, `${c.idx}-${c.field}`]))}
+                      style={{ padding: '0.2rem 0.5rem', background: '#6c757d', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.75rem' }}
+                    >Dismiss</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Subtotal flags */}
+          {aiAssistSuggestions?.subtotal_flags && aiAssistSuggestions.subtotal_flags.length > 0 && lineItems && (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#5a32a3', marginBottom: '0.35rem' }}>Subtotal / Fee Rows</div>
+              {aiAssistSuggestions.subtotal_flags.map((idx) => {
+                const item = lineItems[idx]
+                if (!item) return null
+                return (
+                  <div key={idx} style={{ background: '#fff3cd', padding: '0.4rem 0.75rem', borderRadius: '4px', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#856404' }}>
+                      Line {idx + 1}: &quot;{item.description?.substring(0, 50)}&quot; — appears to be a subtotal or fee, not a product
+                    </span>
+                    {!item.is_non_stock && (
+                      <button
+                        onClick={() => updateLineItemMutation.mutate({ itemId: item.id, data: { is_non_stock: true } as Partial<LineItem> })}
+                        style={{ padding: '0.2rem 0.5rem', background: '#f0ad4e', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.75rem' }}
+                      >Mark Non-Stock</button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Description recommendations */}
+          {aiAssistSuggestions?.description_recommendations && aiAssistSuggestions.description_recommendations.length > 0 && lineItems && (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#5a32a3', marginBottom: '0.35rem' }}>Description Recommendations</div>
+              {aiAssistSuggestions.description_recommendations
+                .filter(r => r.recommendation !== 'keep')
+                .map((r, i) => {
+                  const item = lineItems[r.idx]
+                  if (!item || !item.description_alt) return null
+                  return (
+                    <div key={i} style={{ background: '#d1ecf1', padding: '0.4rem 0.75rem', borderRadius: '4px', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                      <span style={{ color: '#0c5460' }}>
+                        Line {r.idx + 1}: Swap description recommended — {r.reason}
+                      </span>
+                      <button
+                        onClick={() => updateLineItemMutation.mutate({
+                          itemId: item.id,
+                          data: { description: item.description_alt, description_alt: item.description } as Partial<LineItem>
+                        })}
+                        style={{ padding: '0.2rem 0.5rem', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.75rem' }}
+                      >Swap</button>
+                    </div>
+                  )
+                })}
+            </div>
+          )}
+
+          {/* LLM FEATURE — Pack size suggestions */}
+          {aiAssistSuggestions?.pack_size_suggestions && aiAssistSuggestions.pack_size_suggestions.length > 0 && lineItems && (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#5a32a3', marginBottom: '0.35rem' }}>Pack Size (from description)</div>
+              {aiAssistSuggestions.pack_size_suggestions.map((p, i) => {
+                const item = lineItems[p.idx]
+                if (!item) return null
+                const packLabel = p.pack_quantity > 1
+                  ? `${p.pack_quantity} × ${p.unit_size}${p.unit_size_type}`
+                  : `${p.unit_size}${p.unit_size_type}`
+                const alreadySet = item.pack_quantity && item.unit_size
+                return (
+                  <div key={i} style={{ background: alreadySet ? '#e8e8e8' : '#e8daef', padding: '0.4rem 0.75rem', borderRadius: '4px', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                    <span style={{ color: alreadySet ? '#666' : '#4a235a' }}>
+                      Line {p.idx + 1}: &quot;{item.description?.substring(0, 40)}&quot; → <strong>{packLabel}</strong>
+                      {alreadySet && ' (already set)'}
+                    </span>
+                    {!alreadySet && (
+                      <button
+                        onClick={() => updateLineItemMutation.mutate({
+                          itemId: item.id,
+                          data: { pack_quantity: p.pack_quantity, unit_size: p.unit_size, unit_size_type: p.unit_size_type } as Partial<LineItem>
+                        })}
+                        style={{ padding: '0.2rem 0.5rem', background: '#7d3c98', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.75rem' }}
+                      >Apply</button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {/* END LLM FEATURE */}
+
+          {/* Reconciliation matches */}
+          {aiReconciliationMatches.length > 0 && lineItems && (
+            <div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#5a32a3', marginBottom: '0.35rem' }}>Ingredient Matches (from supplier history)</div>
+              {aiReconciliationMatches.map((m, i) => {
+                const item = lineItems[m.idx]
+                if (!item) return null
+                return (
+                  <div key={i} style={{ background: '#d4edda', padding: '0.4rem 0.75rem', borderRadius: '4px', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#155724' }}>
+                      Line {m.idx + 1} &quot;{item.description?.substring(0, 40)}&quot; {'\u2192'} <strong>{m.ingredient_name}</strong> ({(m.confidence * 100).toFixed(0)}%) — {m.reason}
+                    </span>
+                    <button
+                      onClick={() => updateLineItemMutation.mutate({ itemId: item.id, data: { ingredient_id: m.ingredient_id } as Partial<LineItem> })}
+                      style={{ padding: '0.2rem 0.5rem', background: '#28a745', color: 'white', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.75rem' }}
+                    >Map</button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Full-width Line Items Section */}
       <div style={styles.lineItemsSection}>
@@ -4755,6 +5096,40 @@ export default function Review() {
                     </div>
                   )}
 
+                  {/* LLM FEATURE — AI Match button + results — see LLM-MANIFEST.md for removal instructions */}
+                  {settings?.llm_enabled && settings?.anthropic_api_key_set && ingredientModalItem?.description && !selectedIngredientId && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <button
+                        onClick={() => handleAiMatch(ingredientModalItem!.description!)}
+                        disabled={aiMatchLoading}
+                        style={{ padding: '0.4rem 0.75rem', background: '#7952b3', color: 'white', border: 'none', borderRadius: '4px', cursor: aiMatchLoading ? 'wait' : 'pointer', fontSize: '0.85rem', opacity: aiMatchLoading ? 0.7 : 1 }}
+                      >
+                        {aiMatchLoading ? 'Matching...' : '\u2728 AI Match'}
+                      </button>
+                      {aiMatchResults.length > 0 && (
+                        <div style={{ border: '1px solid #d4c5f9', borderRadius: '6px', marginTop: '0.35rem', maxHeight: '160px', overflowY: 'auto', background: '#f8f5ff' }}>
+                          {aiMatchResults.map((m) => (
+                            <div
+                              key={m.id}
+                              onClick={() => {
+                                const found = ingredientSuggestions.find(s => s.id === m.id)
+                                if (found) selectIngredient(found)
+                                else { setSelectedIngredientId(m.id); setSelectedIngredientName(m.name); setSelectedIngredientUnit(''); }
+                                setAiMatchResults([])
+                              }}
+                              style={{ padding: '0.4rem 0.75rem', cursor: 'pointer', borderBottom: '1px solid #e8e0f7', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between' }}
+                              onMouseOver={(e) => (e.currentTarget.style.background = '#ede5ff')}
+                              onMouseOut={(e) => (e.currentTarget.style.background = '#f8f5ff')}
+                            >
+                              <span>{'\u2728'} {m.name}</span>
+                              <span style={{ color: '#7952b3', fontSize: '0.8rem' }}>{(m.confidence * 100).toFixed(0)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Create new ingredient */}
                   <button
                     onClick={() => setShowCreateIngredient(true)}
@@ -4777,7 +5152,14 @@ export default function Review() {
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-end' }}>
                 <div style={styles.costBreakdownField}>
-                  <label style={{ fontSize: '0.8rem', color: '#666' }}>Contains</label>
+                  <label style={{ fontSize: '0.8rem', color: '#666' }}>
+                    Contains
+                    {/* LLM FEATURE */}
+                    {aiPackSizeLoading && <span style={{ marginLeft: '4px', fontSize: '0.7rem', color: '#7952b3' }}>analysing...</span>}
+                    {aiPackSizeSource === 'ai' && <span style={{ marginLeft: '4px', fontSize: '0.7rem', color: '#7952b3' }} title="Deduced by AI from product knowledge">{'\u2728'}</span>}
+                    {aiPackSizeSource === 'regex' && <span style={{ marginLeft: '4px', fontSize: '0.7rem', color: '#28a745' }} title="Parsed from description">auto</span>}
+                    {aiPackSizeSource === 'unit_field' && <span style={{ marginLeft: '4px', fontSize: '0.7rem', color: '#28a745' }} title="Inferred from invoice unit field">auto</span>}
+                  </label>
                   <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                     <input
                       type="number" step="0.1"

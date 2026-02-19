@@ -1282,3 +1282,37 @@ async def get_dish_menus(
         {"menu_id": r.menu_id, "menu_name": r.name, "is_active": r.is_active}
         for r in rows
     ]
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+class GenerateDescriptionRequest(BaseModel):
+    recipe_id: int
+    recipe_name: str
+    ingredients: list[str] = []
+    allergen_flags: list[str] = []
+    steps_summary: Optional[str] = None
+
+
+@router.post("/generate-description")
+async def generate_description(
+    body: GenerateDescriptionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a customer-facing menu description using AI."""
+    from services.llm_service import generate_menu_description
+
+    result = await generate_menu_description(
+        db=db,
+        kitchen_id=user.kitchen_id,
+        recipe_name=body.recipe_name,
+        ingredients=body.ingredients,
+        allergen_flags=body.allergen_flags,
+        steps_summary=body.steps_summary,
+    )
+
+    return {
+        "llm_status": result["status"],
+        "description": result.get("description"),
+        "error": result.get("error"),
+    }

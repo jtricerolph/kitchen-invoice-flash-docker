@@ -51,11 +51,13 @@ interface Props {
   productIngredients?: string   // for product-text-based suggestions
   lineItemDescription?: string  // for line-item-based suggestions
   scanSuggestions?: AllergenSuggestion[] // from label OCR scan (passed from parent)
+  llmSuggestions?: AllergenSuggestion[] // LLM FEATURE — from AI label analysis (passed from parent)
+  llmAnalysing?: boolean // LLM FEATURE — show spinner while LLM is processing
   autoApplyFlagIds?: number[] // flag IDs to auto-apply (e.g. from Brakes "Contains" statement)
   autoApplyNoneCategoryIds?: number[] // category IDs to auto-set "None" (e.g. Brakes "Contains: None")
 }
 
-export default function IngredientFlagEditor({ ingredientId, token, onChange, onDismissalsChange, ingredientName, productIngredients, lineItemDescription, scanSuggestions, autoApplyFlagIds, autoApplyNoneCategoryIds }: Props) {
+export default function IngredientFlagEditor({ ingredientId, token, onChange, onDismissalsChange, ingredientName, productIngredients, lineItemDescription, scanSuggestions, llmSuggestions, llmAnalysing, autoApplyFlagIds, autoApplyNoneCategoryIds }: Props) {
   const queryClient = useQueryClient()
   const [activeFlagIds, setActiveFlagIds] = useState<Set<number>>(new Set())
   const [noneCategoryIds, setNoneCategoryIds] = useState<Set<number>>(new Set())
@@ -483,6 +485,13 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, on
       allSuggestions.push({ ...s, matched_keywords: s.matched_keywords.map(k => `${k} (${sourceLabel})`) })
     }
   }
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  for (const s of (llmSuggestions || [])) {
+    if (!seenFlagIds.has(s.flag_id)) {
+      seenFlagIds.add(s.flag_id)
+      allSuggestions.push({ ...s, matched_keywords: s.matched_keywords.map(k => `\u2728 ${k}`) })
+    }
+  }
 
   // Filter out suggestions for flags already active or dismissed
   const dismissedFlagIds = new Set(dismissals.map(d => d.food_flag_id))
@@ -522,6 +531,13 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, on
         </div>
       )}
 
+      {/* LLM FEATURE — AI analysing spinner when no other suggestions yet */}
+      {pendingSuggestions.length === 0 && llmAnalysing && (
+        <div style={{ padding: '0.3rem 0.5rem', fontSize: '0.73rem', color: '#7c3aed' }}>
+          {'\u2728'} AI analysing ingredients...
+        </div>
+      )}
+
       {/* Allergen suggestions bar */}
       {pendingSuggestions.length > 0 && (
         <div style={{ marginBottom: '0.5rem' }}>
@@ -540,6 +556,8 @@ export default function IngredientFlagEditor({ ingredientId, token, onChange, on
           >
             <span style={{ fontSize: '0.73rem', color: '#b45309', fontWeight: 600 }}>
               {'\u26A0'} {pendingSuggestions.length} allergen suggestion{pendingSuggestions.length !== 1 ? 's' : ''}
+              {/* LLM FEATURE — see LLM-MANIFEST.md */}
+              {llmAnalysing && <span style={{ marginLeft: '0.4rem', fontSize: '0.68rem', color: '#7c3aed' }}>\u2728 AI analysing...</span>}
             </span>
             <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
               <button

@@ -569,6 +569,176 @@ async def get_bulk_nones(
     return nones
 
 
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+# These must be defined BEFORE /{ingredient_id} to avoid path parameter conflicts
+@router.get("/ai-match")
+async def ai_match_ingredient(
+    description: str = Query(..., min_length=2),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered ingredient matching when trigram confidence is low."""
+    from services.llm_service import rank_ingredient_matches
+
+    # First get trigram candidates
+    trgm_result = await db.execute(
+        text("""
+            SELECT i.id, i.name, i.standard_unit,
+                   ic.name AS category_name,
+                   similarity(i.name, :desc) AS sim
+            FROM ingredients i
+            LEFT JOIN ingredient_categories ic ON ic.id = i.category_id
+            WHERE i.kitchen_id = :kid
+              AND i.is_archived = false
+              AND (similarity(i.name, :desc) > 0.1 OR i.name ILIKE :like)
+            ORDER BY sim DESC
+            LIMIT 20
+        """),
+        {"desc": description, "kid": user.kitchen_id, "like": f"%{description}%"},
+    )
+    candidates = [
+        {"id": r.id, "name": r.name, "standard_unit": r.standard_unit,
+         "category_name": r.category_name, "similarity": round(r.sim, 3)}
+        for r in trgm_result.fetchall()
+    ]
+
+    if not candidates:
+        return {"llm_status": "unavailable", "ranked": [], "error": None}
+
+    result = await rank_ingredient_matches(
+        db=db,
+        kitchen_id=user.kitchen_id,
+        description=description,
+        candidates=candidates,
+    )
+
+    return {
+        "llm_status": result["status"],
+        "ranked": result.get("ranked") or [],
+        "trigram_candidates": candidates,
+        "error": result.get("error"),
+    }
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+@router.get("/ai-check-duplicate")
+async def ai_check_duplicate(
+    name: str = Query(..., min_length=2),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered semantic duplicate detection for new ingredient names."""
+    from services.llm_service import check_duplicate_ingredient_llm
+
+    # Get top trigram matches
+    trgm_result = await db.execute(
+        text("""
+            SELECT id, name, similarity(name, :name) AS sim
+            FROM ingredients
+            WHERE kitchen_id = :kid AND similarity(name, :name) > 0.15
+            ORDER BY sim DESC
+            LIMIT 30
+        """),
+        {"name": name, "kid": user.kitchen_id},
+    )
+    existing = [
+        {"id": r.id, "name": r.name, "similarity": round(r.sim, 3)}
+        for r in trgm_result.fetchall()
+    ]
+
+    if not existing:
+        return {"llm_status": "unavailable", "duplicates": [], "error": None}
+
+    result = await check_duplicate_ingredient_llm(
+        db=db,
+        kitchen_id=user.kitchen_id,
+        name=name,
+        existing_ingredients=existing,
+    )
+
+    return {
+        "llm_status": result["status"],
+        "duplicates": result.get("duplicates") or [],
+        "error": result.get("error"),
+    }
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+# Feature G: AI yield estimation
+@router.get("/ai-estimate-yield")
+async def ai_estimate_yield(
+    name: str = Query(..., min_length=2),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered yield percentage estimation for an ingredient name."""
+    from services.llm_service import estimate_yield
+
+    result = await estimate_yield(
+        db=db,
+        kitchen_id=user.kitchen_id,
+        ingredient_name=name,
+    )
+
+    return {
+        "llm_status": result["status"],
+        "yield_percent": result.get("yield_percent"),
+        "reason": result.get("reason"),
+        "error": result.get("error"),
+    }
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+@router.get("/ai-pack-size")
+async def ai_deduce_pack_size_from_description(
+    description: str = Query(..., min_length=2),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Deduce pack size from a product description.
+    Tier 1: regex parse. Tier 2: LLM product knowledge fallback.
+    Used by IngredientModal when creating ingredients from line items.
+    """
+    from ocr.azure_extractor import parse_pack_size
+
+    # Tier 1: Regex (free, instant)
+    parsed = parse_pack_size(description)
+    if parsed["pack_quantity"]:
+        return {
+            "source": "regex",
+            "pack_quantity": parsed["pack_quantity"],
+            "unit_size": parsed["unit_size"],
+            "unit_size_type": parsed["unit_size_type"],
+            "reason": "Parsed from description",
+        }
+
+    # Tier 2: LLM deduction
+    from services.llm_service import deduce_pack_size
+    llm_result = await deduce_pack_size(
+        db=db,
+        kitchen_id=user.kitchen_id,
+        description=description,
+    )
+
+    if llm_result["status"] in ("success", "cached") and llm_result["pack_quantity"]:
+        return {
+            "source": "ai",
+            "pack_quantity": llm_result["pack_quantity"],
+            "unit_size": llm_result["unit_size"],
+            "unit_size_type": llm_result["unit_size_type"],
+            "reason": llm_result.get("reason", "AI deduction"),
+        }
+
+    return {
+        "source": None,
+        "pack_quantity": None,
+        "unit_size": None,
+        "unit_size_type": None,
+        "reason": llm_result.get("error") or "Could not determine pack size",
+    }
+
+
 @router.get("/{ingredient_id}")
 async def get_ingredient(
     ingredient_id: int,
@@ -1551,7 +1721,6 @@ async def get_ingredient_recipes(
         {"id": r.id, "name": r.name, "recipe_type": r.recipe_type}
         for r in result.all()
     ]
-
 
 
 # ── Auto-normalize hook (called from invoices.py) ────────────────────────────

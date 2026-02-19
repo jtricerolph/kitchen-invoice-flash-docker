@@ -40,3 +40,6 @@ pyodbc==5.1.0
 
 # SambaPOS SignalR real-time listener (KDS)
 websockets>=12.0
+
+# LLM integration (Claude Haiku) — see LLM-MANIFEST.md for removal instructions
+anthropic>=0.40.0

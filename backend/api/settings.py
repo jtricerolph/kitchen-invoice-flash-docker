@@ -42,6 +42,13 @@ class SettingsResponse(BaseModel):
     ocr_use_weight_as_quantity: bool
     # Cost distribution settings
     cost_distribution_max_days: int
+    # LLM settings — see LLM-MANIFEST.md for removal instructions
+    llm_enabled: bool = False
+    anthropic_api_key_set: bool = False  # Don't expose the actual key
+    llm_model: str | None = None
+    llm_confidence_threshold: float | None = None
+    llm_monthly_token_limit: int = 500000
+    llm_features_enabled: dict | None = None
 
     class Config:
         from_attributes = True
@@ -78,6 +85,13 @@ class SettingsUpdate(BaseModel):
     ocr_use_weight_as_quantity: bool | None = None
     # Cost distribution settings
     cost_distribution_max_days: int | None = None
+    # LLM settings — see LLM-MANIFEST.md for removal instructions
+    llm_enabled: bool | None = None
+    anthropic_api_key: str | None = None  # Only set if provided
+    llm_model: str | None = None
+    llm_confidence_threshold: float | None = None
+    llm_monthly_token_limit: int | None = None
+    llm_features_enabled: dict | None = None
 
 
 @router.get("/", response_model=SettingsResponse)
@@ -102,6 +116,11 @@ async def get_settings(
         await db.commit()
         await db.refresh(settings)
 
+    return _build_settings_response(settings)
+
+
+def _build_settings_response(settings: KitchenSettings) -> SettingsResponse:
+    """Build SettingsResponse from a KitchenSettings model instance."""
     return SettingsResponse(
         azure_endpoint=settings.azure_endpoint,
         azure_key_set=bool(settings.azure_key),
@@ -132,6 +151,13 @@ async def get_settings(
         ocr_filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
         ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity,
         cost_distribution_max_days=settings.cost_distribution_max_days,
+        # LLM settings — see LLM-MANIFEST.md for removal instructions
+        llm_enabled=settings.llm_enabled,
+        anthropic_api_key_set=bool(settings.anthropic_api_key),
+        llm_model=settings.llm_model,
+        llm_confidence_threshold=float(settings.llm_confidence_threshold) if settings.llm_confidence_threshold else None,
+        llm_monthly_token_limit=settings.llm_monthly_token_limit,
+        llm_features_enabled=settings.llm_features_enabled,
     )
 
 
@@ -160,37 +186,7 @@ async def update_settings(
     await db.commit()
     await db.refresh(settings)
 
-    return SettingsResponse(
-        azure_endpoint=settings.azure_endpoint,
-        azure_key_set=bool(settings.azure_key),
-        currency_symbol=settings.currency_symbol,
-        date_format=settings.date_format,
-        high_quantity_threshold=settings.high_quantity_threshold,
-        # SMTP settings
-        smtp_host=settings.smtp_host,
-        smtp_port=settings.smtp_port,
-        smtp_username=settings.smtp_username,
-        smtp_password_set=bool(settings.smtp_password),
-        smtp_use_tls=settings.smtp_use_tls,
-        smtp_from_email=settings.smtp_from_email,
-        smtp_from_name=settings.smtp_from_name,
-        support_email=settings.support_email,
-        # Dext integration
-        dext_email=settings.dext_email,
-        dext_include_notes=settings.dext_include_notes,
-        dext_include_non_stock=settings.dext_include_non_stock,
-        dext_auto_send_enabled=settings.dext_auto_send_enabled,
-        dext_manual_send_enabled=settings.dext_manual_send_enabled,
-        dext_include_annotations=settings.dext_include_annotations,
-        # PDF annotation settings
-        pdf_annotations_enabled=settings.pdf_annotations_enabled,
-        pdf_preview_show_annotations=settings.pdf_preview_show_annotations,
-        # OCR post-processing options
-        ocr_clean_product_codes=settings.ocr_clean_product_codes,
-        ocr_filter_subtotal_rows=settings.ocr_filter_subtotal_rows,
-        ocr_use_weight_as_quantity=settings.ocr_use_weight_as_quantity,
-        cost_distribution_max_days=settings.cost_distribution_max_days,
-    )
+    return _build_settings_response(settings)
 
 
 @router.post("/test-azure")
@@ -709,3 +705,94 @@ async def regenerate_api_key(
     await db.refresh(settings)
 
     return {"api_key": new_key, "api_key_enabled": True}
+
+
+# ============ LLM Usage Stats Endpoints ============
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+
+
+class LlmUsageStatsResponse(BaseModel):
+    total_calls: int = 0
+    successful_calls: int = 0
+    failed_calls: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    cache_entries_this_month: int = 0
+
+
+@router.get("/llm-usage", response_model=LlmUsageStatsResponse)
+async def get_llm_usage(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get aggregated LLM usage stats for the current month"""
+    from services.llm_service import get_usage_stats
+
+    stats = await get_usage_stats(db, current_user.kitchen_id)
+    return LlmUsageStatsResponse(**stats)
+
+
+@router.post("/test-llm")
+async def test_llm_connection(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Test Anthropic API connection with current settings"""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings or not settings.anthropic_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Anthropic API key not configured"
+        )
+
+    if not settings.llm_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="LLM features are disabled. Enable them in Settings first."
+        )
+
+    try:
+        import anthropic
+        from services.llm_service import DEFAULT_LLM_MODEL
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        response = await client.messages.create(
+            model=settings.llm_model or DEFAULT_LLM_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Say 'ok'"}],
+        )
+        return {"status": "success", "message": f"Connection successful. Model: {response.model}"}
+    except anthropic.AuthenticationError:
+        raise HTTPException(status_code=400, detail="Authentication failed — check your API key")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+
+
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+@router.get("/llm-models")
+async def get_llm_models(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch available models from Anthropic API."""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings or not settings.anthropic_api_key:
+        return {"models": [], "default": None, "error": "No API key configured"}
+
+    from services.llm_service import list_available_models, DEFAULT_LLM_MODEL
+    models = await list_available_models(settings.anthropic_api_key)
+
+    return {
+        "models": models,
+        "default": DEFAULT_LLM_MODEL,
+        "current": settings.llm_model or DEFAULT_LLM_MODEL,
+    }

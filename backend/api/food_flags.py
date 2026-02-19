@@ -935,11 +935,66 @@ async def get_recipe_flags(
 
             recipe_text_suggestions = list(text_flag_matches.values())
 
+    # LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+    # Optionally run LLM analysis on recipe text for contextual allergen detection
+    llm_recipe_suggestions = []
+    try:
+        from services.llm_service import analyse_product_label
+
+        # Concatenate all text sources for LLM
+        all_text_parts = []
+        if recipe_row:
+            if recipe_row.name:
+                all_text_parts.append(f"Recipe: {recipe_row.name}")
+            if recipe_row.description:
+                all_text_parts.append(f"Description: {recipe_row.description}")
+            if recipe_row.notes:
+                all_text_parts.append(f"Notes: {recipe_row.notes}")
+        combined_text = "\n".join(all_text_parts)
+
+        if combined_text and len(combined_text.strip()) >= 10:
+            # Build flag categories for LLM
+            cat_result_llm = await db.execute(
+                select(FoodFlagCategory)
+                .options(selectinload(FoodFlagCategory.flags))
+                .where(FoodFlagCategory.kitchen_id == user.kitchen_id)
+            )
+            llm_categories = cat_result_llm.scalars().all()
+            flag_categories_for_llm = [
+                {
+                    "category_name": c.name,
+                    "propagation_type": c.propagation_type,
+                    "flags": [{"id": f.id, "name": f.name, "code": f.code} for f in c.flags],
+                }
+                for c in llm_categories
+            ]
+
+            llm_result = await analyse_product_label(db, user.kitchen_id, combined_text, flag_categories_for_llm)
+
+            if llm_result["status"] in ("success", "cached") and llm_result.get("suggestions"):
+                # Merge LLM suggestions — only add flags not already in keyword results or computed flags
+                computed_flag_ids = set(f.food_flag_id for f in flags)
+                keyword_flag_ids = set(s["flag_id"] for s in recipe_text_suggestions)
+                dismissed_result2 = await db.execute(
+                    select(RecipeTextFlagDismissal.food_flag_id).where(
+                        RecipeTextFlagDismissal.recipe_id == recipe_id,
+                    )
+                )
+                dismissed_ids2 = set(dismissed_result2.scalars().all())
+
+                for s in llm_result["suggestions"]:
+                    fid = s["flag_id"]
+                    if fid not in computed_flag_ids and fid not in keyword_flag_ids and fid not in dismissed_ids2:
+                        llm_recipe_suggestions.append(s)
+    except Exception as e:
+        logger.warning(f"LLM recipe text scanning failed (non-fatal): {e}")
+
     return {
         "flags": [f.model_dump() for f in flags],
         "unassessed_ingredients": unassessed,
         "open_suggestion_ingredients": open_suggestion_ings,
         "recipe_text_suggestions": recipe_text_suggestions,
+        "llm_recipe_suggestions": llm_recipe_suggestions,  # LLM FEATURE
     }
 
 
@@ -1710,6 +1765,79 @@ async def suggest_allergens_bulk(
             result[ing_id] = list(merged.values())
 
     return result
+
+
+# ── LLM Label Analysis ──────────────────────────────────────────────────────
+# LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+
+
+class AnalyseLabelRequest(BaseModel):
+    ingredients_text: str | None = None
+    ingredient_id: int | None = None
+
+
+@router.post("/analyse-label")
+async def analyse_label(
+    body: AnalyseLabelRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Analyse product ingredient text or recipe text for allergens using LLM.
+    Returns suggestions in the same format as keyword matching, with added status and source fields.
+    Falls back to keyword matching if LLM is unavailable.
+    """
+    # Get the text to analyse
+    text = body.ingredients_text
+    if not text and body.ingredient_id:
+        result = await db.execute(
+            select(Ingredient).where(
+                Ingredient.id == body.ingredient_id,
+                Ingredient.kitchen_id == user.kitchen_id,
+            )
+        )
+        ingredient = result.scalar_one_or_none()
+        if ingredient and ingredient.product_ingredients:
+            text = ingredient.product_ingredients
+
+    if not text or len(text.strip()) < 3:
+        return {"llm_status": "unavailable", "suggestions": [], "keyword_suggestions": []}
+
+    # Always run keyword matching as baseline
+    kw_result = await db.execute(
+        select(AllergenKeyword)
+        .options(selectinload(AllergenKeyword.food_flag).selectinload(FoodFlag.category))
+        .where(AllergenKeyword.kitchen_id == user.kitchen_id)
+    )
+    keywords = kw_result.scalars().all()
+    keyword_suggestions = match_allergen_keywords(text, keywords)
+
+    # Build flag categories for LLM
+    cat_result = await db.execute(
+        select(FoodFlagCategory)
+        .options(selectinload(FoodFlagCategory.flags))
+        .where(FoodFlagCategory.kitchen_id == user.kitchen_id)
+    )
+    categories = cat_result.scalars().all()
+
+    flag_categories = []
+    for cat in categories:
+        flag_categories.append({
+            "category_name": cat.name,
+            "propagation_type": cat.propagation_type,
+            "flags": [{"id": f.id, "name": f.name, "code": f.code} for f in cat.flags],
+        })
+
+    # Call LLM analysis
+    from services.llm_service import analyse_product_label
+    llm_result = await analyse_product_label(db, user.kitchen_id, text, flag_categories)
+
+    return {
+        "llm_status": llm_result["status"],
+        "suggestions": llm_result.get("suggestions") or [],
+        "keyword_suggestions": keyword_suggestions,
+        "error": llm_result.get("error"),
+    }
 
 
 # ── Allergen keyword CRUD (Settings) ────────────────────────────────────────

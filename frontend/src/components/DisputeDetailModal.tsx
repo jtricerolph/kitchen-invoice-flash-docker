@@ -115,6 +115,24 @@ export default function DisputeDetailModal({ disputeId, onClose, onUpdate }: Dis
   const [isUploading, setIsUploading] = useState(false)
   const [copiedHash, setCopiedHash] = useState<string | null>(null)
 
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  const [aiEmailLoading, setAiEmailLoading] = useState(false)
+  const [aiEmailSubject, setAiEmailSubject] = useState('')
+  const [aiEmailBody, setAiEmailBody] = useState('')
+  const [aiEmailError, setAiEmailError] = useState<string | null>(null)
+
+  // LLM FEATURE — settings query for LLM enabled check
+  const { data: settings } = useQuery<{ llm_enabled?: boolean; anthropic_api_key_set?: boolean }>({
+    queryKey: ['settings'],
+    queryFn: async () => {
+      const res = await fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) return {}
+      return res.json()
+    },
+    enabled: !!token,
+    staleTime: 60000,
+  })
+
   const { data: dispute, isLoading, error } = useQuery<DisputeDetail>({
     queryKey: ['dispute', disputeId],
     queryFn: async () => {
@@ -224,6 +242,35 @@ export default function DisputeDetailModal({ disputeId, onClose, onUpdate }: Dis
       description: editedDescription.trim() || undefined
     } as any)
     setIsEditing(false)
+  }
+
+  // LLM FEATURE — see LLM-MANIFEST.md for removal instructions
+  const handleDraftEmail = async () => {
+    setAiEmailLoading(true)
+    setAiEmailError(null)
+    setAiEmailSubject('')
+    setAiEmailBody('')
+    try {
+      const res = await fetch(`/api/disputes/${disputeId}/draft-email`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to draft email')
+      }
+      const data = await res.json()
+      if (data.llm_status === 'success' || data.llm_status === 'cached') {
+        setAiEmailSubject(data.email_subject || '')
+        setAiEmailBody(data.email_body || '')
+      } else {
+        setAiEmailError(data.error || 'AI drafting unavailable')
+      }
+    } catch (err) {
+      setAiEmailError(err instanceof Error ? err.message : 'Failed to draft email')
+    } finally {
+      setAiEmailLoading(false)
+    }
   }
 
   const handleUploadAttachment = async () => {
@@ -466,6 +513,75 @@ export default function DisputeDetailModal({ disputeId, onClose, onUpdate }: Dis
               </div>
             </div>
           </div>
+
+          {/* LLM FEATURE — Draft Email button — see LLM-MANIFEST.md for removal instructions */}
+          {settings?.llm_enabled && settings?.anthropic_api_key_set && (
+            <div style={styles.section}>
+              <div style={styles.sectionHeader}>
+                <h3 style={styles.sectionTitle}>Draft Supplier Email</h3>
+                <button
+                  onClick={handleDraftEmail}
+                  disabled={aiEmailLoading}
+                  style={{
+                    ...styles.secondaryBtn,
+                    background: '#7952b3',
+                    color: 'white',
+                    border: 'none',
+                    opacity: aiEmailLoading ? 0.6 : 1,
+                  }}
+                >
+                  {aiEmailLoading ? 'Drafting...' : '\u2728 Draft Email'}
+                </button>
+              </div>
+              {aiEmailError && (
+                <div style={{ padding: '0.5rem 0.75rem', background: '#fee', color: '#c00', borderRadius: '6px', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                  {aiEmailError}
+                </div>
+              )}
+              {aiEmailSubject && (
+                <div style={{ background: '#f3effc', borderRadius: '8px', padding: '1rem', border: '1px solid #d4c5f0' }}>
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <label style={{ ...styles.label, fontSize: '0.8rem', color: '#7952b3' }}>Subject</label>
+                    <input
+                      type="text"
+                      value={aiEmailSubject}
+                      onChange={(e) => setAiEmailSubject(e.target.value)}
+                      style={{ ...styles.input, marginBottom: 0, borderColor: '#d4c5f0' }}
+                    />
+                  </div>
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <label style={{ ...styles.label, fontSize: '0.8rem', color: '#7952b3' }}>Body</label>
+                    <textarea
+                      value={aiEmailBody}
+                      onChange={(e) => setAiEmailBody(e.target.value)}
+                      style={{ ...styles.textarea, minHeight: '180px', marginBottom: 0, borderColor: '#d4c5f0' }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(`Subject: ${aiEmailSubject}\n\n${aiEmailBody}`)
+                      }}
+                      style={{ ...styles.secondaryBtn, fontSize: '0.85rem' }}
+                    >
+                      Copy to Clipboard
+                    </button>
+                    <button
+                      onClick={() => {
+                        window.open(`mailto:?subject=${encodeURIComponent(aiEmailSubject)}&body=${encodeURIComponent(aiEmailBody)}`)
+                      }}
+                      style={{ ...styles.primaryBtn, fontSize: '0.85rem', padding: '0.5rem 1rem' }}
+                    >
+                      Open in Email Client
+                    </button>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: '#7952b3', marginTop: '0.5rem', fontStyle: 'italic' }}>
+                    AI-generated draft — review and edit before sending
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Description */}
           <div style={styles.section}>
