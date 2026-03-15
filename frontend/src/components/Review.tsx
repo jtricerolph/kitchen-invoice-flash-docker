@@ -2132,19 +2132,15 @@ export default function Review() {
 
     // Count items with price calculation errors
     // Valid cases: qty only (free item), or all three values with correct calculation
-    // For credit notes, totals are negative but qty/price are positive
-    const isCreditNote = invoice?.document_type === 'credit_note'
     const priceCalcErrors = lineItems.filter(item => {
-      const hasQty = item.quantity != null && item.quantity > 0
-      const hasPrice = item.unit_price != null && item.unit_price > 0
-      const hasTotal = item.amount != null && item.amount !== 0  // Changed to allow negative amounts (credit notes)
+      const hasQty = item.quantity != null && item.quantity !== 0
+      const hasPrice = item.unit_price != null && item.unit_price !== 0
+      const hasTotal = item.amount != null && item.amount !== 0
 
-      // For credit notes, check if absolute values match (qty * price = |total|)
+      // qty * price should equal amount (works for both positive and negative/credit lines)
       const expectedTotal = (item.quantity || 0) * (item.unit_price || 0)
       const actualTotal = item.amount || 0
-      const calculationMismatch = isCreditNote
-        ? Math.abs(Math.abs(expectedTotal) - Math.abs(actualTotal)) > 0.02  // Compare absolute values for credit notes
-        : Math.abs(expectedTotal - actualTotal) > 0.02  // Normal comparison for invoices
+      const calculationMismatch = Math.abs(expectedTotal - actualTotal) > 0.02
 
       return (
         (hasPrice && (!hasQty || !hasTotal)) ||  // price requires both qty and total
@@ -3801,17 +3797,14 @@ export default function Review() {
                 // Check for price calculation errors
                 // Valid cases: qty only (free item), or all three values with correct calculation
                 // For credit notes, totals are negative but qty/price are positive
-                const hasQty = item.quantity != null && item.quantity > 0
-                const hasPrice = item.unit_price != null && item.unit_price > 0
-                const hasTotal = item.amount != null && item.amount !== 0  // Changed to allow negative amounts (credit notes)
+                const hasQty = item.quantity != null && item.quantity !== 0
+                const hasPrice = item.unit_price != null && item.unit_price !== 0
+                const hasTotal = item.amount != null && item.amount !== 0
 
-                // For credit notes, check if absolute values match (qty * price = |total|)
-                const isCreditNote = invoice?.document_type === 'credit_note'
+                // qty * price should equal amount (works for both positive and negative/credit lines)
                 const expectedTotal = (item.quantity || 0) * (item.unit_price || 0)
                 const actualTotal = item.amount || 0
-                const calculationMismatch = isCreditNote
-                  ? Math.abs(Math.abs(expectedTotal) - Math.abs(actualTotal)) > 0.02  // Compare absolute values for credit notes
-                  : Math.abs(expectedTotal - actualTotal) > 0.02  // Normal comparison for invoices
+                const calculationMismatch = Math.abs(expectedTotal - actualTotal) > 0.02
 
                 const hasPriceCalcError =
                   (hasPrice && (!hasQty || !hasTotal)) ||  // price requires both qty and total
