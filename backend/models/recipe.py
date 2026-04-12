@@ -144,6 +144,7 @@ class RecipeChangeLog(Base):
     recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id", ondelete="CASCADE"), nullable=False)
     change_summary: Mapped[str] = mapped_column(Text, nullable=False)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    source_invoice_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships

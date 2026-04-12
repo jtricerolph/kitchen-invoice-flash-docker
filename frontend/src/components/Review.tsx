@@ -1226,14 +1226,15 @@ export default function Review() {
   }, [invoiceNumber, invoiceDate, total, netTotal, supplierId, category, orderNumber, documentType])
 
   const handleConfirm = async () => {
-    // Check for open disputes before confirming
+    // Warn (but allow) if there are open disputes
     if (invoice?.has_open_disputes) {
-      alert(
-        `Cannot confirm invoice with open disputes.\n\n` +
-        `This invoice has ${invoice.dispute_count} dispute(s) that must be resolved first.\n\n` +
-        `Please resolve all disputes before confirming.`
-      )
-      return
+      if (!window.confirm(
+        `This invoice has ${invoice.dispute_count} open dispute(s).\n\n` +
+        `You can still confirm — the invoice will appear in reports while the dispute is tracked separately.\n\n` +
+        `Continue?`
+      )) {
+        return
+      }
     }
 
     // Check for invoice date before confirming

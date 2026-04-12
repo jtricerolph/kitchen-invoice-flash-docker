@@ -282,10 +282,15 @@ async def delete_backup(
 @router.get("/{backup_id}/download")
 async def download_backup(
     backup_id: int,
-    current_user: User = Depends(get_current_user),
+    token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """Download a backup file"""
+    """Download a backup file. Auth via token query param for direct browser downloads."""
+    from auth.jwt import get_current_user_from_token
+
+    current_user = await get_current_user_from_token(token, db)
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Invalid token")
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
 

@@ -85,10 +85,29 @@ def calc_price_per_std_unit(
     pack_quantity: Optional[int],
     unit_size: Optional[Decimal],
     unit_size_type: Optional[str],
-    standard_unit: str
+    standard_unit: str,
+    line_item_unit: Optional[str] = None,
 ) -> Optional[Decimal]:
-    """Calculate price per standard unit from source pack data."""
-    if not unit_price or not pack_quantity or not unit_size or not unit_size_type:
+    """Calculate price per standard unit from source pack data.
+
+    If line_item_unit is a recognised weight/volume unit (kg, g, ml, ltr etc.)
+    that can convert to standard_unit, use direct conversion instead of pack
+    formula. This handles cases where the same SKU is sold as a box OR loose
+    by weight — e.g. carrots at £0.80/kg vs £7.98/10kg box.
+    """
+    if not unit_price:
+        return None
+
+    # If the line item unit is a measurable weight/volume, convert directly
+    if line_item_unit:
+        li_unit = line_item_unit.lower().strip()
+        if li_unit in UNIT_CONVERSIONS:
+            direct = convert_to_standard(Decimal("1"), li_unit, standard_unit)
+            if direct and direct > 0:
+                return unit_price / direct
+
+    # Fall back to pack formula
+    if not pack_quantity or not unit_size or not unit_size_type:
         return None
     total_in_source_unit = Decimal(str(pack_quantity)) * unit_size
     total_in_std = convert_to_standard(total_in_source_unit, unit_size_type, standard_unit)
@@ -1953,38 +1972,42 @@ async def update_ingredient_prices_for_invoice(
                     matched_source = source
                     break
 
-        if matched_source and li.unit_price:
-            # Update source price
-            matched_source.latest_unit_price = li.unit_price
-            matched_source.latest_invoice_id = invoice_id
-            matched_source.latest_invoice_date = invoice_date
-
-            # Get ingredient standard unit for conversion
-            ing_result = await db.execute(
-                select(Ingredient).where(Ingredient.id == matched_source.ingredient_id)
-            )
-            ingredient = ing_result.scalar_one_or_none()
-
-            if ingredient and matched_source.pack_quantity and matched_source.unit_size and matched_source.unit_size_type:
-                old_price = float(matched_source.price_per_std_unit) if matched_source.price_per_std_unit else None
-                matched_source.price_per_std_unit = calc_price_per_std_unit(
-                    li.unit_price,
-                    matched_source.pack_quantity,
-                    matched_source.unit_size,
-                    matched_source.unit_size_type,
-                    ingredient.standard_unit,
-                )
-                new_price = float(matched_source.price_per_std_unit) if matched_source.price_per_std_unit else None
-                if new_price is not None:
-                    updated_ingredients[ingredient.id] = {
-                        "name": ingredient.name,
-                        "unit": ingredient.standard_unit or "",
-                        "old_price": old_price,
-                        "new_price": new_price,
-                    }
-
-            # Set line_item.ingredient_id
+        if matched_source:
+            # Always link line item to ingredient for traceability
             if not li.ingredient_id:
                 li.ingredient_id = matched_source.ingredient_id
+
+            # Only update source pricing for real invoices with positive prices
+            # Skip credit notes and zero/free replacements
+            if li.unit_price and li.unit_price > 0 and invoice.document_type != 'credit_note':
+                matched_source.latest_unit_price = li.unit_price
+                matched_source.latest_invoice_id = invoice_id
+                matched_source.latest_invoice_date = invoice_date
+
+                # Get ingredient standard unit for conversion
+                ing_result = await db.execute(
+                    select(Ingredient).where(Ingredient.id == matched_source.ingredient_id)
+                )
+                ingredient = ing_result.scalar_one_or_none()
+
+                if ingredient and (li.unit or (matched_source.pack_quantity and matched_source.unit_size and matched_source.unit_size_type)):
+                    old_price = float(matched_source.price_per_std_unit) if matched_source.price_per_std_unit else None
+                    matched_source.price_per_std_unit = calc_price_per_std_unit(
+                        li.unit_price,
+                        matched_source.pack_quantity,
+                        matched_source.unit_size,
+                        matched_source.unit_size_type,
+                        ingredient.standard_unit,
+                        line_item_unit=li.unit,
+                    )
+                    new_price = float(matched_source.price_per_std_unit) if matched_source.price_per_std_unit else None
+                    # Only log as a change if the price actually changed
+                    if new_price is not None and (old_price is None or abs(new_price - old_price) > 0.000001):
+                        updated_ingredients[ingredient.id] = {
+                            "name": ingredient.name,
+                            "unit": ingredient.standard_unit or "",
+                            "old_price": old_price,
+                            "new_price": new_price,
+                        }
 
     return updated_ingredients

@@ -489,18 +489,59 @@ async def price_impact_report(
     if not logs:
         return {"days": days, "recipes": []}
 
-    # Group log entries by recipe
+    import re
+    price_change_re = re.compile(
+        r"^(.+?) price changed: £([\d.]+)(/(\w+))? → £([\d.]+)(/(\w+))?$"
+    )
+    price_set_re = re.compile(
+        r"^(.+?) price set: £([\d.]+)(/(\w+))?$"
+    )
+
+    # Batch-load invoice numbers for logs that have source_invoice_id
+    invoice_ids = {log.source_invoice_id for log in logs if log.source_invoice_id}
+    invoice_map: dict[int, str] = {}
+    if invoice_ids:
+        from models.invoice import Invoice
+        inv_result = await db.execute(
+            select(Invoice.id, Invoice.invoice_number).where(Invoice.id.in_(invoice_ids))
+        )
+        invoice_map = {row[0]: row[1] for row in inv_result.fetchall()}
+
+    # Group log entries by recipe, parsing structured data from summary
     recipe_changes: dict[int, list[dict]] = {}
     for log in logs:
-        recipe_changes.setdefault(log.recipe_id, []).append({
+        entry: dict = {
             "summary": log.change_summary,
             "date": str(log.created_at.date()) if log.created_at else None,
-        })
+            "ingredient_name": None,
+            "old_price": None,
+            "new_price": None,
+            "unit": None,
+            "source_invoice_id": log.source_invoice_id,
+            "source_invoice_number": invoice_map.get(log.source_invoice_id) if log.source_invoice_id else None,
+        }
+        m = price_change_re.match(log.change_summary)
+        if m:
+            entry["ingredient_name"] = m.group(1)
+            entry["old_price"] = float(m.group(2))
+            entry["new_price"] = float(m.group(5))
+            entry["unit"] = m.group(4) or m.group(7)
+        else:
+            m2 = price_set_re.match(log.change_summary)
+            if m2:
+                entry["ingredient_name"] = m2.group(1)
+                entry["new_price"] = float(m2.group(2))
+                entry["unit"] = m2.group(4)
+        recipe_changes.setdefault(log.recipe_id, []).append(entry)
 
     # Get recipe info + cost snapshots for affected recipes
     recipe_ids = list(recipe_changes.keys())
     recipe_result = await db.execute(
-        select(Recipe).where(Recipe.id.in_(recipe_ids))
+        select(Recipe)
+        .options(
+            selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient),
+        )
+        .where(Recipe.id.in_(recipe_ids))
     )
     recipes = {r.id: r for r in recipe_result.scalars().all()}
 
@@ -509,6 +550,30 @@ async def price_impact_report(
         r = recipes.get(rid)
         if not r:
             continue
+
+        output_qty = _get_output_qty(r)
+
+        # Build ingredient name -> usage map for cost impact calculation
+        ing_usage: dict[str, float] = {}  # ingredient_name -> qty_in_std_unit
+        for ri in r.ingredients:
+            if ri.ingredient and ri.quantity:
+                display_unit = ri.unit or ri.ingredient.standard_unit
+                qty_std = _convert_unit(float(ri.quantity), display_unit, ri.ingredient.standard_unit)
+                yld = float(ri.yield_percent) if ri.yield_percent else 100.0
+                # qty adjusted for yield: more raw ingredient needed if yield < 100%
+                qty_effective = qty_std / (yld / 100) if yld > 0 else qty_std
+                ing_usage[ri.ingredient.name.lower()] = qty_effective
+
+        # Calculate per-change cost impact
+        for change in recipe_changes[rid]:
+            impact = None
+            if change["old_price"] is not None and change["new_price"] is not None and change["ingredient_name"]:
+                qty = ing_usage.get(change["ingredient_name"].lower())
+                if qty is not None:
+                    price_diff = change["new_price"] - change["old_price"]
+                    # Impact per output unit (portion/kg/etc)
+                    impact = round(price_diff * qty / output_qty, 4) if output_qty else None
+            change["cost_impact"] = impact
 
         # Latest snapshot (current cost)
         latest_snap = (await db.execute(
@@ -1808,6 +1873,7 @@ async def snapshot_recipes_using_ingredient(
     db: AsyncSession,
     trigger_source: str = "",
     price_info: dict | None = None,
+    invoice_id: int | None = None,
 ):
     """Find all recipes using this ingredient and snapshot their costs.
 
@@ -1836,9 +1902,10 @@ async def snapshot_recipes_using_ingredient(
         old_p = price_info.get("old_price")
         new_p = price_info["new_price"]
         unit_label = f"/{unit}" if unit else ""
-        if old_p is not None:
+        # Only log if price actually changed
+        if old_p is not None and abs(new_p - old_p) > 0.000001:
             change_msg = f"{name} price changed: £{old_p:.4f}{unit_label} → £{new_p:.4f}{unit_label}"
-        else:
+        elif old_p is None:
             change_msg = f"{name} price set: £{new_p:.4f}{unit_label}"
 
     for rid in recipe_ids:
@@ -1853,6 +1920,7 @@ async def snapshot_recipes_using_ingredient(
                 recipe_id=rid,
                 change_summary=change_msg,
                 user_id=None,
+                source_invoice_id=invoice_id,
             ))
     if recipe_ids:
         await db.commit()
@@ -1883,6 +1951,99 @@ async def get_change_log(
         }
         for l in logs
     ]
+
+
+@router.post("/cleanup-false-price-changes")
+async def cleanup_false_price_changes(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove recipe change log entries where old price equals new price (false changes)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    import re
+
+    # Get all "price changed" log entries for this kitchen's recipes
+    result = await db.execute(
+        select(RecipeChangeLog)
+        .join(Recipe, RecipeChangeLog.recipe_id == Recipe.id)
+        .where(
+            Recipe.kitchen_id == user.kitchen_id,
+            RecipeChangeLog.change_summary.like("%price changed%"),
+        )
+    )
+    logs = result.scalars().all()
+
+    # Pattern: "Ingredient name price changed: £0.0086/g → £0.0086/g"
+    pattern = re.compile(r"price changed: £([\d.]+)(/\w+)? → £([\d.]+)(/\w+)?")
+    deleted = 0
+    for log in logs:
+        match = pattern.search(log.change_summary)
+        if match:
+            old_price = float(match.group(1))
+            new_price = float(match.group(3))
+            if abs(old_price - new_price) < 0.000001:
+                await db.delete(log)
+                deleted += 1
+
+    await db.commit()
+    return {"message": f"Removed {deleted} false price change entries", "deleted": deleted}
+
+
+@router.post("/backfill-invoice-references")
+async def backfill_invoice_references(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill missing source_invoice_id on recipe change log entries
+    by matching to cost snapshots whose trigger_source contains 'invoice #<id>'."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    import re
+
+    # Get change log entries missing source_invoice_id for this kitchen
+    result = await db.execute(
+        select(RecipeChangeLog)
+        .join(Recipe, RecipeChangeLog.recipe_id == Recipe.id)
+        .where(
+            Recipe.kitchen_id == user.kitchen_id,
+            RecipeChangeLog.source_invoice_id == None,
+            (RecipeChangeLog.change_summary.like("%price changed%") | RecipeChangeLog.change_summary.like("%price set%")),
+        )
+    )
+    logs = result.scalars().all()
+
+    if not logs:
+        return {"message": "No entries missing invoice references", "updated": 0}
+
+    # For each log, find a cost snapshot for same recipe created within 5 seconds
+    invoice_re = re.compile(r"invoice #(\d+)")
+    updated = 0
+    for log in logs:
+        if not log.created_at:
+            continue
+        # Look for a cost snapshot close in time with an invoice trigger_source
+        snap_result = await db.execute(
+            select(RecipeCostSnapshot.trigger_source).where(
+                RecipeCostSnapshot.recipe_id == log.recipe_id,
+                RecipeCostSnapshot.created_at.between(
+                    log.created_at - timedelta(seconds=5),
+                    log.created_at + timedelta(seconds=5),
+                ),
+                RecipeCostSnapshot.trigger_source.like("%invoice #%"),
+            ).limit(1)
+        )
+        row = snap_result.scalar_one_or_none()
+        if row:
+            m = invoice_re.search(row)
+            if m:
+                log.source_invoice_id = int(m.group(1))
+                updated += 1
+
+    await db.commit()
+    return {"message": f"Linked {updated} of {len(logs)} entries to their triggering invoice", "updated": updated, "total": len(logs)}
 
 
 # ── Print / Recipe Card HTML ────────────────────────────────────────────────

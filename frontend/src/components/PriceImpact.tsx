@@ -6,6 +6,13 @@ import { useAuth } from '../App'
 interface IngredientChange {
   summary: string
   date: string | null
+  ingredient_name: string | null
+  old_price: number | null
+  new_price: number | null
+  unit: string | null
+  cost_impact: number | null
+  source_invoice_id: number | null
+  source_invoice_number: string | null
 }
 
 interface ImpactItem {
@@ -18,6 +25,12 @@ interface ImpactItem {
   cost_change: number | null
   cost_change_pct: number | null
   ingredient_changes: IngredientChange[]
+}
+
+function formatIngredientPrice(price: number, unit: string | null): string {
+  if (unit === 'g' && price < 1) return `\u00A3${(price * 1000).toFixed(2)}/kg`
+  if (unit === 'ml' && price < 1) return `\u00A3${(price * 1000).toFixed(2)}/ltr`
+  return `\u00A3${price.toFixed(4)}/${unit || '?'}`
 }
 
 interface ImpactData {
@@ -174,9 +187,41 @@ export default function PriceImpact() {
                         <td colSpan={6} style={{ padding: '0 0.75rem 0.75rem 2rem', background: '#fafafa' }}>
                           <div style={{ fontSize: '0.8rem', color: '#555' }}>
                             {r.ingredient_changes.map((c, i) => (
-                              <div key={i} style={{ padding: '3px 0', borderBottom: i < r.ingredient_changes.length - 1 ? '1px solid #eee' : 'none' }}>
-                                <span style={{ color: '#888', marginRight: '0.5rem' }}>{c.date}</span>
-                                {c.summary}
+                              <div key={i} style={{ padding: '3px 0', borderBottom: i < r.ingredient_changes.length - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span>
+                                  <span style={{ color: '#888', marginRight: '0.5rem' }}>{c.date}</span>
+                                  {c.source_invoice_id && (
+                                    <span
+                                      style={{ cursor: 'pointer', color: '#e94560', marginRight: '0.5rem', textDecoration: 'underline' }}
+                                      onClick={() => navigate(`/invoice/${c.source_invoice_id}`)}
+                                    >
+                                      {c.source_invoice_number || `#${c.source_invoice_id}`}
+                                    </span>
+                                  )}
+                                  {c.ingredient_name && c.old_price != null && c.new_price != null ? (
+                                    <>
+                                      {c.ingredient_name} price changed: {formatIngredientPrice(c.old_price, c.unit)} → {formatIngredientPrice(c.new_price, c.unit)}
+                                    </>
+                                  ) : c.ingredient_name && c.new_price != null && c.old_price == null ? (
+                                    <>
+                                      {c.ingredient_name} price set: {formatIngredientPrice(c.new_price, c.unit)}
+                                    </>
+                                  ) : (
+                                    c.summary
+                                  )}
+                                </span>
+                                {c.cost_impact != null && (
+                                  <span style={{
+                                    fontFamily: 'monospace',
+                                    fontWeight: 600,
+                                    fontSize: '0.75rem',
+                                    color: c.cost_impact > 0 ? '#dc3545' : c.cost_impact < 0 ? '#22c55e' : '#888',
+                                    marginLeft: '1rem',
+                                    whiteSpace: 'nowrap',
+                                  }}>
+                                    {c.cost_impact > 0 ? '+' : ''}{`\u00A3${c.cost_impact.toFixed(4)}`}/{r.output_unit}
+                                  </span>
+                                )}
                               </div>
                             ))}
                           </div>

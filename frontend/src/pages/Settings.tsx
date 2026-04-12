@@ -1726,6 +1726,48 @@ export default function Settings() {
     },
   })
 
+  const cleanupPriceChangesMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/recipes/cleanup-false-price-changes', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to cleanup')
+      }
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setDataMessage(data.message)
+      setTimeout(() => setDataMessage(null), 5000)
+    },
+    onError: (error) => {
+      setDataMessage(`Error: ${error.message}`)
+    },
+  })
+
+  const backfillInvoiceRefsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/recipes/backfill-invoice-references', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.detail || 'Failed to backfill')
+      }
+      return res.json()
+    },
+    onSuccess: (data) => {
+      setDataMessage(data.message)
+      setTimeout(() => setDataMessage(null), 5000)
+    },
+    onError: (error) => {
+      setDataMessage(`Error: ${error.message}`)
+    },
+  })
+
   const rematchFuzzyMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch('/api/suppliers/rematch-fuzzy', {
@@ -6362,24 +6404,8 @@ export default function Settings() {
                         <td style={styles.td}>
                           <div style={styles.actionButtons}>
                             <button
-                              onClick={async () => {
-                                try {
-                                  const res = await fetch(`/api/backup/${backup.id}/download`, {
-                                    headers: { Authorization: `Bearer ${token}` },
-                                  })
-                                  if (!res.ok) throw new Error('Download failed')
-                                  const blob = await res.blob()
-                                  const url = window.URL.createObjectURL(blob)
-                                  const a = document.createElement('a')
-                                  a.href = url
-                                  a.download = backup.filename
-                                  document.body.appendChild(a)
-                                  a.click()
-                                  window.URL.revokeObjectURL(url)
-                                  document.body.removeChild(a)
-                                } catch (err) {
-                                  setBackupCreateMessage(`Error: Download failed`)
-                                }
+                              onClick={() => {
+                                window.open(`/api/backup/${backup.id}/download?token=${token}`, '_blank')
                               }}
                               style={styles.actionBtn}
                               disabled={backup.status !== 'success'}
@@ -7674,6 +7700,41 @@ export default function Settings() {
                   style={styles.actionBtn}
                 >
                   Clear & Reload
+                </button>
+              </div>
+              <div style={styles.dataAction}>
+                <div>
+                  <strong>Cleanup False Price Changes</strong>
+                  <p style={styles.actionDesc}>Remove recipe change log entries where old and new price are identical (e.g. £0.0086/g → £0.0086/g).</p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (confirm('Remove all false price change entries from recipe change logs?')) {
+                      cleanupPriceChangesMutation.mutate()
+                    }
+                  }}
+                  style={styles.actionBtn}
+                  disabled={cleanupPriceChangesMutation.isPending}
+                >
+                  {cleanupPriceChangesMutation.isPending ? 'Cleaning...' : 'Cleanup'}
+                </button>
+              </div>
+
+              <div style={styles.actionRow}>
+                <div>
+                  <strong>Backfill Invoice References</strong>
+                  <p style={styles.actionDesc}>Link existing price change entries to their triggering invoice (for entries created before this feature was added).</p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (confirm('Scan price change entries and link them to triggering invoices?')) {
+                      backfillInvoiceRefsMutation.mutate()
+                    }
+                  }}
+                  style={styles.actionBtn}
+                  disabled={backfillInvoiceRefsMutation.isPending}
+                >
+                  {backfillInvoiceRefsMutation.isPending ? 'Backfilling...' : 'Backfill'}
                 </button>
               </div>
               </div>

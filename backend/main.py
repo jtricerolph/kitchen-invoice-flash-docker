@@ -65,6 +65,7 @@ from migrations.add_menus import migrate as run_menus_migration
 from migrations.add_ingredient_is_free import migrate as run_ingredient_is_free_migration
 from migrations.add_recipe_text_flag_dismissals import migrate as run_recipe_text_flag_dismissals_migration
 from migrations.add_llm_infrastructure import migrate as run_llm_infrastructure_migration  # LLM FEATURE — see LLM-MANIFEST.md
+from migrations.add_changelog_invoice_link import migrate as run_changelog_invoice_link_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -447,6 +448,12 @@ async def lifespan(app: FastAPI):
         logger.info("LLM infrastructure migration completed")
     except Exception as e:
         logger.warning(f"LLM infrastructure migration warning (may be expected): {e}")
+
+    try:
+        await run_changelog_invoice_link_migration()
+        logger.info("Changelog invoice link migration completed")
+    except Exception as e:
+        logger.warning(f"Changelog invoice link migration warning (may be expected): {e}")
 
     # Start the scheduler for daily sync jobs
     start_scheduler()

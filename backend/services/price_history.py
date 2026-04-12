@@ -145,6 +145,8 @@ class PriceHistoryService:
             Invoice.supplier_id == supplier_id,
             Invoice.invoice_date >= cutoff_date,
             LineItem.unit_price.isnot(None),
+            LineItem.unit_price > 0,
+            or_(Invoice.document_type.is_(None), Invoice.document_type != 'credit_note'),
         ]
 
         # Match by product_code if available, otherwise by description
@@ -195,6 +197,8 @@ class PriceHistoryService:
             Invoice.supplier_id == supplier_id,
             Invoice.invoice_date > reference_date,
             LineItem.unit_price.isnot(None),
+            LineItem.unit_price > 0,
+            or_(Invoice.document_type.is_(None), Invoice.document_type != 'credit_note'),
         ]
 
         # Match by product_code if available, otherwise by description
@@ -409,7 +413,8 @@ class PriceHistoryService:
                 LineItem.unit_price,
                 LineItem.quantity,
                 Invoice.id,
-                Invoice.invoice_number
+                Invoice.invoice_number,
+                Invoice.document_type,
             )
             .where(and_(*conditions))
             .order_by(Invoice.invoice_date)
@@ -422,7 +427,7 @@ class PriceHistoryService:
         current_price = None
 
         for row in rows:
-            inv_date, unit_price, qty, inv_id, inv_num = row
+            inv_date, unit_price, qty, inv_id, inv_num, doc_type = row
             if unit_price is not None:
                 price_history.append(PriceHistoryPoint(
                     date=inv_date,
@@ -431,7 +436,9 @@ class PriceHistoryService:
                     invoice_number=inv_num,
                     quantity=qty
                 ))
-                current_price = unit_price
+                # Only use positive prices from non-credit-notes for current price
+                if unit_price > 0 and doc_type != 'credit_note':
+                    current_price = unit_price
             if qty:
                 total_qty += qty
             total_occurrences += 1
@@ -640,11 +647,14 @@ class PriceHistoryService:
             supplier_id_val = row.supplier_id
 
             # Get most recent price, invoice info, and unit
-            # Match by first line of description only
+            # Skip credit notes and zero/negative prices (free replacements)
             recent_conditions = [
                 Invoice.kitchen_id == self.kitchen_id,
                 LineItem.invoice_id == Invoice.id,
                 Invoice.supplier_id == supplier_id_val,
+                LineItem.unit_price.isnot(None),
+                LineItem.unit_price > 0,
+                or_(Invoice.document_type.is_(None), Invoice.document_type != 'credit_note'),
                 LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
             ]
             if description:
@@ -691,12 +701,16 @@ class PriceHistoryService:
 
             if date_from is not None and date_to is not None:
                 # Match by first line of description only
+                # Skip credit notes and zero/negative prices
                 earliest_conditions = [
                     Invoice.kitchen_id == self.kitchen_id,
                     LineItem.invoice_id == Invoice.id,
                     Invoice.supplier_id == supplier_id_val,
                     Invoice.invoice_date >= date_from,
                     Invoice.invoice_date <= date_to,
+                    LineItem.unit_price.isnot(None),
+                    LineItem.unit_price > 0,
+                    or_(Invoice.document_type.is_(None), Invoice.document_type != 'credit_note'),
                     LineItem.product_code == product_code if product_code else LineItem.product_code.is_(None),
                 ]
                 if description:

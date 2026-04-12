@@ -787,6 +787,7 @@ async def process_invoice_background(invoice_id: int, image_path: str, kitchen_i
                             ing_id, db,
                             trigger_source=f"ingredient_price_update: invoice #{invoice_id}",
                             price_info=price_info,
+                            invoice_id=invoice_id,
                         )
                     await db.commit()
                     logger.info(f"Auto-updated ingredient prices for {len(updated_ingredients)} ingredients from invoice {invoice_id}")
@@ -1951,6 +1952,7 @@ async def update_line_item(
                         ing_id, db,
                         trigger_source=f"line_item_update: #{item_id}",
                         price_info=price_info,
+                        invoice_id=invoice_id,
                     )
                 await db.commit()
         except Exception as e:
