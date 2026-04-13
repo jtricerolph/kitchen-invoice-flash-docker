@@ -16,6 +16,7 @@ import PurchasesReport from './components/PurchasesReport'
 import AllowancesReport from './components/AllowancesReport'
 import SalesGPReport from './components/SalesGPReport'
 import ReconcilePurchases from './components/ReconcilePurchases'
+import UsageVarianceReport from './components/UsageVarianceReport'
 import SearchInvoices from './components/SearchInvoices'
 import SearchLineItems from './components/SearchLineItems'
 import ResidentsTableChart from './pages/ResidentsTableChart'
@@ -219,6 +220,12 @@ function App() {
               path="/sales-gp"
               element={
                 token ? (isPageAccessible('/gp-report') ? <SalesGPReport /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/usage-variance"
+              element={
+                token ? (isPageAccessible('/gp-report') ? <UsageVarianceReport /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
             />
             <Route
@@ -495,6 +502,7 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                     {showNavItem('/gp-report') && <Link to="/purchases-report" style={styles.dropdownLink}>Purchases Report</Link>}
                     {showNavItem('/gp-report') && <Link to="/allowances-report" style={styles.dropdownLink}>Allowances Report</Link>}
                     {showNavItem('/gp-report') && <Link to="/sales-gp" style={styles.dropdownLink}>Sales GP% Report</Link>}
+                    {showNavItem('/gp-report') && <Link to="/usage-variance" style={styles.dropdownLink}>Usage Variance</Link>}
                     {showNavItem('/gp-report') && <Link to="/purchases/reconcile" style={styles.dropdownLink}>Xero Reconciliation</Link>}
                   </div>
                 </div>

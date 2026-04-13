@@ -2942,3 +2942,476 @@ async def get_sales_gp(
         mapped_item_count=len(mapped_items),
         unmapped_item_count=len(unmapped_items),
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THEORETICAL VS ACTUAL USAGE (REVERSE COSTING)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class UsageVarianceItem(BaseModel):
+    ingredient_id: int
+    ingredient_name: str
+    category: str | None = None
+    standard_unit: str
+    # Theoretical (from sales × recipes)
+    theoretical_qty: float
+    theoretical_value: float
+    dishes_using: int
+    # Actual (from invoices)
+    actual_qty: float | None = None
+    actual_value: float | None = None
+    invoice_count: int = 0
+    # Variance
+    variance_qty: float | None = None
+    variance_pct: float | None = None
+    variance_value: float | None = None
+
+class UnmappedSaleItem(BaseModel):
+    menu_item_name: str
+    portion_name: str
+    total_qty: int
+    category: str | None = None
+
+class UsageVarianceResponse(BaseModel):
+    from_date: date
+    to_date: date
+    items: list[UsageVarianceItem]
+    total_theoretical_value: float
+    total_actual_value: float
+    total_variance_value: float
+    mapped_dish_count: int
+    unmapped_dish_count: int
+    ingredients_with_purchases: int
+    ingredients_without_purchases: int
+    unmapped_sales: list[UnmappedSaleItem]
+
+
+def _expand_recipe_ingredients(
+    recipe,
+    scale: float,
+    theoretical: dict,
+    dishes_using: dict,
+    recipe_name: str,
+    visited: set | None = None,
+    depth: int = 0,
+):
+    """
+    Recursively expand a recipe's ingredients into the theoretical usage dict.
+    Max depth of 3 to avoid lazy-load errors on deeply nested sub-recipes.
+    """
+    from api.ingredients import convert_to_standard, UNIT_CONVERSIONS
+
+    if depth > 3:
+        return
+    if visited is None:
+        visited = set()
+    if recipe.id in visited:
+        return
+    visited.add(recipe.id)
+
+    # Direct ingredients — guard against lazy load
+    try:
+        ingredients = recipe.ingredients
+    except Exception:
+        return
+
+    for ri in ingredients:
+        ing = ri.ingredient
+        if not ing or ing.is_archived:
+            continue
+
+        qty_in_unit = float(ri.quantity) * scale
+        from_unit = (ri.unit or ing.standard_unit).lower().strip()
+        to_unit = ing.standard_unit.lower().strip()
+
+        if from_unit == to_unit:
+            qty_std = qty_in_unit
+        else:
+            converted = convert_to_standard(Decimal(str(qty_in_unit)), from_unit, to_unit)
+            qty_std = float(converted) if converted is not None else qty_in_unit
+
+        yield_pct = float(ri.yield_percent or 100)
+        if yield_pct > 0 and yield_pct < 100:
+            qty_raw = qty_std / (yield_pct / 100.0)
+        else:
+            qty_raw = qty_std
+
+        theoretical[ing.id] = theoretical.get(ing.id, 0.0) + qty_raw
+        if ing.id not in dishes_using:
+            dishes_using[ing.id] = set()
+        dishes_using[ing.id].add(recipe_name)
+
+    # Sub-recipes — guard against lazy load at deeper levels
+    try:
+        sub_recipes = recipe.sub_recipes
+    except Exception:
+        return
+
+    for sr in sub_recipes:
+        child = sr.child_recipe
+        if not child:
+            continue
+
+        child_output = child.batch_portions or 1
+        child_output_unit = "portion"
+        if child.batch_output_type == "bulk" and child.batch_yield_qty:
+            child_output = float(child.batch_yield_qty)
+            child_output_unit = (child.batch_yield_unit or "portion").lower().strip()
+
+        # Convert portions_needed to child's output unit if units differ
+        needed = float(sr.portions_needed)
+        needed_unit = (sr.portions_needed_unit or child_output_unit).lower().strip()
+        if needed_unit != child_output_unit and child.batch_output_type == "bulk":
+            converted = convert_to_standard(Decimal(str(needed)), needed_unit, child_output_unit)
+            if converted is not None:
+                needed = float(converted)
+
+        sub_scale = needed * scale / child_output
+        _expand_recipe_ingredients(
+            child, sub_scale, theoretical, dishes_using, recipe_name, visited.copy(), depth + 1
+        )
+
+
+@router.get("/usage-variance", response_model=UsageVarianceResponse)
+async def get_usage_variance(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Theoretical vs Actual Usage report (reverse costing).
+
+    Compares ingredient usage implied by SambaPOS sales + recipes
+    against actual purchases from Flash invoices for the same period.
+    """
+    from models.settings import KitchenSettings
+    from models.recipe import Recipe, RecipeIngredient, RecipeSubRecipe
+    from models.ingredient import Ingredient, IngredientSource, IngredientCategory
+    from models.line_item import LineItem
+    from services.sambapos_api import SambaPOSClient
+    from api.ingredients import convert_to_standard, UNIT_CONVERSIONS
+    from sqlalchemy import distinct, and_, or_
+
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    kitchen_id = current_user.kitchen_id
+
+    # ── Settings + SambaPOS config ──
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+    if not settings:
+        raise HTTPException(status_code=400, detail="Settings not configured")
+
+    if not all([
+        settings.sambapos_db_host, settings.sambapos_db_name,
+        settings.sambapos_db_username, settings.sambapos_db_password,
+    ]):
+        raise HTTPException(status_code=400, detail="SambaPOS database credentials not configured")
+
+    tracked_categories = [
+        c.strip() for c in (settings.sambapos_tracked_categories or "").split(",") if c.strip()
+    ]
+    if not tracked_categories:
+        raise HTTPException(status_code=400, detail="No SambaPOS categories configured")
+
+    excluded_items = [
+        i.strip() for i in (settings.sambapos_excluded_items or "").split("|") if i.strip()
+    ]
+
+    client = SambaPOSClient(
+        host=settings.sambapos_db_host,
+        port=settings.sambapos_db_port or 1433,
+        database=settings.sambapos_db_name,
+        username=settings.sambapos_db_username,
+        password=settings.sambapos_db_password,
+    )
+
+    # ── Step 1: Get sales + match to recipes ──
+    try:
+        sales = await client.get_sales_breakdown(
+            from_date, to_date, tracked_categories,
+            excluded_categories=excluded_items if excluded_items else None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SambaPOS query failed: {str(e)}")
+
+    # Load recipes with full ingredient chain + sub-recipes (2 levels deep)
+    recipe_result = await db.execute(
+        select(Recipe)
+        .options(
+            selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient)
+                .selectinload(Ingredient.sources),
+            selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient)
+                .selectinload(Ingredient.category),
+            selectinload(Recipe.sub_recipes).selectinload(RecipeSubRecipe.child_recipe)
+                .selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient)
+                .selectinload(Ingredient.sources),
+            selectinload(Recipe.sub_recipes).selectinload(RecipeSubRecipe.child_recipe)
+                .selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient)
+                .selectinload(Ingredient.category),
+            selectinload(Recipe.sub_recipes).selectinload(RecipeSubRecipe.child_recipe)
+                .selectinload(Recipe.sub_recipes).selectinload(RecipeSubRecipe.child_recipe)
+                .selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient)
+                .selectinload(Ingredient.sources),
+        )
+        .where(
+            Recipe.kitchen_id == kitchen_id,
+            Recipe.recipe_type == "dish",
+            Recipe.kds_menu_item_name.isnot(None),
+            Recipe.kds_menu_item_name != "",
+            Recipe.is_archived == False,
+        )
+    )
+    recipes = recipe_result.scalars().all()
+
+    # Build lookup
+    recipe_lookup: dict[tuple[str, str | None], object] = {}
+    for r in recipes:
+        if r.sambapos_portion_name:
+            recipe_lookup[(r.kds_menu_item_name, r.sambapos_portion_name)] = r
+        else:
+            recipe_lookup[(r.kds_menu_item_name, None)] = r
+
+    # ── Step 2: Explode recipes into theoretical ingredient usage ──
+    theoretical: dict[int, float] = {}       # ingredient_id -> qty in std unit
+    dishes_using: dict[int, set] = {}        # ingredient_id -> set of dish names
+    ingredient_cache: dict[int, object] = {} # ingredient_id -> Ingredient obj
+    unmapped_sales: list[UnmappedSaleItem] = []
+    mapped_dish_count = 0
+    unmapped_dish_count = 0
+
+    for sale in sales:
+        menu_name = sale["menu_item_name"]
+        portion = sale["portion_name"]
+        qty = sale["total_qty"]
+
+        matched_recipe = recipe_lookup.get((menu_name, portion))
+        if not matched_recipe and portion != "Normal":
+            matched_recipe = recipe_lookup.get((menu_name, None))
+        if not matched_recipe and portion == "Normal":
+            matched_recipe = recipe_lookup.get((menu_name, None))
+
+        if not matched_recipe:
+            unmapped_dish_count += 1
+            unmapped_sales.append(UnmappedSaleItem(
+                menu_item_name=menu_name,
+                portion_name=portion,
+                total_qty=qty,
+                category=sale.get("category"),
+            ))
+            continue
+
+        mapped_dish_count += 1
+        batch_portions = matched_recipe.batch_portions or 1
+        scale = qty / batch_portions
+
+        _expand_recipe_ingredients(
+            matched_recipe, scale, theoretical, dishes_using, matched_recipe.name
+        )
+
+        # Cache ingredient objects for later use
+        for ri in matched_recipe.ingredients:
+            if ri.ingredient and ri.ingredient.id not in ingredient_cache:
+                ingredient_cache[ri.ingredient.id] = ri.ingredient
+        for sr in matched_recipe.sub_recipes:
+            if sr.child_recipe:
+                for ri in sr.child_recipe.ingredients:
+                    if ri.ingredient and ri.ingredient.id not in ingredient_cache:
+                        ingredient_cache[ri.ingredient.id] = ri.ingredient
+
+    # ── Step 3: Get actual purchases ──
+    # Value aggregation (reliable — always works)
+    purchase_value_query = (
+        select(
+            LineItem.ingredient_id,
+            func.sum(
+                case(
+                    (Invoice.document_type == "credit_note", -LineItem.amount),
+                    else_=LineItem.amount,
+                )
+            ).label("total_value"),
+            func.count(distinct(Invoice.id)).label("invoice_count"),
+        )
+        .join(Invoice, LineItem.invoice_id == Invoice.id)
+        .where(
+            Invoice.kitchen_id == kitchen_id,
+            Invoice.status == InvoiceStatus.CONFIRMED,
+            Invoice.invoice_date.between(from_date, to_date),
+            LineItem.ingredient_id.isnot(None),
+            LineItem.amount.isnot(None),
+            or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None)),
+        )
+        .group_by(LineItem.ingredient_id)
+    )
+    pv_result = await db.execute(purchase_value_query)
+    purchase_values: dict[int, dict] = {}
+    for row in pv_result.all():
+        purchase_values[row.ingredient_id] = {
+            "total_value": float(row.total_value or 0),
+            "invoice_count": row.invoice_count,
+        }
+
+    # Quantity aggregation (per line item — need pack conversion)
+    # Fetch raw line items for ingredients we care about
+    all_ingredient_ids = set(theoretical.keys()) | set(purchase_values.keys())
+    purchase_qtys: dict[int, float] = {}
+
+    if all_ingredient_ids:
+        li_query = (
+            select(LineItem, Invoice.document_type)
+            .join(Invoice, LineItem.invoice_id == Invoice.id)
+            .where(
+                Invoice.kitchen_id == kitchen_id,
+                Invoice.status == InvoiceStatus.CONFIRMED,
+                Invoice.invoice_date.between(from_date, to_date),
+                LineItem.ingredient_id.in_(all_ingredient_ids),
+                LineItem.quantity.isnot(None),
+                or_(LineItem.is_non_stock == False, LineItem.is_non_stock.is_(None)),
+            )
+        )
+        li_result = await db.execute(li_query)
+
+        # We need ingredient standard_units — load any missing from DB
+        missing_ids = all_ingredient_ids - set(ingredient_cache.keys())
+        if missing_ids:
+            ing_result = await db.execute(
+                select(Ingredient)
+                .options(selectinload(Ingredient.category), selectinload(Ingredient.sources))
+                .where(Ingredient.id.in_(missing_ids))
+            )
+            for ing in ing_result.scalars().all():
+                ingredient_cache[ing.id] = ing
+
+        for row in li_result.all():
+            li = row[0]  # LineItem
+            doc_type = row[1]  # document_type
+            ing_id = li.ingredient_id
+            ing = ingredient_cache.get(ing_id)
+            if not ing:
+                continue
+
+            std_unit = ing.standard_unit.lower().strip()
+            qty = float(li.quantity)
+            std_qty = None
+
+            # Try pack conversion: quantity × pack_quantity × unit_size → convert
+            if li.pack_quantity and li.unit_size and li.unit_size_type:
+                total_source = qty * li.pack_quantity * float(li.unit_size)
+                converted = convert_to_standard(
+                    Decimal(str(total_source)), li.unit_size_type, std_unit
+                )
+                if converted is not None:
+                    std_qty = float(converted)
+            # Fallback: if line item unit matches a known unit
+            elif li.unit and li.unit.lower().strip() in UNIT_CONVERSIONS:
+                converted = convert_to_standard(
+                    Decimal(str(qty)), li.unit.lower().strip(), std_unit
+                )
+                if converted is not None:
+                    std_qty = float(converted)
+
+            if std_qty is not None:
+                if doc_type == "credit_note":
+                    std_qty = -std_qty
+                purchase_qtys[ing_id] = purchase_qtys.get(ing_id, 0.0) + std_qty
+
+    # ── Step 4: Build comparison ──
+    items: list[UsageVarianceItem] = []
+    total_theoretical_value = 0.0
+    total_actual_value = 0.0
+    ingredients_with_purchases = 0
+    ingredients_without_purchases = 0
+
+    for ing_id in all_ingredient_ids:
+        ing = ingredient_cache.get(ing_id)
+        if not ing:
+            continue
+
+        cat_name = ing.category.name if ing.category else None
+        std_unit = ing.standard_unit
+
+        # Theoretical
+        theo_qty = theoretical.get(ing_id, 0.0)
+        dish_count = len(dishes_using.get(ing_id, set()))
+
+        # Get best price per standard unit for theoretical value calc
+        price_per_std = None
+        if ing.sources:
+            # Use most recent source price
+            priced_sources = [
+                s for s in ing.sources if s.price_per_std_unit and s.price_per_std_unit > 0
+            ]
+            if priced_sources:
+                priced_sources.sort(key=lambda s: s.latest_invoice_date or date.min, reverse=True)
+                price_per_std = float(priced_sources[0].price_per_std_unit)
+        if price_per_std is None and ing.manual_price:
+            price_per_std = float(ing.manual_price)
+
+        theo_value = theo_qty * price_per_std if price_per_std else 0.0
+        total_theoretical_value += theo_value
+
+        # Actual
+        pv = purchase_values.get(ing_id)
+        actual_value = pv["total_value"] if pv else None
+        invoice_count = pv["invoice_count"] if pv else 0
+        actual_qty = purchase_qtys.get(ing_id)
+
+        if actual_value is not None:
+            total_actual_value += actual_value
+            ingredients_with_purchases += 1
+        elif theo_qty > 0:
+            ingredients_without_purchases += 1
+
+        # Variance
+        variance_qty = None
+        variance_pct = None
+        variance_value = None
+
+        if actual_qty is not None and theo_qty > 0:
+            variance_qty = actual_qty - theo_qty
+            variance_pct = (variance_qty / theo_qty) * 100.0
+
+        if actual_value is not None and theo_value > 0:
+            variance_value = actual_value - theo_value
+        elif actual_value is not None and theo_qty == 0:
+            # Purchased but no theoretical usage (not in any recipe)
+            variance_value = actual_value
+
+        items.append(UsageVarianceItem(
+            ingredient_id=ing_id,
+            ingredient_name=ing.name,
+            category=cat_name,
+            standard_unit=std_unit,
+            theoretical_qty=round(theo_qty, 2),
+            theoretical_value=round(theo_value, 2),
+            dishes_using=dish_count,
+            actual_qty=round(actual_qty, 2) if actual_qty is not None else None,
+            actual_value=round(actual_value, 2) if actual_value is not None else None,
+            invoice_count=invoice_count,
+            variance_qty=round(variance_qty, 2) if variance_qty is not None else None,
+            variance_pct=round(variance_pct, 1) if variance_pct is not None else None,
+            variance_value=round(variance_value, 2) if variance_value is not None else None,
+        ))
+
+    # Sort by absolute variance value descending (biggest £ problems first)
+    items.sort(key=lambda x: abs(x.variance_value or 0), reverse=True)
+
+    total_variance = total_actual_value - total_theoretical_value
+
+    return UsageVarianceResponse(
+        from_date=from_date,
+        to_date=to_date,
+        items=items,
+        total_theoretical_value=round(total_theoretical_value, 2),
+        total_actual_value=round(total_actual_value, 2),
+        total_variance_value=round(total_variance, 2),
+        mapped_dish_count=mapped_dish_count,
+        unmapped_dish_count=unmapped_dish_count,
+        ingredients_with_purchases=ingredients_with_purchases,
+        ingredients_without_purchases=ingredients_without_purchases,
+        unmapped_sales=unmapped_sales,
+    )
