@@ -334,6 +334,65 @@ async def get_menu_items(
         raise HTTPException(status_code=400, detail=f"Failed to fetch menu items: {str(e)}")
 
 
+class MenuItemWithPortionResponse(BaseModel):
+    menu_item_name: str
+    portion_name: str
+    category: str
+    on_pos_menu: bool
+
+
+@router.get("/menu-items-with-portions", response_model=list[MenuItemWithPortionResponse])
+async def get_menu_items_with_portions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch all menu items with their portion names, grouped by Kitchen Course category."""
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        raise HTTPException(status_code=404, detail="Settings not found")
+
+    if not all([
+        settings.sambapos_db_host,
+        settings.sambapos_db_name,
+        settings.sambapos_db_username,
+        settings.sambapos_db_password
+    ]):
+        raise HTTPException(status_code=400, detail="SambaPOS database credentials not configured")
+
+    # Get tracked categories to filter
+    tracked_categories = []
+    if settings.sambapos_tracked_categories:
+        tracked_categories = [c.strip() for c in settings.sambapos_tracked_categories.split(',') if c.strip()]
+
+    client = SambaPOSClient(
+        host=settings.sambapos_db_host,
+        port=settings.sambapos_db_port or 1433,
+        database=settings.sambapos_db_name,
+        username=settings.sambapos_db_username,
+        password=settings.sambapos_db_password
+    )
+
+    try:
+        items = await client.get_menu_items_with_portions(
+            categories=tracked_categories if tracked_categories else None
+        )
+        return [
+            MenuItemWithPortionResponse(
+                menu_item_name=item["menu_item_name"],
+                portion_name=item["portion_name"],
+                category=item["category"],
+                on_pos_menu=item.get("on_pos_menu", False)
+            )
+            for item in items
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch menu items with portions: {str(e)}")
+
+
 @router.get("/excluded-items")
 async def get_excluded_items(
     current_user: User = Depends(get_current_user),

@@ -38,6 +38,7 @@ interface RecipeItem {
   }>
   image_count: number
   kds_menu_item_name: string | null
+  sambapos_portion_name: string | null
   created_at: string
   updated_at: string
 }

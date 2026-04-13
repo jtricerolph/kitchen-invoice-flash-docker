@@ -38,6 +38,7 @@ interface RecipeItem {
   }>
   image_count: number
   kds_menu_item_name: string | null
+  sambapos_portion_name: string | null
   created_at: string
   updated_at: string
 }
@@ -419,6 +420,13 @@ export default function DishList() {
 
               {r.menu_section_name && (
                 <div style={styles.sectionTag}>{r.menu_section_name}</div>
+              )}
+
+              {r.kds_menu_item_name && (
+                <div style={{ fontSize: '0.7rem', color: '#999', marginTop: '0.15rem' }}>
+                  SambaPOS: {r.kds_menu_item_name}
+                  {r.sambapos_portion_name && r.sambapos_portion_name !== 'Normal' && ` (${r.sambapos_portion_name})`}
+                </div>
               )}
 
               <div style={styles.cardMeta}>

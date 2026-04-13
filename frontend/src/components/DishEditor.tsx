@@ -21,6 +21,7 @@ interface RecipeDetail {
   notes: string | null
   is_archived: boolean
   kds_menu_item_name: string | null
+  sambapos_portion_name: string | null
   gross_sell_price: number | null
   ingredients: RecipeIngredientItem[]
   sub_recipes: SubRecipeItem[]
@@ -265,6 +266,10 @@ export default function DishEditor() {
   // Gross price GP calculator
   const [grossPrice, setGrossPrice] = useState('')
 
+  // SambaPOS item picker
+  const [showSambaposPicker, setShowSambaposPicker] = useState(false)
+  const [sambaposSearch, setSambaposSearch] = useState('')
+
   // Publish to menu
   const [showPublishModal, setShowPublishModal] = useState(false)
 
@@ -426,6 +431,20 @@ export default function DishEditor() {
       return res.json()
     },
     enabled: !!token && showAddSub,
+  })
+
+  // SambaPOS menu items with portions (for picker modal)
+  interface SambaposMenuItem { menu_item_name: string; portion_name: string; category: string; on_pos_menu: boolean }
+  const { data: sambaposItems } = useQuery<SambaposMenuItem[]>({
+    queryKey: ['sambapos-menu-items-portions'],
+    queryFn: async () => {
+      const res = await fetch('/api/sambapos/menu-items-with-portions', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return res.json()
+    },
+    enabled: !!token && showSambaposPicker,
   })
 
   // Init form from recipe
@@ -774,6 +793,7 @@ export default function DishEditor() {
       notes: editNotes || null,
       menu_section_id: editSection ? parseInt(editSection) : null,
       kds_menu_item_name: editKds || null,
+      sambapos_portion_name: recipe?.sambapos_portion_name || null,
       gross_sell_price: grossPrice && parseFloat(grossPrice) > 0 ? parseFloat(grossPrice) : null,
     })
   }
@@ -845,8 +865,35 @@ export default function DishEditor() {
         <label style={styles.label}>Description</label>
         <textarea value={editDesc} onChange={(e) => { setEditDesc(e.target.value); setIsDirty(true) }} style={{ ...styles.input, minHeight: '50px' }} />
 
-        <label style={styles.label}>KDS Menu Item Name</label>
-        <input value={editKds} onChange={(e) => { setEditKds(e.target.value); setIsDirty(true) }} style={styles.input} placeholder="Matches KDS/SambaPOS item name" />
+        <label style={styles.label}>SambaPOS Menu Item</label>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <div
+            onClick={() => setShowSambaposPicker(true)}
+            style={{ ...styles.input, cursor: 'pointer', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', minHeight: '36px', background: '#fafafa' }}
+          >
+            {editKds ? (
+              <span>
+                <strong>{editKds}</strong>
+                {recipe?.sambapos_portion_name && recipe.sambapos_portion_name !== 'Normal' && (
+                  <span style={{ color: '#666', marginLeft: '0.5rem' }}>({recipe.sambapos_portion_name})</span>
+                )}
+              </span>
+            ) : (
+              <span style={{ color: '#999' }}>Click to select SambaPOS item...</span>
+            )}
+            <span style={{ color: '#999', fontSize: '0.8rem' }}>▼</span>
+          </div>
+          {editKds && (
+            <button
+              onClick={() => {
+                setEditKds('')
+                updateMutation.mutate({ kds_menu_item_name: '', sambapos_portion_name: '' })
+              }}
+              style={{ background: 'none', border: '1px solid #ddd', borderRadius: '4px', padding: '6px 10px', cursor: 'pointer', color: '#999', fontSize: '0.85rem' }}
+              title="Clear SambaPOS link"
+            >✕</button>
+          )}
+        </div>
       </div>
 
       {/* Flags notification */}
@@ -1949,6 +1996,135 @@ export default function DishEditor() {
             queryClient.invalidateQueries({ queryKey: ['dish-menus', recipeId] })
           }}
         />
+      )}
+
+      {/* SambaPOS Item Picker Modal */}
+      {showSambaposPicker && (
+        <div style={styles.overlay}>
+          <div style={{ ...styles.modal, width: '550px' }}>
+            <div style={styles.modalHeader}>
+              <h3 style={{ margin: 0 }}>Select SambaPOS Menu Item</h3>
+              <button onClick={() => { setShowSambaposPicker(false); setSambaposSearch('') }} style={styles.closeBtn}>✕</button>
+            </div>
+            <div style={styles.modalBody}>
+              <input
+                value={sambaposSearch}
+                onChange={(e) => setSambaposSearch(e.target.value)}
+                style={{ ...styles.input, marginBottom: '0.75rem' }}
+                placeholder="Search menu items..."
+                autoFocus
+              />
+              {!sambaposItems ? (
+                <div style={{ color: '#888', textAlign: 'center', padding: '1rem' }}>Loading SambaPOS items...</div>
+              ) : sambaposItems.length === 0 ? (
+                <div style={{ color: '#888', textAlign: 'center', padding: '1rem' }}>No items found. Check SambaPOS connection and tracked categories.</div>
+              ) : (() => {
+                const filtered = sambaposItems.filter(i =>
+                  !sambaposSearch || i.menu_item_name.toLowerCase().includes(sambaposSearch.toLowerCase()) || i.portion_name.toLowerCase().includes(sambaposSearch.toLowerCase())
+                )
+                // Group by category then by menu item name
+                const grouped: Record<string, Record<string, string[]>> = {}
+                const posMenuLookup: Record<string, boolean> = {}
+                for (const item of filtered) {
+                  if (!grouped[item.category]) grouped[item.category] = {}
+                  if (!grouped[item.category][item.menu_item_name]) grouped[item.category][item.menu_item_name] = []
+                  grouped[item.category][item.menu_item_name].push(item.portion_name)
+                  posMenuLookup[item.menu_item_name] = item.on_pos_menu
+                }
+                // Also fetch existing mappings to show which are already linked
+                const allDishes = queryClient.getQueryData<Array<{ id: number; name: string; kds_menu_item_name: string | null; sambapos_portion_name: string | null }>>(['recipes-list-dish'])
+                const mappedLookup: Record<string, string> = {}
+                if (allDishes) {
+                  for (const d of allDishes) {
+                    if (d.kds_menu_item_name) {
+                      const key = `${d.kds_menu_item_name}|${d.sambapos_portion_name || ''}`
+                      mappedLookup[key] = d.name
+                    }
+                  }
+                }
+
+                const handleSelect = (menuItemName: string, portionName: string) => {
+                  setEditKds(menuItemName)
+                  setIsDirty(true)
+                  updateMutation.mutate({
+                    kds_menu_item_name: menuItemName,
+                    sambapos_portion_name: portionName === 'Normal' ? null : portionName,
+                  })
+                  setShowSambaposPicker(false)
+                  setSambaposSearch('')
+                }
+
+                return (
+                  <div style={{ maxHeight: '400px', overflow: 'auto' }}>
+                    {Object.entries(grouped).map(([category, items]) => (
+                      <div key={category} style={{ marginBottom: '0.75rem' }}>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#e94560', textTransform: 'uppercase', padding: '0.3rem 0', borderBottom: '1px solid #eee', marginBottom: '0.25rem' }}>
+                          {category}
+                        </div>
+                        {Object.entries(items).map(([itemName, portions]) => {
+                          const hasSinglePortion = portions.length === 1 && portions[0] === 'Normal'
+                          return (
+                            <div key={itemName}>
+                              {hasSinglePortion ? (
+                                // Single portion — flat clickable row
+                                <div
+                                  onClick={() => handleSelect(itemName, 'Normal')}
+                                  style={{ padding: '0.4rem 0.5rem', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                                  onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f7ff')}
+                                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                >
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    {itemName}
+                                    <span style={{ fontSize: '0.65rem', color: posMenuLookup[itemName] ? '#16a34a' : '#ccc', fontWeight: 600 }}>
+                                      POS {posMenuLookup[itemName] ? '\u2713' : '\u2717'}
+                                    </span>
+                                  </span>
+                                  {mappedLookup[`${itemName}|`] && (
+                                    <span style={{ fontSize: '0.7rem', color: '#999' }}>→ {mappedLookup[`${itemName}|`]}</span>
+                                  )}
+                                </div>
+                              ) : (
+                                // Multiple portions — item name header + indented portions
+                                <>
+                                  <div style={{ padding: '0.4rem 0.5rem', fontSize: '0.85rem', fontWeight: 600, color: '#333', borderBottom: '1px solid #f5f5f5', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    {itemName}
+                                    <span style={{ fontSize: '0.65rem', color: posMenuLookup[itemName] ? '#16a34a' : '#ccc', fontWeight: 600 }}>
+                                      POS {posMenuLookup[itemName] ? '\u2713' : '\u2717'}
+                                    </span>
+                                  </div>
+                                  {portions.map(portion => {
+                                    const mapKey = `${itemName}|${portion === 'Normal' ? '' : portion}`
+                                    return (
+                                      <div
+                                        key={portion}
+                                        onClick={() => handleSelect(itemName, portion)}
+                                        style={{ padding: '0.35rem 0.5rem 0.35rem 1.5rem', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                                        onMouseEnter={(e) => (e.currentTarget.style.background = '#f0f7ff')}
+                                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                                      >
+                                        <span style={{ color: '#555' }}>↳ {portion}</span>
+                                        {mappedLookup[mapKey] && (
+                                          <span style={{ fontSize: '0.7rem', color: '#999' }}>→ {mappedLookup[mapKey]}</span>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ))}
+                    {Object.keys(grouped).length === 0 && (
+                      <div style={{ color: '#888', textAlign: 'center', padding: '1rem' }}>No items match your search.</div>
+                    )}
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

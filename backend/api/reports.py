@@ -2694,3 +2694,251 @@ async def get_disputes_period_summary(
             DisputeTallyRow(label="Still Open", count=open_count, difference_value=open_value)
         ]
     )
+
+
+# ============ Sales GP Report ============
+
+class SalesGPItem(BaseModel):
+    menu_item_name: str
+    portion_name: str
+    category: str                     # SambaPOS Kitchen Course
+    total_qty: int
+    total_revenue_net: Decimal        # ex-VAT (gross / 1.20)
+    recipe_id: Optional[int] = None
+    recipe_name: Optional[str] = None
+    dish_course: Optional[str] = None # MenuSection name from recipe
+    cost_per_portion: Optional[Decimal] = None
+    total_cost: Optional[Decimal] = None
+    item_gp_percent: Optional[Decimal] = None
+
+
+class SalesGPCourseGroup(BaseModel):
+    course_name: str
+    items: list[SalesGPItem]
+    course_revenue: Decimal
+    course_cost: Decimal
+    course_gp_percent: Optional[Decimal] = None
+
+
+class SalesGPResponse(BaseModel):
+    from_date: date
+    to_date: date
+    courses: list[SalesGPCourseGroup]
+    unmapped_items: list[SalesGPItem]
+    # GP totals (mapped items ONLY)
+    mapped_revenue_net: Decimal
+    mapped_total_cost: Decimal
+    mapped_gp_percent: Optional[Decimal] = None
+    # Coverage context
+    total_all_revenue_net: Decimal
+    unmapped_revenue_net: Decimal
+    mapped_revenue_percent: Decimal
+    mapped_item_count: int
+    unmapped_item_count: int
+
+
+@router.get("/sales-gp", response_model=SalesGPResponse)
+async def get_sales_gp(
+    from_date: date,
+    to_date: date,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Estimated Sales GP% report.
+
+    Fetches SambaPOS sales data for a date range, matches items to dish recipes,
+    and calculates GP based on recipe costs. Only mapped items contribute to GP calculation.
+    Unmapped items are listed separately with their revenue for coverage assessment.
+    """
+    from models.settings import KitchenSettings
+    from models.recipe import Recipe, MenuSection, RecipeCostSnapshot
+    from services.sambapos_api import SambaPOSClient
+
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+
+    # Get settings
+    result = await db.execute(
+        select(KitchenSettings).where(KitchenSettings.kitchen_id == current_user.kitchen_id)
+    )
+    settings = result.scalar_one_or_none()
+    if not settings:
+        raise HTTPException(status_code=400, detail="Settings not configured")
+
+    # Validate SambaPOS config
+    if not all([
+        settings.sambapos_db_host,
+        settings.sambapos_db_name,
+        settings.sambapos_db_username,
+        settings.sambapos_db_password
+    ]):
+        raise HTTPException(status_code=400, detail="SambaPOS database credentials not configured")
+
+    tracked_categories = []
+    if settings.sambapos_tracked_categories:
+        tracked_categories = [c.strip() for c in settings.sambapos_tracked_categories.split(',') if c.strip()]
+
+    if not tracked_categories:
+        raise HTTPException(status_code=400, detail="No SambaPOS categories configured")
+
+    excluded_items = []
+    if settings.sambapos_excluded_items:
+        excluded_items = [i.strip() for i in settings.sambapos_excluded_items.split('|') if i.strip()]
+
+    # Fetch sales data from SambaPOS
+    client = SambaPOSClient(
+        host=settings.sambapos_db_host,
+        port=settings.sambapos_db_port or 1433,
+        database=settings.sambapos_db_name,
+        username=settings.sambapos_db_username,
+        password=settings.sambapos_db_password
+    )
+
+    try:
+        sales = await client.get_sales_breakdown(
+            from_date, to_date, tracked_categories,
+            excluded_categories=excluded_items if excluded_items else None
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SambaPOS query failed: {str(e)}")
+
+    # Load all dish recipes with SambaPOS mapping
+    recipe_result = await db.execute(
+        select(Recipe)
+        .options(selectinload(Recipe.menu_section))
+        .where(
+            Recipe.kitchen_id == current_user.kitchen_id,
+            Recipe.recipe_type == "dish",
+            Recipe.kds_menu_item_name.isnot(None),
+            Recipe.kds_menu_item_name != "",
+            Recipe.is_archived == False,
+        )
+    )
+    recipes = recipe_result.scalars().all()
+
+    # Build lookup: (menu_item_name, portion_name_or_none) -> recipe
+    recipe_lookup: dict[tuple[str, str | None], object] = {}
+    for r in recipes:
+        if r.sambapos_portion_name:
+            recipe_lookup[(r.kds_menu_item_name, r.sambapos_portion_name)] = r
+        else:
+            recipe_lookup[(r.kds_menu_item_name, None)] = r
+
+    # Get latest cost snapshots for all mapped recipes
+    recipe_ids = [r.id for r in recipes]
+    cost_lookup: dict[int, Decimal] = {}
+    if recipe_ids:
+        # Get latest snapshot per recipe using a subquery
+        from sqlalchemy import and_
+        for rid in recipe_ids:
+            snap_result = await db.execute(
+                select(RecipeCostSnapshot)
+                .where(RecipeCostSnapshot.recipe_id == rid)
+                .order_by(RecipeCostSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+            snap = snap_result.scalar_one_or_none()
+            if snap and snap.cost_per_portion:
+                cost_lookup[rid] = snap.cost_per_portion
+
+    # Match sales to recipes and calculate GP
+    VAT_RATE = Decimal("1.20")
+    mapped_items: list[SalesGPItem] = []
+    unmapped_items: list[SalesGPItem] = []
+
+    for sale in sales:
+        revenue_gross = Decimal(str(sale["total_revenue_gross"]))
+        revenue_net = (revenue_gross / VAT_RATE).quantize(Decimal("0.01"))
+        qty = sale["total_qty"]
+        menu_name = sale["menu_item_name"]
+        portion = sale["portion_name"]
+
+        # Try exact match first, then name-only match
+        matched_recipe = recipe_lookup.get((menu_name, portion))
+        if not matched_recipe and portion != "Normal":
+            matched_recipe = recipe_lookup.get((menu_name, None))
+        if not matched_recipe and portion == "Normal":
+            matched_recipe = recipe_lookup.get((menu_name, None))
+
+        if matched_recipe:
+            cpp = cost_lookup.get(matched_recipe.id)
+            total_cost = (cpp * qty).quantize(Decimal("0.01")) if cpp else None
+            gp_pct = None
+            if total_cost is not None and revenue_net > 0:
+                gp_pct = ((revenue_net - total_cost) / revenue_net * 100).quantize(Decimal("0.1"))
+
+            mapped_items.append(SalesGPItem(
+                menu_item_name=menu_name,
+                portion_name=portion,
+                category=sale["category"],
+                total_qty=qty,
+                total_revenue_net=revenue_net,
+                recipe_id=matched_recipe.id,
+                recipe_name=matched_recipe.name,
+                dish_course=matched_recipe.menu_section.name if matched_recipe.menu_section else "Uncategorised",
+                cost_per_portion=cpp,
+                total_cost=total_cost,
+                item_gp_percent=gp_pct,
+            ))
+        else:
+            unmapped_items.append(SalesGPItem(
+                menu_item_name=menu_name,
+                portion_name=portion,
+                category=sale["category"],
+                total_qty=qty,
+                total_revenue_net=revenue_net,
+            ))
+
+    # Group mapped items by SambaPOS Kitchen Course category (matches tracked_categories order)
+    course_groups: dict[str, list[SalesGPItem]] = {}
+    for item in mapped_items:
+        course = item.category or "Uncategorised"
+        if course not in course_groups:
+            course_groups[course] = []
+        course_groups[course].append(item)
+
+    # Sort courses using tracked_categories order from settings, unrecognised courses at the end
+    category_order = {cat: idx for idx, cat in enumerate(tracked_categories)}
+    sorted_courses = sorted(course_groups.items(), key=lambda x: (category_order.get(x[0], 999), x[0]))
+
+    courses = []
+    for course_name, items in sorted_courses:
+        c_revenue = sum(i.total_revenue_net for i in items)
+        c_cost = sum(i.total_cost for i in items if i.total_cost)
+        c_gp = ((c_revenue - c_cost) / c_revenue * 100).quantize(Decimal("0.1")) if c_revenue > 0 else None
+        # Sort items by revenue descending
+        items.sort(key=lambda x: x.total_revenue_net, reverse=True)
+        courses.append(SalesGPCourseGroup(
+            course_name=course_name,
+            items=items,
+            course_revenue=c_revenue,
+            course_cost=c_cost,
+            course_gp_percent=c_gp,
+        ))
+
+    # Summary totals
+    mapped_revenue = sum(i.total_revenue_net for i in mapped_items)
+    mapped_cost = sum(i.total_cost for i in mapped_items if i.total_cost)
+    unmapped_revenue = sum(i.total_revenue_net for i in unmapped_items)
+    total_revenue = mapped_revenue + unmapped_revenue
+    mapped_gp = ((mapped_revenue - mapped_cost) / mapped_revenue * 100).quantize(Decimal("0.1")) if mapped_revenue > 0 else None
+    coverage_pct = (mapped_revenue / total_revenue * 100).quantize(Decimal("0.1")) if total_revenue > 0 else Decimal("0")
+
+    # Sort unmapped by revenue descending
+    unmapped_items.sort(key=lambda x: x.total_revenue_net, reverse=True)
+
+    return SalesGPResponse(
+        from_date=from_date,
+        to_date=to_date,
+        courses=courses,
+        unmapped_items=unmapped_items,
+        mapped_revenue_net=mapped_revenue,
+        mapped_total_cost=mapped_cost,
+        mapped_gp_percent=mapped_gp,
+        total_all_revenue_net=total_revenue,
+        unmapped_revenue_net=unmapped_revenue,
+        mapped_revenue_percent=coverage_pct,
+        mapped_item_count=len(mapped_items),
+        unmapped_item_count=len(unmapped_items),
+    )

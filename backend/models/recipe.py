@@ -44,6 +44,7 @@ class Recipe(Base):
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
     gross_sell_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
     kds_menu_item_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Phase 7: KDS link
+    sambapos_portion_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # SambaPOS portion selector (e.g. "Beef", "BLT")
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

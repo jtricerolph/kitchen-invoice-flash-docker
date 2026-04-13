@@ -25,6 +25,7 @@ interface RecipeDetail {
   notes: string | null
   is_archived: boolean
   kds_menu_item_name: string | null
+  sambapos_portion_name: string | null
   ingredients: RecipeIngredientItem[]
   sub_recipes: SubRecipeItem[]
   steps: StepItem[]

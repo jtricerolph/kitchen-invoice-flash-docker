@@ -10,7 +10,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions, ingredients, recipes, food_flags, event_orders, external, menus
+from api import invoices, suppliers, reports, settings, field_mappings, newbook, sambapos, backup, search, resos, calendar_events, residents_table_chart, disputes, credit_notes, public, logbook, imap, support, kds, budget, cover_overrides, purchase_orders, cost_distributions, ingredients, recipes, food_flags, event_orders, external, menus, reconciliation
 from auth.routes import router as auth_router
 from migrations.add_invoice_features import run_migration
 from migrations.add_newbook_tables import run_migration as run_newbook_migration
@@ -66,6 +66,7 @@ from migrations.add_ingredient_is_free import migrate as run_ingredient_is_free_
 from migrations.add_recipe_text_flag_dismissals import migrate as run_recipe_text_flag_dismissals_migration
 from migrations.add_llm_infrastructure import migrate as run_llm_infrastructure_migration  # LLM FEATURE — see LLM-MANIFEST.md
 from migrations.add_changelog_invoice_link import migrate as run_changelog_invoice_link_migration
+from migrations.add_sambapos_portion_name import migrate as run_sambapos_portion_name_migration
 from scheduler import start_scheduler, stop_scheduler
 from services.signalr_listener import start_signalr_listener, stop_signalr_listener
 
@@ -455,6 +456,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Changelog invoice link migration warning (may be expected): {e}")
 
+    try:
+        await run_sambapos_portion_name_migration()
+        logger.info("SambaPOS portion name migration completed")
+    except Exception as e:
+        logger.warning(f"SambaPOS portion name migration warning (may be expected): {e}")
+
     # Start the scheduler for daily sync jobs
     start_scheduler()
 
@@ -495,6 +502,7 @@ app.include_router(disputes.router, prefix="/api/disputes", tags=["Disputes"])
 app.include_router(credit_notes.router, prefix="/api/credit-notes", tags=["Credit Notes"])
 app.include_router(suppliers.router, prefix="/api/suppliers", tags=["Suppliers"])
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
+app.include_router(reconciliation.router, prefix="/api/reports", tags=["Reconciliation"])
 app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(field_mappings.router, prefix="/api/field-mappings", tags=["Field Mappings"])
 app.include_router(newbook.router, prefix="/api/newbook", tags=["Newbook"])

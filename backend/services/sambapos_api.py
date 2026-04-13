@@ -458,6 +458,209 @@ class SambaPOSClient:
             logger.error(f"Failed to fetch SambaPOS top sellers by revenue: {e}")
             raise
 
+    async def get_menu_items_with_portions(
+        self,
+        categories: list[str] | None = None
+    ) -> list[dict]:
+        """
+        Fetch all menu items with their portion names, filtered by Kitchen Course categories.
+
+        Joins MenuItems → MenuItemPortions to get portion-level detail.
+        Used for the SambaPOS item picker in the DishEditor.
+
+        Args:
+            categories: Optional list of Kitchen Course values to filter by
+
+        Returns:
+            List of dicts with menu_item_name, portion_name, category
+        """
+        # Build optional category filter
+        cat_filter = ""
+        params = []
+        if categories:
+            cat_placeholders = ','.join(['?' for _ in categories])
+            cat_filter = f"WHERE KitchenCourse IN ({cat_placeholders})"
+            params = categories
+
+        query = f"""
+            SELECT
+                MenuItemName,
+                PortionName,
+                KitchenCourse,
+                MenuItemId
+            FROM (
+                SELECT
+                    mi.Name AS MenuItemName,
+                    mip.Name AS PortionName,
+                    mi.Id AS MenuItemId,
+                    CASE
+                        WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                        THEN SUBSTRING(mi.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                        ELSE NULL
+                    END as KitchenCourse
+                FROM MenuItems mi
+                JOIN MenuItemPortions mip ON mip.MenuItemId = mi.Id
+                CROSS APPLY (
+                    SELECT CHARINDEX('"TN":"Kitchen Course"', mi.CustomTags) as tn_pos
+                ) tn
+                CROSS APPLY (
+                    SELECT CASE WHEN tn.tn_pos > 0
+                                THEN CHARINDEX('"TV":"', mi.CustomTags, tn.tn_pos) + 6
+                                ELSE 0 END as tv_start
+                ) tv
+                CROSS APPLY (
+                    SELECT CASE WHEN tv.tv_start > 6
+                                THEN CHARINDEX('"', mi.CustomTags, tv.tv_start)
+                                ELSE 0 END as tv_end
+                ) pos
+                WHERE mi.CustomTags LIKE '%"TN":"Kitchen Course"%'
+            ) sub
+            {cat_filter}
+            ORDER BY KitchenCourse, MenuItemName, PortionName
+        """
+
+        try:
+            async with aioodbc.connect(dsn=self.connection_string) as conn:
+                async with conn.cursor() as cursor:
+                    # Get menu item IDs that appear on a POS screen menu
+                    pos_menu_item_ids: set[int] = set()
+                    try:
+                        await cursor.execute("""
+                            SELECT DISTINCT smi.MenuItemId
+                            FROM ScreenMenuItems smi
+                            JOIN ScreenMenuCategories smc ON smc.Id = smi.ScreenMenuCategoryId
+                            JOIN ScreenMenus sm ON sm.Id = smc.ScreenMenuId
+                        """)
+                        pos_menu_item_ids = {row[0] for row in await cursor.fetchall()}
+                        logger.info(f"SambaPOS screen menu items: {len(pos_menu_item_ids)} mapped to POS")
+                    except Exception as e:
+                        logger.warning(f"Could not query ScreenMenuItems (table may not exist): {e}")
+
+                    await cursor.execute(query, params)
+                    rows = await cursor.fetchall()
+
+                    results = []
+                    for row in rows:
+                        if row[0] and row[2]:  # must have name and category
+                            results.append({
+                                "menu_item_name": row[0],
+                                "portion_name": row[1] or "Normal",
+                                "category": row[2],
+                                "on_pos_menu": row[3] in pos_menu_item_ids
+                            })
+
+                    logger.info(f"SambaPOS menu items with portions: {len(results)} items")
+                    return results
+
+        except Exception as e:
+            logger.error(f"Failed to fetch SambaPOS menu items with portions: {e}")
+            raise
+
+    async def get_sales_breakdown(
+        self,
+        from_date: date,
+        to_date: date,
+        categories: list[str],
+        excluded_categories: list[str] | None = None
+    ) -> list[dict]:
+        """
+        Get all sold items for a date range, grouped by MenuItemName + PortionName + Kitchen Course.
+
+        Used for the Sales GP report — returns all items (no limit) so every sold dish
+        can be matched against recipe costs.
+
+        Args:
+            from_date: Start date (inclusive)
+            to_date: End date (inclusive)
+            categories: Kitchen Course values to include
+            excluded_categories: GroupCode values to exclude
+
+        Returns:
+            List of dicts with menu_item_name, portion_name, category, total_qty, total_revenue_gross
+        """
+        if not categories:
+            return []
+
+        cat_placeholders = ','.join(['?' for _ in categories])
+
+        exclusion_filter = ""
+        exclusion_params = []
+        if excluded_categories:
+            excl_placeholders = ','.join(['?' for _ in excluded_categories])
+            exclusion_filter = f"AND (mi.GroupCode IS NULL OR mi.GroupCode NOT IN ({excl_placeholders}))"
+            exclusion_params = excluded_categories
+
+        query = f"""
+            SELECT
+                KitchenCourse as Category,
+                MenuItemName,
+                PortionName,
+                SUM(CAST(Quantity AS DECIMAL(18,2))) as TotalQty,
+                SUM(Price * Quantity) as TotalRevenue
+            FROM (
+                SELECT
+                    o.MenuItemName,
+                    o.PortionName,
+                    o.Quantity,
+                    o.Price,
+                    CASE
+                        WHEN tv.tv_start > 0 AND pos.tv_end > tv.tv_start
+                        THEN SUBSTRING(mi.CustomTags, tv.tv_start, pos.tv_end - tv.tv_start)
+                        ELSE NULL
+                    END as KitchenCourse
+                FROM Orders o
+                JOIN Tickets t ON o.TicketId = t.Id
+                JOIN MenuItems mi ON o.MenuItemId = mi.Id
+                CROSS APPLY (
+                    SELECT CHARINDEX('"TN":"Kitchen Course"', mi.CustomTags) as tn_pos
+                ) tn
+                CROSS APPLY (
+                    SELECT CASE WHEN tn.tn_pos > 0
+                                THEN CHARINDEX('"TV":"', mi.CustomTags, tn.tn_pos) + 6
+                                ELSE 0 END as tv_start
+                ) tv
+                CROSS APPLY (
+                    SELECT CASE WHEN tv.tv_start > 6
+                                THEN CHARINDEX('"', mi.CustomTags, tv.tv_start)
+                                ELSE 0 END as tv_end
+                ) pos
+                WHERE t.Date >= CAST(? AS DATE) AND t.Date < DATEADD(day, 1, CAST(? AS DATE))
+                  AND t.IsClosed = 1
+                  AND mi.CustomTags LIKE '%"TN":"Kitchen Course"%'
+                  AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Void"%')
+                  AND (o.OrderStates IS NULL OR o.OrderStates NOT LIKE '%"S":"Canceled"%')
+                  {exclusion_filter}
+            ) OrdersWithCourse
+            WHERE KitchenCourse IN ({cat_placeholders})
+            GROUP BY KitchenCourse, MenuItemName, PortionName
+            ORDER BY KitchenCourse, TotalRevenue DESC
+        """
+
+        params = [from_date.isoformat(), to_date.isoformat()] + exclusion_params + categories
+
+        try:
+            async with aioodbc.connect(dsn=self.connection_string) as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(query, params)
+                    rows = await cursor.fetchall()
+
+                    results = []
+                    for row in rows:
+                        results.append({
+                            "category": row[0],
+                            "menu_item_name": row[1],
+                            "portion_name": row[2] or "Normal",
+                            "total_qty": int(row[3]) if row[3] else 0,
+                            "total_revenue_gross": Decimal(str(row[4])) if row[4] else Decimal("0"),
+                        })
+
+                    logger.info(f"SambaPOS sales breakdown: {len(results)} item/portion combinations for {from_date} to {to_date}")
+                    return results
+
+        except Exception as e:
+            logger.error(f"Failed to fetch SambaPOS sales breakdown: {e}")
+            raise
+
     async def get_menu_group_codes(self) -> list[dict]:
         """
         Fetch all distinct GroupCode values from MenuItems table.

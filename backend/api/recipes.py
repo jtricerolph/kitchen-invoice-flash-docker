@@ -83,6 +83,7 @@ class RecipeUpdate(BaseModel):
     notes: Optional[str] = None
     is_archived: Optional[bool] = None
     kds_menu_item_name: Optional[str] = None
+    sambapos_portion_name: Optional[str] = None
     gross_sell_price: Optional[float] = None
 
 class IngredientAdd(BaseModel):
@@ -155,6 +156,7 @@ class RecipeListItem(BaseModel):
     flag_summary: list[dict] = []
     image_count: int = 0
     kds_menu_item_name: Optional[str] = None
+    sambapos_portion_name: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -684,6 +686,7 @@ async def list_recipes(
             flag_summary=flag_summary,
             image_count=len(r.images) if r.images else 0,
             kds_menu_item_name=r.kds_menu_item_name,
+            sambapos_portion_name=r.sambapos_portion_name,
             created_at=str(r.created_at) if r.created_at else "",
             updated_at=str(r.updated_at) if r.updated_at else "",
         ))
@@ -884,6 +887,7 @@ async def get_recipe(
         "notes": recipe.notes,
         "is_archived": recipe.is_archived,
         "kds_menu_item_name": recipe.kds_menu_item_name,
+        "sambapos_portion_name": recipe.sambapos_portion_name,
         "gross_sell_price": float(recipe.gross_sell_price) if recipe.gross_sell_price else None,
         "ingredients": ingredients,
         "sub_recipes": sub_recipes,
@@ -948,6 +952,8 @@ async def update_recipe(
         recipe.is_archived = data.is_archived
     if data.kds_menu_item_name is not None:
         recipe.kds_menu_item_name = data.kds_menu_item_name
+    if data.sambapos_portion_name is not None:
+        recipe.sambapos_portion_name = data.sambapos_portion_name if data.sambapos_portion_name else None
     if data.gross_sell_price is not None:
         recipe.gross_sell_price = data.gross_sell_price if data.gross_sell_price > 0 else None
 

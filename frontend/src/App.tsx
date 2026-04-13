@@ -14,6 +14,8 @@ import Budget from './components/Budget'
 import GPReport from './components/GPReport'
 import PurchasesReport from './components/PurchasesReport'
 import AllowancesReport from './components/AllowancesReport'
+import SalesGPReport from './components/SalesGPReport'
+import ReconcilePurchases from './components/ReconcilePurchases'
 import SearchInvoices from './components/SearchInvoices'
 import SearchLineItems from './components/SearchLineItems'
 import ResidentsTableChart from './pages/ResidentsTableChart'
@@ -202,9 +204,21 @@ function App() {
               }
             />
             <Route
+              path="/purchases/reconcile"
+              element={
+                token ? (isPageAccessible('/gp-report') ? <ReconcilePurchases /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
               path="/allowances-report"
               element={
                 token ? (isPageAccessible('/gp-report') ? <AllowancesReport /> : <Navigate to="/" />) : <Navigate to="/login" />
+              }
+            />
+            <Route
+              path="/sales-gp"
+              element={
+                token ? (isPageAccessible('/gp-report') ? <SalesGPReport /> : <Navigate to="/" />) : <Navigate to="/login" />
               }
             />
             <Route
@@ -480,6 +494,8 @@ function Header({ user, restrictedPages }: { user: User; restrictedPages: string
                     {showNavItem('/gp-report') && <Link to="/gp" style={styles.dropdownLink}>Kitchen Flash Report</Link>}
                     {showNavItem('/gp-report') && <Link to="/purchases-report" style={styles.dropdownLink}>Purchases Report</Link>}
                     {showNavItem('/gp-report') && <Link to="/allowances-report" style={styles.dropdownLink}>Allowances Report</Link>}
+                    {showNavItem('/gp-report') && <Link to="/sales-gp" style={styles.dropdownLink}>Sales GP% Report</Link>}
+                    {showNavItem('/gp-report') && <Link to="/purchases/reconcile" style={styles.dropdownLink}>Xero Reconciliation</Link>}
                   </div>
                 </div>
               )}
