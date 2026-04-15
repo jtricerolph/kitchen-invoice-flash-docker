@@ -155,6 +155,7 @@ class RecipeListItem(BaseModel):
     cook_time_minutes: Optional[int] = None
     flag_summary: list[dict] = []
     image_count: int = 0
+    gross_sell_price: Optional[float] = None
     kds_menu_item_name: Optional[str] = None
     sambapos_portion_name: Optional[str] = None
     created_at: str = ""
@@ -542,10 +543,57 @@ async def price_impact_report(
         select(Recipe)
         .options(
             selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient),
+            selectinload(Recipe.sub_recipes)
+                .selectinload(RecipeSubRecipe.child_recipe)
+                .options(
+                    selectinload(Recipe.ingredients).selectinload(RecipeIngredient.ingredient),
+                    selectinload(Recipe.sub_recipes)
+                        .selectinload(RecipeSubRecipe.child_recipe)
+                        .selectinload(Recipe.ingredients)
+                        .selectinload(RecipeIngredient.ingredient),
+                ),
         )
         .where(Recipe.id.in_(recipe_ids))
     )
     recipes = {r.id: r for r in recipe_result.scalars().all()}
+
+    def _build_ing_usage(recipe, scale: float = 1.0, depth: int = 0) -> dict[str, float]:
+        """Recursively build ingredient name -> qty_in_std_unit map, expanding sub-recipes."""
+        usage: dict[str, float] = {}
+        for ri in recipe.ingredients:
+            if ri.ingredient and ri.quantity:
+                display_unit = ri.unit or ri.ingredient.standard_unit
+                qty_std = _convert_unit(float(ri.quantity), display_unit, ri.ingredient.standard_unit)
+                yld = float(ri.yield_percent) if ri.yield_percent else 100.0
+                qty_effective = (qty_std / (yld / 100) if yld > 0 else qty_std) * scale
+                key = ri.ingredient.name.lower()
+                usage[key] = usage.get(key, 0) + qty_effective
+        if depth < 3:
+            try:
+                for sr in recipe.sub_recipes:
+                    child = sr.child_recipe
+                    if not child:
+                        continue
+                    child_output = _get_output_qty(child)
+                    if not child_output:
+                        continue
+                    needed = float(sr.portions_needed) if sr.portions_needed else 0
+                    if not needed:
+                        continue
+                    # Convert portions_needed unit to child output unit if needed (bulk sub-recipes)
+                    child_output_unit = (_get_output_unit(child)).lower().strip()
+                    needed_unit = (sr.portions_needed_unit or child_output_unit).lower().strip()
+                    if needed_unit != child_output_unit and child.batch_output_type == "bulk":
+                        converted = _convert_unit(needed, needed_unit, child_output_unit)
+                        if converted is not None:
+                            needed = converted
+                    sub_scale = scale * needed / child_output
+                    child_usage = _build_ing_usage(child, sub_scale, depth + 1)
+                    for k, v in child_usage.items():
+                        usage[k] = usage.get(k, 0) + v
+            except Exception:
+                pass  # lazy load guard
+        return usage
 
     items = []
     for rid in recipe_ids:
@@ -555,16 +603,8 @@ async def price_impact_report(
 
         output_qty = _get_output_qty(r)
 
-        # Build ingredient name -> usage map for cost impact calculation
-        ing_usage: dict[str, float] = {}  # ingredient_name -> qty_in_std_unit
-        for ri in r.ingredients:
-            if ri.ingredient and ri.quantity:
-                display_unit = ri.unit or ri.ingredient.standard_unit
-                qty_std = _convert_unit(float(ri.quantity), display_unit, ri.ingredient.standard_unit)
-                yld = float(ri.yield_percent) if ri.yield_percent else 100.0
-                # qty adjusted for yield: more raw ingredient needed if yield < 100%
-                qty_effective = qty_std / (yld / 100) if yld > 0 else qty_std
-                ing_usage[ri.ingredient.name.lower()] = qty_effective
+        # Build ingredient name -> usage map for cost impact calculation (including sub-recipes)
+        ing_usage = _build_ing_usage(r)
 
         # Calculate per-change cost impact
         for change in recipe_changes[rid]:
@@ -685,6 +725,7 @@ async def list_recipes(
             cook_time_minutes=r.cook_time_minutes,
             flag_summary=flag_summary,
             image_count=len(r.images) if r.images else 0,
+            gross_sell_price=float(r.gross_sell_price) if r.gross_sell_price else None,
             kds_menu_item_name=r.kds_menu_item_name,
             sambapos_portion_name=r.sambapos_portion_name,
             created_at=str(r.created_at) if r.created_at else "",

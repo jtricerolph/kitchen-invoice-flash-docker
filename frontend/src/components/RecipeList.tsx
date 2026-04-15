@@ -54,6 +54,7 @@ export default function RecipeList() {
   const [showSectionModal, setShowSectionModal] = useState(false)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('list')
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
 
   // Advanced filters (client-side)
   const [ingredientSearch, setIngredientSearch] = useState('')
@@ -90,12 +91,13 @@ export default function RecipeList() {
   })
 
   const { data: recipes, isLoading } = useQuery<RecipeItem[]>({
-    queryKey: ['recipes', search, sectionFilter],
+    queryKey: ['recipes', search, sectionFilter, showArchived],
     queryFn: async () => {
       const params = new URLSearchParams()
       params.set('recipe_type', 'component')
       if (search) params.set('search', search)
       if (sectionFilter) params.set('menu_section_id', sectionFilter)
+      if (showArchived) params.set('archived', 'true')
       const res = await fetch(`/api/recipes?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -144,6 +146,18 @@ export default function RecipeList() {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to archive')
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['recipes'] }),
+  })
+
+  const unarchiveMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/recipes/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_archived: false }),
+      })
+      if (!res.ok) throw new Error('Failed to unarchive')
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['recipes'] }),
   })
@@ -283,7 +297,7 @@ export default function RecipeList() {
 
       {/* Stats */}
       <div style={styles.statsBar}>
-        <span>{filteredRecipes.length} recipes</span>
+        <span>{filteredRecipes.length} {showArchived ? 'archived ' : ''}recipes</span>
       </div>
 
       {/* Filters */}
@@ -301,6 +315,14 @@ export default function RecipeList() {
             <option key={s.id} value={s.id}>{s.name} ({s.recipe_count})</option>
           ))}
         </select>
+        <label style={styles.checkLabel}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show Archived
+        </label>
         <button
           onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
           style={{ ...styles.secondaryBtn, padding: '0.5rem 0.75rem', fontSize: '0.85rem' }}
@@ -409,19 +431,22 @@ export default function RecipeList() {
       ) : viewMode === 'card' ? (
         <div style={styles.grid}>
           {filteredRecipes.map(r => (
-            <div key={r.id} style={styles.card} onClick={() => navigate(`/recipes/${r.id}`)}>
+            <div key={r.id} style={{ ...styles.card, ...(r.is_archived ? { opacity: 0.6 } : {}) }} onClick={() => navigate(`/recipes/${r.id}`)}>
               <div style={styles.cardHeader}>
-                <span style={{ fontWeight: 600, fontSize: '1rem' }}>{r.name}</span>
-                <span style={{
-                  background: '#8b5cf6',
-                  color: 'white',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                }}>
-                  RECIPE
-                </span>
+                <span style={{ fontWeight: 600, fontSize: '1rem', ...(r.is_archived ? { textDecoration: 'line-through' } : {}) }}>{r.name}</span>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {r.is_archived && <span style={{ background: '#999', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600 }}>ARCHIVED</span>}
+                  <span style={{
+                    background: '#8b5cf6',
+                    color: 'white',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                  }}>
+                    RECIPE
+                  </span>
+                </div>
               </div>
 
               {r.menu_section_name && (
@@ -461,7 +486,11 @@ export default function RecipeList() {
 
               <div style={styles.cardActions}>
                 <button onClick={(e) => { e.stopPropagation(); duplicateMutation.mutate(r.id) }} style={styles.actionBtn}>Duplicate</button>
-                <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560' }}>Archive</button>
+                {r.is_archived ? (
+                  <button onClick={(e) => { e.stopPropagation(); unarchiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#22c55e' }}>Restore</button>
+                ) : (
+                  <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560' }}>Archive</button>
+                )}
               </div>
             </div>
           ))}
@@ -481,9 +510,10 @@ export default function RecipeList() {
           </thead>
           <tbody>
             {filteredRecipes.map(r => (
-              <tr key={r.id} style={{ ...styles.listTr, cursor: 'pointer' }} onClick={() => navigate(`/recipes/${r.id}`)}>
+              <tr key={r.id} style={{ ...styles.listTr, cursor: 'pointer', ...(r.is_archived ? { opacity: 0.6 } : {}) }} onClick={() => navigate(`/recipes/${r.id}`)}>
                 <td style={styles.listTd}>
-                  <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  <span style={{ fontWeight: 500, ...(r.is_archived ? { textDecoration: 'line-through' } : {}) }}>{r.name}</span>
+                  {r.is_archived && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: '#999', fontStyle: 'italic' }}>archived</span>}
                 </td>
                 <td style={styles.listTd}>
                   <span style={{
@@ -517,7 +547,11 @@ export default function RecipeList() {
                 </td>
                 <td style={styles.listTd}>
                   <button onClick={(e) => { e.stopPropagation(); duplicateMutation.mutate(r.id) }} style={styles.actionBtn}>Duplicate</button>
-                  <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560', marginLeft: '4px' }}>Archive</button>
+                  {r.is_archived ? (
+                    <button onClick={(e) => { e.stopPropagation(); unarchiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#22c55e', marginLeft: '4px' }}>Restore</button>
+                  ) : (
+                    <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560', marginLeft: '4px' }}>Archive</button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -663,6 +697,7 @@ const styles: Record<string, React.CSSProperties> = {
   filterBar: { display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' as const },
   searchInput: { padding: '0.5rem 0.75rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem', width: '250px' },
   select: { padding: '0.5rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem' },
+  checkLabel: { display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', color: '#555', cursor: 'pointer', whiteSpace: 'nowrap' as const },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' },
   card: { background: 'white', borderRadius: '8px', padding: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', cursor: 'pointer', transition: 'box-shadow 0.2s', border: '1px solid #eee' },
   cardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' },

@@ -4,6 +4,45 @@ import { useAuth } from '../App'
 import { useNavigate } from 'react-router-dom'
 import FoodFlagBadges from './FoodFlagBadges'
 
+interface IngredientChange {
+  summary: string
+  date: string | null
+  ingredient_name: string | null
+  old_price: number | null
+  new_price: number | null
+  unit: string | null
+  cost_impact: number | null
+  source_invoice_id: number | null
+  source_invoice_number: string | null
+}
+
+interface ImpactItem {
+  recipe_id: number
+  recipe_name: string
+  recipe_type: string
+  output_unit: string
+  current_cost_per_unit: number | null
+  previous_cost_per_unit: number | null
+  cost_change: number | null
+  cost_change_pct: number | null
+  ingredient_changes: IngredientChange[]
+}
+
+interface CostTrendSnapshot {
+  id: number
+  created_at: string
+  cost_per_portion: number
+  total_cost: number
+  trigger: string
+  changes: string[]
+}
+
+function formatIngredientPrice(price: number, unit: string | null): string {
+  if (unit === 'g' && price < 1) return `\u00A3${(price * 1000).toFixed(2)}/kg`
+  if (unit === 'ml' && price < 1) return `\u00A3${(price * 1000).toFixed(2)}/ltr`
+  return `\u00A3${price.toFixed(4)}/${unit || '?'}`
+}
+
 interface MenuSection {
   id: number
   name: string
@@ -37,6 +76,7 @@ interface RecipeItem {
     excludable: boolean
   }>
   image_count: number
+  gross_sell_price: number | null
   kds_menu_item_name: string | null
   sambapos_portion_name: string | null
   created_at: string
@@ -54,6 +94,10 @@ export default function DishList() {
   const [showSectionModal, setShowSectionModal] = useState(false)
   const [viewMode, setViewMode] = useState<'card' | 'list'>('list')
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
+  const [costChangeDays, setCostChangeDays] = useState(30)
+  const [expandedCostId, setExpandedCostId] = useState<number | null>(null)
+  const [trendTooltip, setTrendTooltip] = useState<{ x: number; y: number; date: string; cost: string; trigger: string } | null>(null)
 
   // Advanced filters (client-side)
   const [ingredientSearch, setIngredientSearch] = useState('')
@@ -86,12 +130,13 @@ export default function DishList() {
   })
 
   const { data: recipes, isLoading } = useQuery<RecipeItem[]>({
-    queryKey: ['dishes', search, sectionFilter],
+    queryKey: ['dishes', search, sectionFilter, showArchived],
     queryFn: async () => {
       const params = new URLSearchParams()
       if (search) params.set('search', search)
       params.set('recipe_type', 'dish')
       if (sectionFilter) params.set('menu_section_id', sectionFilter)
+      if (showArchived) params.set('archived', 'true')
       const res = await fetch(`/api/recipes?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -99,6 +144,36 @@ export default function DishList() {
       return res.json()
     },
     enabled: !!token,
+  })
+
+  // Price impact data for badge overlay
+  const { data: impactData } = useQuery<{ days: number; recipes: ImpactItem[] }>({
+    queryKey: ['price-impact-dishes', costChangeDays],
+    queryFn: async () => {
+      const res = await fetch(`/api/recipes/price-impact?days=${costChangeDays}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch price impact')
+      return res.json()
+    },
+    enabled: !!token,
+  })
+
+  // Build lookup: recipe_id → impact item (dishes only)
+  const impactMap = new Map<number, ImpactItem>()
+  impactData?.recipes.filter(r => r.recipe_type === 'dish').forEach(r => impactMap.set(r.recipe_id, r))
+
+  // Cost trend for expanded dish
+  const { data: costTrendRaw } = useQuery<{ snapshots: CostTrendSnapshot[] }>({
+    queryKey: ['cost-trend', expandedCostId],
+    queryFn: async () => {
+      const res = await fetch(`/api/recipes/${expandedCostId}/cost-trend`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to fetch cost trend')
+      return res.json()
+    },
+    enabled: !!token && !!expandedCostId,
   })
 
   const createMutation = useMutation({
@@ -140,6 +215,18 @@ export default function DishList() {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to archive')
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dishes'] }),
+  })
+
+  const unarchiveMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/recipes/${id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_archived: false }),
+      })
+      if (!res.ok) throw new Error('Failed to unarchive')
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['dishes'] }),
   })
@@ -254,6 +341,169 @@ export default function DishList() {
     return result
   })()
 
+  const renderCostTrendPanel = (recipeId: number) => {
+    const impact = impactMap.get(recipeId)
+    const snapshots = expandedCostId === recipeId ? costTrendRaw?.snapshots : undefined
+
+    return (
+      <div>
+        {/* Cost trend chart */}
+        {snapshots && snapshots.length > 1 && (() => {
+          const costs = snapshots.map(d => d.cost_per_portion)
+          const minCost = Math.min(...costs)
+          const maxCost = Math.max(...costs)
+          const costRange = maxCost - minCost || 1
+          const chartWidth = 460
+          const chartHeight = 110
+          const padX = 40
+          const padY = 18
+          const plotW = chartWidth - padX * 2
+          const plotH = chartHeight - padY * 2
+
+          const points = snapshots.map((d, i) => {
+            const x = padX + (i / (snapshots.length - 1)) * plotW
+            const y = padY + plotH - ((d.cost_per_portion - minCost) / costRange) * plotH
+            return { x, y, ...d }
+          })
+          const polyline = points.map(p => `${p.x},${p.y}`).join(' ')
+          const yLabels = [minCost, minCost + costRange / 2, maxCost]
+          const xLabelIndices = [0, Math.floor(snapshots.length / 2), snapshots.length - 1]
+
+          return (
+            <div>
+              <div style={{ position: 'relative' }}>
+                <div style={{ fontSize: '0.7rem', fontWeight: 600, color: '#888', marginBottom: '4px' }}>Cost Trend</div>
+                <svg width={chartWidth} height={chartHeight} style={{ background: 'white', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                  {yLabels.map((val, i) => {
+                    const y = padY + plotH - ((val - minCost) / costRange) * plotH
+                    return (
+                      <g key={i}>
+                        <line x1={padX} y1={y} x2={chartWidth - padX} y2={y} stroke="#f0f0f0" strokeWidth="1" />
+                        <text x={padX - 4} y={y + 3} textAnchor="end" fontSize="9" fill="#888">
+                          {'\u00A3'}{val.toFixed(2)}
+                        </text>
+                      </g>
+                    )
+                  })}
+                  {xLabelIndices.filter((v, i, a) => a.indexOf(v) === i).map(idx => {
+                    const p = points[idx]
+                    const dateStr = new Date(p.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })
+                    return (
+                      <text key={idx} x={p.x} y={chartHeight - 2} textAnchor="middle" fontSize="9" fill="#888">
+                        {dateStr}
+                      </text>
+                    )
+                  })}
+                  <polyline points={polyline} fill="none" stroke="#e94560" strokeWidth="2" />
+                  {points.map((p, i) => (
+                    <circle
+                      key={i}
+                      cx={p.x}
+                      cy={p.y}
+                      r={3.5}
+                      fill="#e94560"
+                      stroke="white"
+                      strokeWidth="1.5"
+                      style={{ cursor: 'pointer' }}
+                      onMouseEnter={() => {
+                        setTrendTooltip({
+                          x: p.x,
+                          y: p.y - 10,
+                          date: new Date(p.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                          cost: `\u00A3${p.cost_per_portion.toFixed(2)}`,
+                          trigger: p.trigger,
+                        })
+                      }}
+                      onMouseLeave={() => setTrendTooltip(null)}
+                    />
+                  ))}
+                </svg>
+                {trendTooltip && (
+                  <div style={{
+                    position: 'absolute',
+                    left: trendTooltip.x,
+                    top: trendTooltip.y - 50,
+                    transform: 'translateX(-50%)',
+                    background: '#333',
+                    color: 'white',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    whiteSpace: 'nowrap',
+                    pointerEvents: 'none',
+                    zIndex: 20,
+                  }}>
+                    <div>{trendTooltip.date}</div>
+                    <div>{trendTooltip.cost}</div>
+                    {trendTooltip.trigger && <div style={{ color: '#ccc', fontSize: '0.7rem' }}>{trendTooltip.trigger}</div>}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )
+        })()}
+
+        {snapshots && snapshots.length <= 1 && (
+          <div style={{ color: '#888', fontStyle: 'italic', fontSize: '0.8rem', marginBottom: '6px' }}>
+            Not enough data for trend chart
+          </div>
+        )}
+
+        {!snapshots && <div style={{ color: '#888', fontSize: '0.8rem' }}>Loading cost trend...</div>}
+
+        {/* Ingredient price changes from impact data */}
+        {impact && impact.ingredient_changes.length > 0 && (
+          <div style={{ marginTop: '8px' }}>
+            <div style={{ fontWeight: 600, fontSize: '0.7rem', color: '#888', marginBottom: '4px' }}>
+              Ingredient Price Changes ({impact.ingredient_changes.length}) — last {costChangeDays} days
+            </div>
+            <div style={{ fontSize: '0.8rem', color: '#555' }}>
+              {impact.ingredient_changes.map((c, i) => (
+                <div key={i} style={{ padding: '3px 0', borderBottom: i < impact.ingredient_changes.length - 1 ? '1px solid #eee' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>
+                    <span style={{ color: '#888', marginRight: '0.5rem', fontSize: '0.75rem' }}>{c.date}</span>
+                    {c.source_invoice_id && (
+                      <span
+                        style={{ cursor: 'pointer', color: '#e94560', marginRight: '0.5rem', textDecoration: 'underline', fontSize: '0.75rem' }}
+                        onClick={() => navigate(`/invoice/${c.source_invoice_id}`)}
+                      >
+                        {c.source_invoice_number || `#${c.source_invoice_id}`}
+                      </span>
+                    )}
+                    {c.ingredient_name && c.old_price != null && c.new_price != null ? (
+                      <>
+                        {c.ingredient_name}: {formatIngredientPrice(c.old_price, c.unit)} {'\u2192'} {formatIngredientPrice(c.new_price, c.unit)}
+                      </>
+                    ) : c.ingredient_name && c.new_price != null && c.old_price == null ? (
+                      <>
+                        {c.ingredient_name} price set: {formatIngredientPrice(c.new_price, c.unit)}
+                      </>
+                    ) : (
+                      c.summary
+                    )}
+                  </span>
+                  {c.cost_impact != null && (
+                    <span style={{
+                      fontFamily: 'monospace',
+                      fontWeight: 600,
+                      fontSize: '0.75rem',
+                      color: c.cost_impact > 0 ? '#dc2626' : c.cost_impact < 0 ? '#16a34a' : '#888',
+                      marginLeft: '1rem',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {c.cost_impact > 0 ? '+' : ''}{'\u00A3'}{c.cost_impact.toFixed(4)}/{impact.output_unit}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   const handleCreate = () => {
     createMutation.mutate({
       name: formName,
@@ -276,7 +526,13 @@ export default function DishList() {
 
       {/* Stats */}
       <div style={styles.statsBar}>
-        <span>{recipes?.length || 0} dishes</span>
+        <span>{filteredRecipes.length} {showArchived ? 'archived ' : ''}dishes</span>
+        {impactMap.size > 0 && (
+          <>
+            <span style={{ color: '#888' }}>|</span>
+            <span style={{ color: '#dc2626', fontWeight: 600 }}>{impactMap.size} with cost changes</span>
+          </>
+        )}
       </div>
 
       {/* Filters */}
@@ -294,6 +550,24 @@ export default function DishList() {
             <option key={s.id} value={s.id}>{s.name} ({s.recipe_count})</option>
           ))}
         </select>
+        <label style={styles.checkLabel}>
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          Show Archived
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <label style={{ fontSize: '0.8rem', color: '#666', whiteSpace: 'nowrap' }}>Cost changes:</label>
+          <select value={costChangeDays} onChange={e => setCostChangeDays(Number(e.target.value))} style={{ ...styles.select, padding: '0.35rem 0.4rem', fontSize: '0.8rem' }}>
+            <option value={7}>7d</option>
+            <option value={14}>14d</option>
+            <option value={30}>30d</option>
+            <option value={60}>60d</option>
+            <option value={90}>90d</option>
+          </select>
+        </div>
         <button
           onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
           style={{ ...styles.secondaryBtn, padding: '0.5rem 0.75rem', fontSize: '0.85rem' }}
@@ -402,20 +676,23 @@ export default function DishList() {
       ) : viewMode === 'card' ? (
         <div style={styles.grid}>
           {filteredRecipes.map(r => (
-            <div key={r.id} style={styles.card} onClick={() => navigate(`/dishes/${r.id}`)}>
+            <div key={r.id} style={{ ...styles.card, ...(r.is_archived ? { opacity: 0.6 } : {}) }} onClick={() => navigate(`/dishes/${r.id}`)}>
               <div style={styles.cardHeader}>
-                <span style={{ fontWeight: 600, fontSize: '1rem' }}>{r.name}</span>
-                <span style={{
-                  background: '#3b82f6',
-                  color: 'white',
-                  padding: '2px 8px',
-                  borderRadius: '4px',
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                  textTransform: 'uppercase' as const,
-                }}>
-                  DISH
-                </span>
+                <span style={{ fontWeight: 600, fontSize: '1rem', ...(r.is_archived ? { textDecoration: 'line-through' } : {}) }}>{r.name}</span>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {r.is_archived && <span style={{ background: '#999', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600 }}>ARCHIVED</span>}
+                  <span style={{
+                    background: '#3b82f6',
+                    color: 'white',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                    textTransform: 'uppercase' as const,
+                  }}>
+                    DISH
+                  </span>
+                </div>
               </div>
 
               {r.menu_section_name && (
@@ -430,19 +707,62 @@ export default function DishList() {
               )}
 
               <div style={styles.cardMeta}>
-                {r.cost_per_portion != null ? (
-                  <span style={styles.costBadge}>{'\u00A3'}{r.cost_per_portion.toFixed(2)}/portion</span>
-                ) : (
-                  <span style={{ color: '#aaa', fontSize: '0.8rem' }}>No costing</span>
-                )}
-                {(r.prep_time_minutes || r.cook_time_minutes) && (
-                  <span style={{ fontSize: '0.75rem', color: '#888' }}>
-                    {r.prep_time_minutes ? `${r.prep_time_minutes}m prep` : ''}
-                    {r.prep_time_minutes && r.cook_time_minutes ? ' + ' : ''}
-                    {r.cook_time_minutes ? `${r.cook_time_minutes}m cook` : ''}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  {r.cost_per_portion != null ? (
+                    <span style={styles.costBadge}>{'\u00A3'}{r.cost_per_portion.toFixed(2)}/portion</span>
+                  ) : (
+                    <span style={{ color: '#aaa', fontSize: '0.8rem' }}>No costing</span>
+                  )}
+                  {impactMap.has(r.id) && (() => {
+                    const impact = impactMap.get(r.id)!
+                    const up = (impact.cost_change ?? 0) > 0
+                    return (
+                      <span
+                        onClick={(e) => { e.stopPropagation(); setExpandedCostId(expandedCostId === r.id ? null : r.id); setTrendTooltip(null) }}
+                        style={{
+                          background: up ? '#fef2f2' : '#f0fdf4',
+                          color: up ? '#dc2626' : '#16a34a',
+                          border: `1px solid ${up ? '#fca5a5' : '#86efac'}`,
+                          padding: '1px 6px',
+                          borderRadius: '10px',
+                          fontSize: '0.65rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                        title={`${impact.ingredient_changes.length} ingredient price change(s) in last ${costChangeDays}d`}
+                      >
+                        {up ? '\u25B2' : '\u25BC'} {impact.cost_change_pct != null ? `${impact.cost_change_pct > 0 ? '+' : ''}${impact.cost_change_pct}%` : ''}
+                      </span>
+                    )
+                  })()}
+                </div>
+                {r.gross_sell_price != null && (
+                  <span style={{ fontSize: '0.8rem', color: '#555' }}>
+                    Sell: {'\u00A3'}{r.gross_sell_price.toFixed(2)}
                   </span>
                 )}
+                {r.gross_sell_price != null && r.cost_per_portion != null && (() => {
+                  const netSell = r.gross_sell_price / 1.2
+                  const gp = ((netSell - r.cost_per_portion) / netSell) * 100
+                  return (
+                    <span style={{
+                      fontSize: '0.8rem',
+                      fontWeight: 600,
+                      color: gp >= 70 ? '#16a34a' : gp >= 60 ? '#ca8a04' : '#dc2626',
+                    }}>
+                      {gp.toFixed(1)}% GP
+                    </span>
+                  )
+                })()}
               </div>
+
+              {/* Inline cost trend expansion */}
+              {expandedCostId === r.id && (
+                <div onClick={(e) => e.stopPropagation()} style={{ marginTop: '8px', borderTop: '1px solid #eee', paddingTop: '8px' }}>
+                  {renderCostTrendPanel(r.id)}
+                </div>
+              )}
 
               {r.flag_summary.length > 0 && (
                 <div style={{ marginTop: '6px' }}>
@@ -452,7 +772,11 @@ export default function DishList() {
 
               <div style={styles.cardActions}>
                 <button onClick={(e) => { e.stopPropagation(); duplicateMutation.mutate(r.id) }} style={styles.actionBtn}>Duplicate</button>
-                <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560' }}>Archive</button>
+                {r.is_archived ? (
+                  <button onClick={(e) => { e.stopPropagation(); unarchiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#22c55e' }}>Restore</button>
+                ) : (
+                  <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560' }}>Archive</button>
+                )}
               </div>
             </div>
           ))}
@@ -465,15 +789,19 @@ export default function DishList() {
               <th style={styles.listTh}>Type</th>
               <th style={styles.listTh}>Course</th>
               <th style={styles.listTh}>Cost/Portion</th>
+              <th style={styles.listTh}>Sell Price</th>
+              <th style={styles.listTh}>GP%</th>
               <th style={styles.listTh}>Flags</th>
               <th style={styles.listTh}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {filteredRecipes.map(r => (
-              <tr key={r.id} style={{ ...styles.listTr, cursor: 'pointer' }} onClick={() => navigate(`/dishes/${r.id}`)}>
+              <>
+              <tr key={r.id} style={{ ...styles.listTr, cursor: 'pointer', ...(r.is_archived ? { opacity: 0.6 } : {}) }} onClick={() => navigate(`/dishes/${r.id}`)}>
                 <td style={styles.listTd}>
-                  <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  <span style={{ fontWeight: 500, ...(r.is_archived ? { textDecoration: 'line-through' } : {}) }}>{r.name}</span>
+                  {r.is_archived && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', color: '#999', fontStyle: 'italic' }}>archived</span>}
                 </td>
                 <td style={styles.listTd}>
                   <span style={{
@@ -490,9 +818,57 @@ export default function DishList() {
                 </td>
                 <td style={styles.listTd}>{r.menu_section_name || '-'}</td>
                 <td style={styles.listTd}>
-                  {r.cost_per_portion != null ? (
-                    <span style={styles.costBadge}>{'\u00A3'}{r.cost_per_portion.toFixed(2)}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {r.cost_per_portion != null ? (
+                      <span style={styles.costBadge}>{'\u00A3'}{r.cost_per_portion.toFixed(2)}</span>
+                    ) : (
+                      <span style={{ color: '#aaa', fontSize: '0.8rem' }}>-</span>
+                    )}
+                    {impactMap.has(r.id) && (() => {
+                      const impact = impactMap.get(r.id)!
+                      const up = (impact.cost_change ?? 0) > 0
+                      return (
+                        <span
+                          onClick={(e) => { e.stopPropagation(); setExpandedCostId(expandedCostId === r.id ? null : r.id); setTrendTooltip(null) }}
+                          style={{
+                            background: up ? '#fef2f2' : '#f0fdf4',
+                            color: up ? '#dc2626' : '#16a34a',
+                            border: `1px solid ${up ? '#fca5a5' : '#86efac'}`,
+                            padding: '1px 6px',
+                            borderRadius: '10px',
+                            fontSize: '0.65rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                          title={`${impact.ingredient_changes.length} ingredient price change(s) in last ${costChangeDays}d — click to expand`}
+                        >
+                          {up ? '\u25B2' : '\u25BC'} {impact.cost_change_pct != null ? `${impact.cost_change_pct > 0 ? '+' : ''}${impact.cost_change_pct}%` : ''}
+                        </span>
+                      )
+                    })()}
+                  </div>
+                </td>
+                <td style={styles.listTd}>
+                  {r.gross_sell_price != null ? (
+                    <span>{'\u00A3'}{r.gross_sell_price.toFixed(2)}</span>
                   ) : (
+                    <span style={{ color: '#aaa', fontSize: '0.8rem' }}>-</span>
+                  )}
+                </td>
+                <td style={styles.listTd}>
+                  {r.gross_sell_price != null && r.cost_per_portion != null ? (() => {
+                    const netSell = r.gross_sell_price / 1.2
+                    const gp = ((netSell - r.cost_per_portion) / netSell) * 100
+                    return (
+                      <span style={{
+                        fontWeight: 600,
+                        color: gp >= 70 ? '#16a34a' : gp >= 60 ? '#ca8a04' : '#dc2626',
+                      }}>
+                        {gp.toFixed(1)}%
+                      </span>
+                    )
+                  })() : (
                     <span style={{ color: '#aaa', fontSize: '0.8rem' }}>-</span>
                   )}
                 </td>
@@ -501,9 +877,21 @@ export default function DishList() {
                 </td>
                 <td style={styles.listTd}>
                   <button onClick={(e) => { e.stopPropagation(); duplicateMutation.mutate(r.id) }} style={styles.actionBtn}>Duplicate</button>
-                  <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560', marginLeft: '4px' }}>Archive</button>
+                  {r.is_archived ? (
+                    <button onClick={(e) => { e.stopPropagation(); unarchiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#22c55e', marginLeft: '4px' }}>Restore</button>
+                  ) : (
+                    <button onClick={(e) => { e.stopPropagation(); archiveMutation.mutate(r.id) }} style={{ ...styles.actionBtn, color: '#e94560', marginLeft: '4px' }}>Archive</button>
+                  )}
                 </td>
               </tr>
+              {expandedCostId === r.id && (
+                <tr key={`${r.id}-cost-detail`}>
+                  <td colSpan={8} style={{ padding: '0.5rem 0.75rem 0.75rem 2rem', background: '#fafafa', borderBottom: '1px solid #e0e0e0' }}>
+                    {renderCostTrendPanel(r.id)}
+                  </td>
+                </tr>
+              )}
+              </>
             ))}
           </tbody>
         </table>
@@ -618,6 +1006,7 @@ const styles: Record<string, React.CSSProperties> = {
   filterBar: { display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' as const },
   searchInput: { padding: '0.5rem 0.75rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem', width: '250px' },
   select: { padding: '0.5rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem' },
+  checkLabel: { display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', color: '#555', cursor: 'pointer', whiteSpace: 'nowrap' as const },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' },
   card: { background: 'white', borderRadius: '8px', padding: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', cursor: 'pointer', transition: 'box-shadow 0.2s', border: '1px solid #eee' },
   cardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' },
