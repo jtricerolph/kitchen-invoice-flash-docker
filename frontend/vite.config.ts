@@ -10,6 +10,13 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    // Vite 5 validates the Host header against its own port. When accessed via the
+    // Docker port mapping (3080→5173), Host: localhost:3080 gets rejected.
+    // 'all' disables that check so the mapped port works.
+    allowedHosts: 'all',
+    hmr: {
+      clientPort: 3080,
+    },
     proxy: {
       '/api': {
         target: apiTarget,

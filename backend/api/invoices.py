@@ -2309,11 +2309,18 @@ async def parse_dates_from_ocr(
     db: AsyncSession = Depends(get_db)
 ):
     """Parse potential dates from invoice OCR raw text content"""
+    import json as _json
     from datetime import datetime
 
     invoice = await get_invoice_or_404(invoice_id, current_user, db)
 
     raw_text = invoice.ocr_raw_text or ""
+    raw_json: dict = {}
+    if invoice.ocr_raw_json:
+        try:
+            raw_json = _json.loads(invoice.ocr_raw_json)
+        except Exception:
+            pass
 
     # Date patterns to look for (UK/EU formats primarily)
     # DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD
@@ -2343,7 +2350,6 @@ async def parse_dates_from_ocr(
                     if date_str not in seen_dates:
                         seen_dates.add(date_str)
 
-                        # Try to find context around the date (nearby text)
                         start = max(0, match.start() - 50)
                         end = min(len(raw_text), match.end() + 20)
                         context = raw_text[start:end].replace('\n', ' ').strip()
@@ -2351,7 +2357,8 @@ async def parse_dates_from_ocr(
                         found_dates.append({
                             "date": date_str,
                             "original": match.group(0),
-                            "context": context
+                            "context": context,
+                            "bbox": _find_word_bbox(raw_json, match.group(0)),
                         })
             except (ValueError, IndexError):
                 continue
@@ -2363,6 +2370,234 @@ async def parse_dates_from_ocr(
         "invoice_id": invoice.id,
         "current_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
         "found_dates": found_dates
+    }
+
+
+def _generalize_invoice_number_pattern(sample: str) -> str:
+    """
+    Convert a known invoice number into a regex that matches similar-shaped numbers.
+    Uses tight ±1 range on digit runs to avoid matching phone/VAT/postcode numbers.
+    e.g. 'ID304574'  →  r'\bID\d{5,7}\b'
+         'INV-00123' →  r'\bINV-\d{4,6}\b'
+    """
+    parts = []
+    i = 0
+    while i < len(sample):
+        c = sample[i]
+        if c.isdigit():
+            j = i
+            while j < len(sample) and sample[j].isdigit():
+                j += 1
+            run = j - i
+            # Tight ±1 to avoid false positives like phone/VAT numbers
+            parts.append(rf'\d{{{max(1, run - 1)},{run + 1}}}')
+            i = j
+        elif c.isalpha():
+            j = i
+            while j < len(sample) and sample[j].isalpha():
+                j += 1
+            run = j - i
+            letters = sample[i:j]
+            if run <= 4:
+                parts.append(re.escape(letters))  # short prefix — exact match
+            else:
+                parts.append(rf'[A-Za-z]{{{run - 1},{run + 1}}}')
+            i = j
+        else:
+            parts.append(re.escape(c))
+            i += 1
+    return r'\b' + ''.join(parts) + r'\b'
+
+
+def _find_word_bbox(raw_json: dict, text: str) -> dict | None:
+    """
+    Search Azure OCR page words for a token exactly matching `text`.
+    Returns bbox as percentages of page dimensions so it can be used with
+    the same canvas-crop logic as field bounding boxes.
+    Handles both flat polygon [x1,y1,x2,y2,...] and nested [[x1,y1],...] formats.
+    """
+    text_norm = text.strip().upper()
+    for page_idx, page in enumerate(raw_json.get('pages', [])):
+        page_width = page.get('width', 8.5) or 8.5
+        page_height = page.get('height', 11.0) or 11.0
+        for word in page.get('words', []):
+            if word.get('content', '').strip().upper() != text_norm:
+                continue
+            polygon = word.get('polygon', [])
+            if not polygon:
+                continue
+            # Flat: [x1,y1,x2,y2,...] vs nested: [[x1,y1],[x2,y2],...]
+            if isinstance(polygon[0], (int, float)):
+                xs = polygon[0::2]
+                ys = polygon[1::2]
+            else:
+                xs = [p[0] for p in polygon]
+                ys = [p[1] for p in polygon]
+            if not xs or not ys:
+                continue
+            return {
+                'x': (min(xs) / page_width) * 100,
+                'y': (min(ys) / page_height) * 100,
+                'width': ((max(xs) - min(xs)) / page_width) * 100,
+                'height': ((max(ys) - min(ys)) / page_height) * 100,
+                'pageNumber': page_idx + 1,
+            }
+    return None
+
+
+def _field_bbox(raw_json: dict, field_name: str) -> dict | None:
+    """Extract bbox from an Azure structured document field."""
+    try:
+        region = raw_json['documents'][0]['fields'][field_name]['bounding_regions'][0]
+        polygon = region['polygon']
+        page_number = region.get('page_number', 1)
+        page = raw_json['pages'][page_number - 1]
+        page_width = page.get('width', 8.5) or 8.5
+        page_height = page.get('height', 11.0) or 11.0
+        if isinstance(polygon[0], (int, float)):
+            xs = polygon[0::2]; ys = polygon[1::2]
+        else:
+            xs = [p[0] for p in polygon]; ys = [p[1] for p in polygon]
+        return {
+            'x': (min(xs) / page_width) * 100,
+            'y': (min(ys) / page_height) * 100,
+            'width': ((max(xs) - min(xs)) / page_width) * 100,
+            'height': ((max(ys) - min(ys)) / page_height) * 100,
+            'pageNumber': page_number,
+        }
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+# Context signals that indicate a match is NOT an invoice number
+_INVOICE_NUM_EXCLUDE = re.compile(
+    r'\b(?:tel|fax|mob(?:ile)?|phone|'
+    r'vat\s*reg|vat\s*no|vat\s*number|vat\s*registration|'
+    r'[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}|'   # email address
+    r'[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})',      # UK postcode
+    re.IGNORECASE
+)
+
+
+@router.get("/{invoice_id}/parse-invoice-number")
+async def parse_invoice_number_from_ocr(
+    invoice_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Search invoice OCR text for candidate invoice numbers.
+    Uses past confirmed invoice numbers from the same supplier to derive
+    a format pattern, then scans the raw text for matches.
+    Falls back to keyword-proximity heuristics when no history is available.
+    """
+    import json as _json
+
+    invoice = await get_invoice_or_404(invoice_id, current_user, db)
+    raw_text = invoice.ocr_raw_text or ""
+
+    candidates = []
+    seen = set()
+    raw_json: dict = {}
+    if invoice.ocr_raw_json:
+        try:
+            raw_json = _json.loads(invoice.ocr_raw_json)
+        except Exception:
+            pass
+
+    def add_candidate(value: str, context: str, source: str, bbox=None):
+        value = value.strip()
+        if not value or value in seen:
+            return
+        seen.add(value)
+        entry = {"value": value, "context": context, "source": source}
+        if bbox:
+            entry["bbox"] = bbox
+        candidates.append(entry)
+
+    # ── 1. Check Azure OCR structured fields that might contain the number ──────
+    if raw_json:
+        try:
+            docs = raw_json.get("documents", [{}])
+            fields = docs[0].get("fields", {}) if docs else {}
+            for field_name in ("InvoiceId", "TransactionId", "PurchaseOrder", "PaymentRef",
+                               "OrderId", "DocumentNumber", "BillingReference"):
+                field = fields.get(field_name)
+                if field and field.get("value"):
+                    val = str(field["value"]).strip()
+                    bbox = _field_bbox(raw_json, field_name) or _find_word_bbox(raw_json, val)
+                    add_candidate(val, f"Azure OCR field: {field_name}", "ocr_field", bbox)
+        except Exception:
+            pass
+
+    # ── 2. Derive format pattern from past confirmed invoice numbers ─────────────
+    past_numbers: list[str] = []
+    if invoice.supplier_id:
+        result = await db.execute(
+            select(Invoice.invoice_number)
+            .where(
+                Invoice.kitchen_id == current_user.kitchen_id,
+                Invoice.supplier_id == invoice.supplier_id,
+                Invoice.invoice_number.isnot(None),
+                Invoice.id != invoice_id,
+                Invoice.status == InvoiceStatus.CONFIRMED,
+            )
+            .order_by(Invoice.id.desc())
+            .limit(15)
+        )
+        past_numbers = [r[0] for r in result.fetchall() if r[0]]
+
+    if past_numbers and raw_text:
+        seen_shapes: set[str] = set()
+        patterns_to_try: list[str] = []
+        for num in past_numbers:
+            shape = re.sub(r'\d', 'N', re.sub(r'[A-Za-z]', 'A', num))
+            if shape not in seen_shapes:
+                seen_shapes.add(shape)
+                patterns_to_try.append(_generalize_invoice_number_pattern(num))
+            if len(patterns_to_try) >= 5:
+                break
+
+        for pattern in patterns_to_try:
+            try:
+                for match in re.finditer(pattern, raw_text, re.IGNORECASE):
+                    val = match.group(0).strip()
+                    if len(val) < 4:
+                        continue
+                    if val in past_numbers:
+                        continue
+                    ctx_start = max(0, match.start() - 80)
+                    ctx_end = min(len(raw_text), match.end() + 80)
+                    if _INVOICE_NUM_EXCLUDE.search(raw_text[ctx_start:ctx_end]):
+                        continue
+                    start = max(0, match.start() - 50)
+                    end = min(len(raw_text), match.end() + 30)
+                    context = raw_text[start:end].replace('\n', ' ').strip()
+                    bbox = _find_word_bbox(raw_json, val)
+                    add_candidate(val, context, "supplier_pattern", bbox)
+            except re.error:
+                continue
+
+    # ── 3. Keyword-proximity fallback ────────────────────────────────────────────
+    keyword_pattern = re.compile(
+        r'(?:invoice\s*(?:no|number|num|#|ref)?|inv\s*(?:no|#)|'
+        r'our\s*ref|tax\s*point|order\s*ref|reference|ref\s*no|'
+        r'document\s*(?:no|number))[:\s#]*([A-Z0-9][A-Z0-9\-/\.]{2,24})',
+        re.IGNORECASE
+    )
+    for match in re.finditer(keyword_pattern, raw_text):
+        val = match.group(1).strip().rstrip('.')
+        start = max(0, match.start() - 10)
+        end = min(len(raw_text), match.end() + 20)
+        context = raw_text[start:end].replace('\n', ' ').strip()
+        bbox = _find_word_bbox(raw_json, val)
+        add_candidate(val, context, "keyword_match", bbox)
+
+    return {
+        "invoice_id": invoice.id,
+        "current_number": invoice.invoice_number,
+        "supplier_examples": past_numbers[:5],
+        "candidates": candidates,
     }
 
 

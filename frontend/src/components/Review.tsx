@@ -252,7 +252,7 @@ const getFirstLineOfDescription = (description: string | null): string => {
 };
 
 // Date warning levels for unconfirmed invoices
-type DateWarning = 'none' | 'amber' | 'red';
+type DateWarning = 'none' | 'amber' | 'red' | 'future';
 function getDateWarning(dateStr: string | null, status: string): DateWarning {
   // No date = always red (regardless of status)
   if (!dateStr) return 'red';
@@ -265,15 +265,23 @@ function getDateWarning(dateStr: string | null, status: string): DateWarning {
   today.setHours(0, 0, 0, 0);
   invoiceDate.setHours(0, 0, 0, 0);
 
-  const diffMs = Math.abs(today.getTime() - invoiceDate.getTime());
+  // Future date = almost certainly a day/month swap error — highest priority
+  if (invoiceDate > today) return 'future';
+
+  const diffMs = today.getTime() - invoiceDate.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  // More than 7 days AND different month/year = red
+  // More than 7 days old: escalate based on how far back and whether it crosses month/year
   if (diffDays > 7) {
     const sameMonth = invoiceDate.getMonth() === today.getMonth();
     const sameYear = invoiceDate.getFullYear() === today.getFullYear();
-    if (!sameMonth || !sameYear) return 'red';
-    return 'amber'; // More than 7 days but same month/year = amber
+    if (!sameMonth || !sameYear) {
+      // Dec-Jan (and general month crossover) grace period — amber up to 45 days
+      // so a late-December invoice reviewed in early January isn't immediately red
+      if (diffDays <= 45) return 'amber';
+      return 'red';
+    }
+    return 'amber'; // Same month/year, just a bit old = amber
   }
 
   return 'none';
@@ -283,7 +291,44 @@ const dateWarningStyles: Record<DateWarning, React.CSSProperties> = {
   none: {},
   amber: { backgroundColor: '#fff3cd', borderColor: '#ffc107' },
   red: { backgroundColor: '#f8d7da', borderColor: '#dc3545' },
+  future: { backgroundColor: '#ffe0cc', borderColor: '#e85d04', outline: '2px solid #e85d04' },
 };
+
+// Returns the day/month swapped version of a yyyy-mm-dd string, or null if invalid
+function getSwappedDate(dateStr: string): string | null {
+  const parts = dateStr.split('-')
+  if (parts.length !== 3) return null
+  const [year, month, day] = parts
+  const newMonth = parseInt(day, 10)
+  const newDay = parseInt(month, 10)
+  if (newMonth < 1 || newMonth > 12 || newDay < 1 || newDay > 31) return null
+  const swapped = `${year}-${String(newMonth).padStart(2, '0')}-${String(newDay).padStart(2, '0')}`
+  const d = new Date(swapped)
+  if (isNaN(d.getTime())) return null
+  return swapped
+}
+
+// Returns the most plausible year-corrected version of a future date (same month/day, current or previous year).
+// Only triggers when the date is >60 days in the future — invoices dated within ~2 months ahead could
+// legitimately be a Dec-Jan crossover, so we don't want to aggressively suggest a year correction there.
+function getYearCorrectedDate(dateStr: string): { date: string; year: number } | null {
+  const parts = dateStr.split('-')
+  if (parts.length !== 3) return null
+  const [yearStr, month, day] = parts
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const currentYear = today.getFullYear()
+  if (parseInt(yearStr, 10) <= currentYear) return null // year is not wrong
+  // Only suggest a year correction when clearly beyond the Dec-Jan overlap window
+  const daysAhead = Math.floor((new Date(dateStr).getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+  if (daysAhead <= 60) return null
+  // Try current year first, then previous year — take the first that's a valid past/today date
+  for (const y of [currentYear, currentYear - 1]) {
+    const candidate = `${y}-${month}-${day}`
+    const d = new Date(candidate)
+    if (!isNaN(d.getTime()) && d <= today) return { date: candidate, year: y }
+  }
+  return null
+}
 
 function LineItemsValidation({ lineItems, invoiceTotal, netTotal }: { lineItems: LineItem[]; invoiceTotal: number; netTotal: number | null }) {
   // Handle case when there are no line items
@@ -420,8 +465,16 @@ export default function Review() {
   const [showLinkDisputeModal, setShowLinkDisputeModal] = useState(false)
   // Date picker modal state
   const [showDatePickerModal, setShowDatePickerModal] = useState(false)
-  const [parsedDates, setParsedDates] = useState<Array<{ date: string; original: string; context: string }>>([])
+  const [parsedDates, setParsedDates] = useState<Array<{ date: string; original: string; context: string; bbox?: { x: number; y: number; width: number; height: number; pageNumber: number } }>>([])
   const [parsedDatesLoading, setParsedDatesLoading] = useState(false)
+  // Non-stock confirmation modal state
+  const [showNonStockConfirmModal, setShowNonStockConfirmModal] = useState(false)
+  const [nonStockConflictItems, setNonStockConflictItems] = useState<Array<{ description: string | null; amount: number | null }>>([])
+  // Invoice number search modal state
+  const [showInvoiceNumberModal, setShowInvoiceNumberModal] = useState(false)
+  const [invoiceNumberCandidates, setInvoiceNumberCandidates] = useState<Array<{ value: string; context: string; source: string; bbox?: { x: number; y: number; width: number; height: number; pageNumber: number } }>>([])
+  const [invoiceNumberExamples, setInvoiceNumberExamples] = useState<string[]>([])
+  const [invoiceNumberLoading, setInvoiceNumberLoading] = useState(false)
   // Line items sorting and filtering
   const [lineItemSortColumn, setLineItemSortColumn] = useState<string>('')
   const [lineItemSortDirection, setLineItemSortDirection] = useState<'asc' | 'desc'>('asc')
@@ -661,6 +714,38 @@ export default function Review() {
       height: ((maxY - minY) / pageHeight) * 100,
       pageNumber,
     }
+  }
+
+  // Crop a bounding-box region from the high-res PDF canvas and return a data URL.
+  // Returns null for non-PDF documents or if the page hasn't rendered yet.
+  const cropBboxToDataUrl = (
+    bbox: { x: number; y: number; width: number; height: number; pageNumber: number },
+    options?: { padX?: number; padY?: number; strokeColor?: string }
+  ): string | null => {
+    if (!invoice?.image_path?.toLowerCase().endsWith('.pdf') || pdfPages.length === 0) return null
+    const pageData = pdfPages[bbox.pageNumber - 1]
+    if (!pageData) return null
+    const { padX = 60, padY = 20, strokeColor = '#007bff' } = options || {}
+    const bboxX = (bbox.x / 100) * pageData.width
+    const bboxY = (bbox.y / 100) * pageData.height
+    const bboxW = (bbox.width / 100) * pageData.width
+    const bboxH = (bbox.height / 100) * pageData.height
+    const startX = Math.max(0, bboxX - padX)
+    const startY = Math.max(0, bboxY - padY)
+    const endX = Math.min(pageData.width, bboxX + bboxW + padX)
+    const endY = Math.min(pageData.height, bboxY + bboxH + padY)
+    const cropW = endX - startX
+    const cropH = endY - startY
+    const croppedCanvas = document.createElement('canvas')
+    croppedCanvas.width = cropW
+    croppedCanvas.height = cropH
+    const ctx = croppedCanvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(pageData.canvas, startX, startY, cropW, cropH, 0, 0, cropW, cropH)
+    ctx.strokeStyle = strokeColor
+    ctx.lineWidth = 3
+    ctx.strokeRect(bboxX - startX - 4, bboxY - startY - 4, bboxW + 8, bboxH + 8)
+    return croppedCanvas.toDataURL()
   }
 
   // Calculate zoom level to make bounding box fill ~80% of container
@@ -976,6 +1061,7 @@ export default function Review() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invoice', id] })
       queryClient.invalidateQueries({ queryKey: ['invoices'] })
+      queryClient.invalidateQueries({ queryKey: ['invoice-line-items', id] })
     },
   })
 
@@ -1237,6 +1323,33 @@ export default function Review() {
       }
     }
 
+    // Warn if invoice date is in the future — likely a day/month swap
+    if (invoiceDate && getDateWarning(invoiceDate, 'PENDING') === 'future') {
+      const futureDate = new Date(invoiceDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+      if (!window.confirm(
+        `⚠ Invoice date is in the future: ${futureDate}\n\n` +
+        `This is almost certainly a day/month format error (e.g. 6 April entered as 4 June).\n\n` +
+        `Please double-check the date on the document before confirming.\n\n` +
+        `Confirm anyway?`
+      )) {
+        return
+      }
+    }
+
+    // Warn if any items were previously marked non-stock but aren't on this invoice
+    const nonStockConflicts = (lineItems || []).filter(item => {
+      const history = stockHistory?.[item.id.toString()]
+      return history?.has_history && history.previously_non_stock && !item.is_non_stock
+    })
+    if (nonStockConflicts.length > 0) {
+      setNonStockConflictItems(nonStockConflicts.map(item => ({
+        description: item.description,
+        amount: item.amount,
+      })))
+      setShowNonStockConfirmModal(true)
+      return
+    }
+
     // Check for invoice date before confirming
     if (!invoiceDate) {
       alert(
@@ -1247,11 +1360,14 @@ export default function Review() {
       return
     }
 
+    await doConfirm()
+  }
+
+  const doConfirm = async () => {
     try {
       await handleSave('CONFIRMED')
       navigate('/invoices')
     } catch (error) {
-      // Handle any validation errors from the backend
       const message = error instanceof Error ? error.message : 'Failed to confirm invoice'
       alert(message)
     }
@@ -1361,6 +1477,31 @@ export default function Review() {
   const handleSelectParsedDate = (dateStr: string) => {
     setInvoiceDate(dateStr)
     setShowDatePickerModal(false)
+  }
+
+  const handleFetchInvoiceNumberCandidates = async () => {
+    setInvoiceNumberLoading(true)
+    setInvoiceNumberCandidates([])
+    setInvoiceNumberExamples([])
+    setShowInvoiceNumberModal(true)
+    try {
+      const res = await fetch(`/api/invoices/${id}/parse-invoice-number`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error('Failed to search for invoice number')
+      const data = await res.json()
+      setInvoiceNumberCandidates(data.candidates || [])
+      setInvoiceNumberExamples(data.supplier_examples || [])
+    } catch (error) {
+      console.error('Failed to fetch invoice number candidates:', error)
+    } finally {
+      setInvoiceNumberLoading(false)
+    }
+  }
+
+  const handleSelectInvoiceNumber = (value: string) => {
+    setInvoiceNumber(value)
+    setShowInvoiceNumberModal(false)
   }
 
   const handleResendToAzure = async () => {
@@ -2740,30 +2881,51 @@ export default function Review() {
                             👁
                           </button>
                         )}
+                        {invoice?.status !== 'CONFIRMED' && (
+                          <button
+                            type="button"
+                            onClick={handleFetchParsedDates}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '2px 4px',
+                              fontSize: '1rem',
+                              color: (!invoiceDate || dateWarning !== 'none') ? '#007bff' : '#ccc',
+                              display: 'flex',
+                              alignItems: 'center',
+                            }}
+                            title="Find dates in document"
+                          >
+                            🔍
+                          </button>
+                        )}
                       </div>
                       {dateWarning !== 'none' && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
-                            {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
-                          </span>
-                          {!invoiceDate && (
+                          {dateWarning === 'future' ? (
                             <button
                               type="button"
                               onClick={handleFetchParsedDates}
                               style={{
                                 background: 'none',
                                 border: 'none',
+                                padding: 0,
                                 cursor: 'pointer',
-                                padding: '2px 4px',
-                                fontSize: '1rem',
-                                color: '#007bff',
-                                display: 'flex',
-                                alignItems: 'center',
+                                fontSize: '0.8rem',
+                                color: '#e85d04',
+                                fontWeight: 600,
+                                textDecoration: 'underline',
+                                textDecorationStyle: 'dotted',
                               }}
-                              title="Find dates in document"
+                              title="Click to fix date"
                             >
-                              🔍
+                              ⚠ Date is in the future — likely a day/month swap — click to fix
                             </button>
+                          ) : (
+                            <span style={{ fontSize: '0.8rem', color: dateWarning === 'red' ? '#dc3545' : '#856404' }}>
+                              {!invoiceDate ? 'No date set' : 'Date differs from today by more than 7 days'}
+                            </span>
                           )}
                         </div>
                       )}
@@ -2809,6 +2971,25 @@ export default function Review() {
                       title="Show on document"
                     >
                       👁
+                    </button>
+                  )}
+                  {invoice?.status !== 'CONFIRMED' && (
+                    <button
+                      type="button"
+                      onClick={handleFetchInvoiceNumberCandidates}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: '2px 4px',
+                        fontSize: '1rem',
+                        color: invoiceNumber ? '#ccc' : '#007bff',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                      title="Search OCR for invoice number"
+                    >
+                      🔍
                     </button>
                   )}
                 </div>
@@ -4668,63 +4849,381 @@ export default function Review() {
         </div>
       )}
 
+      {/* Non-stock confirmation modal */}
+      {showNonStockConfirmModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowNonStockConfirmModal(false)}>
+          <div style={{ ...styles.rawOcrModal, maxWidth: '480px' }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Previously Non-Stock Items</h3>
+            <p style={{ fontSize: '0.9rem', color: '#555', marginBottom: '1rem', lineHeight: 1.5 }}>
+              The following item{nonStockConflictItems.length !== 1 ? 's have' : ' has'} been marked as <strong>non-stock</strong> on previous invoices from this supplier but {nonStockConflictItems.length !== 1 ? 'are' : 'is'} currently included in the stock cost for this invoice. Please confirm they have been checked.
+            </p>
+            <div style={{ marginBottom: '1.25rem', borderRadius: '6px', border: '1px solid #f0c36d', background: '#fffbf0', overflow: 'hidden' }}>
+              {nonStockConflictItems.map((item, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    padding: '0.6rem 0.85rem',
+                    borderBottom: idx < nonStockConflictItems.length - 1 ? '1px solid #f0c36d' : 'none',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '1rem',
+                  }}
+                >
+                  <span style={{ fontSize: '0.85rem', color: '#333' }}>
+                    {item.description?.split('\n')[0] || '(no description)'}
+                  </span>
+                  {item.amount != null && (
+                    <span style={{ fontSize: '0.85rem', color: '#856404', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      £{item.amount.toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: '0.8rem', color: '#888', marginBottom: '1.25rem' }}>
+              Confirming will include {nonStockConflictItems.length !== 1 ? 'these items' : 'this item'} in the stock cost. Mark {nonStockConflictItems.length !== 1 ? 'them' : 'it'} as non-stock first if that was not intended.
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowNonStockConfirmModal(false)}
+                style={{ ...styles.closeBtn, margin: 0 }}
+              >
+                Go back
+              </button>
+              <button
+                onClick={async () => {
+                  setShowNonStockConfirmModal(false)
+                  await doConfirm()
+                }}
+                style={{
+                  padding: '0.5rem 1.25rem',
+                  background: '#e85d04',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  fontSize: '0.9rem',
+                }}
+              >
+                Confirm anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Date Picker Modal - select date from parsed dates */}
       {showDatePickerModal && (
         <div style={styles.modalOverlay} onClick={() => setShowDatePickerModal(false)}>
-          <div style={{ ...styles.rawOcrModal, maxWidth: '500px' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...styles.rawOcrModal, maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
             <h3>Select Invoice Date</h3>
-            <p style={{ color: '#666', marginBottom: '1rem' }}>
-              Dates found in the document. Click to select.
-            </p>
+
+            {/* OCR image snippet for the InvoiceDate field */}
+            {(() => {
+              const bbox = getFieldBoundingBox('InvoiceDate')
+              if (!bbox) return null
+              const isPdf = invoice?.image_path?.toLowerCase().endsWith('.pdf')
+              if (isPdf && pdfPages.length > 0) {
+                const pageData = pdfPages[bbox.pageNumber - 1]
+                if (!pageData) return null
+                const bboxX = (bbox.x / 100) * pageData.width
+                const bboxY = (bbox.y / 100) * pageData.height
+                const bboxW = (bbox.width / 100) * pageData.width
+                const bboxH = (bbox.height / 100) * pageData.height
+                const pad = 20
+                const startX = Math.max(0, bboxX - pad * 3)
+                const startY = Math.max(0, bboxY - pad)
+                const endX = Math.min(pageData.width, bboxX + bboxW + pad * 3)
+                const endY = Math.min(pageData.height, bboxY + bboxH + pad)
+                const cropW = endX - startX
+                const cropH = endY - startY
+                const croppedCanvas = document.createElement('canvas')
+                croppedCanvas.width = cropW
+                croppedCanvas.height = cropH
+                const ctx = croppedCanvas.getContext('2d')
+                if (ctx) {
+                  ctx.drawImage(pageData.canvas, startX, startY, cropW, cropH, 0, 0, cropW, cropH)
+                  // Draw highlight box
+                  ctx.strokeStyle = '#e85d04'
+                  ctx.lineWidth = 3
+                  ctx.strokeRect(bboxX - startX - 4, bboxY - startY - 4, bboxW + 8, bboxH + 8)
+                }
+                return (
+                  <div style={{ marginBottom: '1rem', border: '1px solid #ddd', borderRadius: '6px', overflow: 'hidden' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#666', padding: '4px 8px', background: '#f8f9fa', borderBottom: '1px solid #ddd' }}>
+                      Date field from document
+                    </div>
+                    <img src={croppedCanvas.toDataURL()} alt="Date field from invoice" style={{ width: '100%', height: 'auto', display: 'block' }} />
+                  </div>
+                )
+              }
+              return null
+            })()}
+
+            {/* Suggested fixes when current date is in the future */}
+            {invoiceDate && getDateWarning(invoiceDate, 'PENDING') === 'future' && (() => {
+              const today = new Date(); today.setHours(0, 0, 0, 0)
+              const swapped = getSwappedDate(invoiceDate)
+              const swappedIsValid = swapped && new Date(swapped) <= today
+              const yearFix = getYearCorrectedDate(invoiceDate)
+              if (!swappedIsValid && !yearFix) return null
+
+              const suggestions: { date: string; label: string; sublabel: string }[] = []
+              if (yearFix) {
+                suggestions.push({
+                  date: yearFix.date,
+                  label: new Date(yearFix.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }),
+                  sublabel: `Year corrected from ${invoiceDate.split('-')[0]} → ${yearFix.year}`,
+                })
+              }
+              if (swappedIsValid && swapped) {
+                suggestions.push({
+                  date: swapped,
+                  label: new Date(swapped).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }),
+                  sublabel: `Day and month swapped from ${new Date(invoiceDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+                })
+              }
+
+              return (
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#e85d04', marginBottom: '0.5rem' }}>
+                    ⚠ Suggested fix{suggestions.length > 1 ? 'es' : ''} — date is in the future:
+                  </div>
+                  {suggestions.map((s, i) => (
+                    <div
+                      key={i}
+                      onClick={() => handleSelectParsedDate(s.date)}
+                      style={{
+                        padding: '0.75rem 1rem',
+                        border: '2px solid #e85d04',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        background: '#fff8f5',
+                        transition: 'all 0.2s',
+                        marginBottom: i < suggestions.length - 1 ? '0.5rem' : 0,
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = '#fff0e8' }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = '#fff8f5' }}
+                    >
+                      <div style={{ fontWeight: '600', fontSize: '1.1rem', marginBottom: '0.25rem' }}>{s.label}</div>
+                      <div style={{ fontSize: '0.8rem', color: '#888' }}>{s.sublabel}</div>
+                    </div>
+                  ))}
+                  {parsedDates.length > 0 && (
+                    <div style={{ borderTop: '1px solid #eee', marginTop: '1rem', paddingTop: '0.75rem', fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+                      Or choose a date found in the document:
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
+            {!invoiceDate && (
+              <p style={{ color: '#666', marginBottom: '1rem', fontSize: '0.9rem' }}>
+                Dates found in the document. Click to select.
+              </p>
+            )}
+            {invoiceDate && getDateWarning(invoiceDate, 'PENDING') !== 'future' && (
+              <p style={{ color: '#666', marginBottom: '1rem', fontSize: '0.9rem' }}>
+                Dates found in the document. Click to select.
+              </p>
+            )}
 
             {parsedDatesLoading ? (
               <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>Searching for dates...</p>
             ) : parsedDates.length === 0 ? (
-              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>No dates found in document text.</p>
+              invoiceDate && getDateWarning(invoiceDate, 'PENDING') === 'future' ? null : (
+                <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>No dates found in document text.</p>
+              )
             ) : (
               <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                {parsedDates.map((dateInfo, idx) => (
-                  <div
-                    key={idx}
-                    onClick={() => handleSelectParsedDate(dateInfo.date)}
-                    style={{
-                      padding: '0.75rem 1rem',
-                      marginBottom: '0.5rem',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      background: '#fff',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = '#f0f7ff'
-                      e.currentTarget.style.borderColor = '#007bff'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = '#fff'
-                      e.currentTarget.style.borderColor = '#ddd'
-                    }}
-                  >
-                    <div style={{ fontWeight: '600', fontSize: '1.1rem', marginBottom: '0.25rem' }}>
-                      {new Date(dateInfo.date).toLocaleDateString('en-GB', {
-                        weekday: 'short',
-                        day: 'numeric',
-                        month: 'short',
-                        year: 'numeric'
-                      })}
+                {parsedDates.filter(dateInfo => {
+                  // Suppress dates already shown as swap/year-fix suggestions
+                  if (!invoiceDate || getDateWarning(invoiceDate, 'PENDING') !== 'future') return true
+                  const today = new Date(); today.setHours(0, 0, 0, 0)
+                  const swapped = getSwappedDate(invoiceDate)
+                  if (swapped && new Date(swapped) <= today && dateInfo.date === swapped) return false
+                  const yearFix = getYearCorrectedDate(invoiceDate)
+                  if (yearFix && dateInfo.date === yearFix.date) return false
+                  return true
+                }).map((dateInfo, idx) => {
+                  const snippetUrl = dateInfo.bbox ? cropBboxToDataUrl(dateInfo.bbox, { padX: 80, padY: 25, strokeColor: '#e85d04' }) : null
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => handleSelectParsedDate(dateInfo.date)}
+                      style={{
+                        marginBottom: '0.5rem',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        background: '#fff',
+                        overflow: 'hidden',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = '#f0f7ff'
+                        e.currentTarget.style.borderColor = '#007bff'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = '#fff'
+                        e.currentTarget.style.borderColor = '#ddd'
+                      }}
+                    >
+                      {snippetUrl && (
+                        <img
+                          src={snippetUrl}
+                          alt="Date location in document"
+                          style={{ width: '100%', height: 'auto', display: 'block', borderBottom: '1px solid #eee' }}
+                        />
+                      )}
+                      <div style={{ padding: '0.75rem 1rem' }}>
+                        <div style={{ fontWeight: '600', fontSize: '1.1rem', marginBottom: '0.25rem' }}>
+                          {new Date(dateInfo.date).toLocaleDateString('en-GB', {
+                            weekday: 'short',
+                            day: 'numeric',
+                            month: 'short',
+                            year: 'numeric'
+                          })}
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: '#666' }}>
+                          Original: {dateInfo.original}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.25rem', fontStyle: 'italic' }}>
+                          ...{dateInfo.context}...
+                        </div>
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: '#666' }}>
-                      Original: {dateInfo.original}
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: '#999', marginTop: '0.25rem', fontStyle: 'italic' }}>
-                      ...{dateInfo.context}...
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
 
             <button onClick={() => setShowDatePickerModal(false)} style={styles.closeBtn}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice Number Search Modal */}
+      {showInvoiceNumberModal && (
+        <div style={styles.modalOverlay} onClick={() => setShowInvoiceNumberModal(false)}>
+          <div style={{ ...styles.rawOcrModal, maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
+            <h3>Find Invoice Number</h3>
+
+            {/* OCR image snippet for InvoiceId field if available */}
+            {(() => {
+              const bbox = getFieldBoundingBox('InvoiceId')
+              if (!bbox) return null
+              const isPdf = invoice?.image_path?.toLowerCase().endsWith('.pdf')
+              if (isPdf && pdfPages.length > 0) {
+                const pageData = pdfPages[bbox.pageNumber - 1]
+                if (!pageData) return null
+                const bboxX = (bbox.x / 100) * pageData.width
+                const bboxY = (bbox.y / 100) * pageData.height
+                const bboxW = (bbox.width / 100) * pageData.width
+                const bboxH = (bbox.height / 100) * pageData.height
+                const pad = 20
+                const startX = Math.max(0, bboxX - pad * 3)
+                const startY = Math.max(0, bboxY - pad)
+                const endX = Math.min(pageData.width, bboxX + bboxW + pad * 3)
+                const endY = Math.min(pageData.height, bboxY + bboxH + pad)
+                const cropW = endX - startX
+                const cropH = endY - startY
+                const croppedCanvas = document.createElement('canvas')
+                croppedCanvas.width = cropW
+                croppedCanvas.height = cropH
+                const ctx = croppedCanvas.getContext('2d')
+                if (ctx) {
+                  ctx.drawImage(pageData.canvas, startX, startY, cropW, cropH, 0, 0, cropW, cropH)
+                  ctx.strokeStyle = '#007bff'
+                  ctx.lineWidth = 3
+                  ctx.strokeRect(bboxX - startX - 4, bboxY - startY - 4, bboxW + 8, bboxH + 8)
+                }
+                return (
+                  <div style={{ marginBottom: '1rem', border: '1px solid #ddd', borderRadius: '6px', overflow: 'hidden' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#666', padding: '4px 8px', background: '#f8f9fa', borderBottom: '1px solid #ddd' }}>
+                      Invoice number field from document
+                    </div>
+                    <img src={croppedCanvas.toDataURL()} alt="Invoice number field" style={{ width: '100%', height: 'auto', display: 'block' }} />
+                  </div>
+                )
+              }
+              return null
+            })()}
+
+            {/* Supplier format examples */}
+            {invoiceNumberExamples.length > 0 && (
+              <div style={{ marginBottom: '1rem', padding: '0.5rem 0.75rem', background: '#f8f9fa', borderRadius: '4px', fontSize: '0.8rem', color: '#555' }}>
+                <strong>Format from this supplier:</strong>{' '}
+                {invoiceNumberExamples.slice(0, 4).join(', ')}
+              </div>
+            )}
+
+            <p style={{ color: '#666', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              {invoiceNumberLoading
+                ? 'Searching document...'
+                : invoiceNumberCandidates.length === 0
+                ? 'No candidates found in document text.'
+                : 'Candidates found in the document. Click to use.'}
+            </p>
+
+            {invoiceNumberLoading ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>Searching for invoice number...</p>
+            ) : invoiceNumberCandidates.length === 0 ? null : (
+              <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                {invoiceNumberCandidates.map((c, idx) => {
+                  const snippetUrl = c.bbox ? cropBboxToDataUrl(c.bbox, { padX: 80, padY: 25, strokeColor: '#007bff' }) : null
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => handleSelectInvoiceNumber(c.value)}
+                      style={{
+                        marginBottom: '0.5rem',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        background: '#fff',
+                        transition: 'all 0.2s',
+                        overflow: 'hidden',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = '#f0f7ff'
+                        e.currentTarget.style.borderColor = '#007bff'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = '#fff'
+                        e.currentTarget.style.borderColor = '#ddd'
+                      }}
+                    >
+                      {snippetUrl && (
+                        <img
+                          src={snippetUrl}
+                          alt="Candidate location in document"
+                          style={{ width: '100%', height: 'auto', display: 'block', borderBottom: '1px solid #eee' }}
+                        />
+                      )}
+                      <div style={{ padding: '0.75rem 1rem' }}>
+                        <div style={{ fontWeight: '600', fontSize: '1.05rem', marginBottom: '0.25rem', fontFamily: 'monospace' }}>
+                          {c.value}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#999', marginBottom: '0.2rem' }}>
+                          {c.source === 'ocr_field' ? '📋 Azure OCR field'
+                            : c.source === 'supplier_pattern' ? '🔗 Matches supplier format'
+                            : '🔤 Found near reference keyword'}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#888', fontStyle: 'italic' }}>
+                          ...{c.context}...
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            <button onClick={() => setShowInvoiceNumberModal(false)} style={styles.closeBtn}>Cancel</button>
           </div>
         </div>
       )}
